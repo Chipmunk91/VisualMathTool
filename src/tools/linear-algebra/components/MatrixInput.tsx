@@ -2,7 +2,6 @@ import { useMatrixStore, MatrixDimension } from "../lib/stores/useMatrixStore";
 import { useVectorStore } from "../lib/stores/useVectorStore";
 import { applyMatrixTransformation } from "../lib/math";
 import { evaluateExpression } from "../lib/mathParser";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -58,6 +57,54 @@ const MatrixInput = () => {
 
   // Parse dimensions from string
   const [rows, cols] = matrix.dimension.split('x').map(Number);
+
+  // Move focus to another cell in the matrix table, wrapping at row ends
+  const focusCell = (row: number, col: number) => {
+    if (row < 0 || row >= rows || col < 0 || col >= cols) return;
+    const cell = document.getElementById(`m-${row}-${col}`) as HTMLInputElement | null;
+    if (cell) {
+      cell.focus();
+      cell.select();
+    }
+  };
+
+  const handleCellKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, row: number, col: number) => {
+    const input = e.currentTarget;
+    const atStart = input.selectionStart === 0 && input.selectionEnd === 0;
+    const atEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
+    const allSelected = input.selectionStart === 0 && input.selectionEnd === input.value.length && input.value.length > 0;
+
+    switch (e.key) {
+      case "ArrowUp":
+        e.preventDefault();
+        focusCell(row - 1, col);
+        break;
+      case "ArrowDown":
+        e.preventDefault();
+        focusCell(row + 1, col);
+        break;
+      case "Enter":
+        e.preventDefault();
+        // Enter moves down the column, wrapping to the top of the next column
+        if (row + 1 < rows) focusCell(row + 1, col);
+        else focusCell(0, (col + 1) % cols);
+        break;
+      // Left/Right only leave the cell when the caret is at the edge (or all
+      // text is selected), so arrow keys still work for editing expressions
+      case "ArrowLeft":
+        if (atStart || allSelected) {
+          e.preventDefault();
+          focusCell(row, col - 1);
+        }
+        break;
+      case "ArrowRight":
+        if (atEnd || allSelected) {
+          e.preventDefault();
+          focusCell(row, col + 1);
+        }
+        break;
+    }
+  };
 
   return (
     <div className="p-4 h-full flex flex-col">
@@ -213,61 +260,61 @@ const MatrixInput = () => {
           </button>
         </CardHeader>
         <CardContent className="overflow-y-auto">
-          <div className="grid gap-4 mb-4">
-            {Array.from({ length: rows }).map((_, rowIndex) => (
-              <div key={rowIndex} className="flex flex-wrap justify-center gap-2">
-                {Array.from({ length: cols }).map((_, colIndex) => (
-                  <div key={`${rowIndex}-${colIndex}`} className="w-[80px] flex-grow-0 flex-shrink-0">
-                    <Label htmlFor={`m-${rowIndex}-${colIndex}`} className="whitespace-nowrap text-center block mb-1">
-                      M<sub>{rowIndex+1},{colIndex+1}</sub>
-                    </Label>
-                    <Input
-                      id={`m-${rowIndex}-${colIndex}`}
-                      type="text"
-                      className="min-w-0"
-                      // Display the original expression if available, otherwise the numeric value
-                      value={(matrix.expressions && matrix.expressions[rowIndex][colIndex]) || 
-                             matrix.values[rowIndex][colIndex].toString()}
-                      onChange={(e) => {
-                        // Get the raw input value
-                        let value = e.target.value;
-                        handleMatrixChange(rowIndex, colIndex, value);
-                      }}
-                      onBlur={(e) => {
-                        // When focus leaves the input field, convert expression to numeric value
-                        try {
-                          const expressionValue = e.target.value;
-                          // Skip if expression is empty
-                          if (expressionValue.trim() === '') return;
-                          
-                          // Skip if it's already a simple number
-                          if (/^-?\d+(\.\d+)?$/.test(expressionValue)) return;
-                          
-                          // Try to evaluate the expression
-                          const numericValue = evaluateExpression(expressionValue);
-                          // Format to 8 decimal places, removing trailing zeros
-                          const formattedValue = numericValue.toFixed(8).replace(/\.?0+$/, '');
-                          
-                          // Update the matrix with the evaluated value and formatted expression
-                          updateMatrixValue(rowIndex, colIndex, numericValue, formattedValue);
-                        } catch (error) {
-                          // Keep the original expression if evaluation fails
-                          console.log("Error converting matrix expression to numeric form:", error);
-                        }
-                      }}
-                      onClick={(e) => {
-                        // Select all on click
-                        (e.target as HTMLInputElement).select();
-                      }}
-                      onDoubleClick={(e) => {
-                        // Also select on double click to be safe
-                        (e.target as HTMLInputElement).select();
-                      }}
-                    />
-                  </div>
+          <div className="mb-4 overflow-x-auto">
+            <table className="mx-auto border-collapse">
+              <tbody>
+                {Array.from({ length: rows }).map((_, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {Array.from({ length: cols }).map((_, colIndex) => (
+                      <td key={`${rowIndex}-${colIndex}`} className="border border-border p-0">
+                        <input
+                          id={`m-${rowIndex}-${colIndex}`}
+                          type="text"
+                          aria-label={`Matrix entry row ${rowIndex + 1}, column ${colIndex + 1}`}
+                          className="h-10 w-20 bg-transparent text-center text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:ring-inset focus:bg-primary/5"
+                          // Display the original expression if available, otherwise the numeric value
+                          value={(matrix.expressions && matrix.expressions[rowIndex][colIndex]) ||
+                                 matrix.values[rowIndex][colIndex].toString()}
+                          onChange={(e) => {
+                            handleMatrixChange(rowIndex, colIndex, e.target.value);
+                          }}
+                          onKeyDown={(e) => handleCellKeyDown(e, rowIndex, colIndex)}
+                          onBlur={(e) => {
+                            // When focus leaves the input field, convert expression to numeric value
+                            try {
+                              const expressionValue = e.target.value;
+                              // Skip if expression is empty
+                              if (expressionValue.trim() === '') return;
+
+                              // Skip if it's already a simple number
+                              if (/^-?\d+(\.\d+)?$/.test(expressionValue)) return;
+
+                              // Try to evaluate the expression
+                              const numericValue = evaluateExpression(expressionValue);
+                              // Format to 8 decimal places, removing trailing zeros
+                              const formattedValue = numericValue.toFixed(8).replace(/\.?0+$/, '');
+
+                              // Update the matrix with the evaluated value and formatted expression
+                              updateMatrixValue(rowIndex, colIndex, numericValue, formattedValue);
+                            } catch (error) {
+                              // Keep the original expression if evaluation fails
+                              console.log("Error converting matrix expression to numeric form:", error);
+                            }
+                          }}
+                          onFocus={(e) => {
+                            // Select all on focus so typing replaces the value
+                            e.target.select();
+                          }}
+                          onClick={(e) => {
+                            (e.target as HTMLInputElement).select();
+                          }}
+                        />
+                      </td>
+                    ))}
+                  </tr>
                 ))}
-              </div>
-            ))}
+              </tbody>
+            </table>
           </div>
           
           <MatrixAnalysis />
