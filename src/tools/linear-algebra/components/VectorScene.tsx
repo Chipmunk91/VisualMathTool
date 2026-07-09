@@ -12,6 +12,7 @@ import {
   TransformedGrid,
   EigenvectorAxes,
 } from "./TransformOverlays";
+import VectorGizmo from "./VectorGizmo";
 import { BASIS_COLORS } from "../lib/colors";
 
 // The standard basis vectors î, ĵ, k̂ — the "characters" of every linear
@@ -103,7 +104,6 @@ const VectorScene = () => {
     showTransformed,
     showDimensionVisualization,
     showDeterminantVolume,
-    showTransformedGrid,
     showEigenvectors,
   } = useMatrixStore();
   const { camera } = useThree();
@@ -651,17 +651,22 @@ const VectorScene = () => {
       <ambientLight intensity={0.5} />
       <pointLight position={[10, 10, 10]} intensity={0.8} />
       
-      {/* Coordinate system - adjust grid size dynamically but keep axis at 10 units */}
-      <Grid size={gridSize} divisions={gridSize} />
+      {/* Coordinate system: the grid itself transforms with the matrix.
+          When a non-identity transform is shown, the static reference grid
+          is replaced by the image of the grid under M(t). */}
+      {showTransformed && !isIdentity ? (
+        <TransformedGrid />
+      ) : (
+        <Grid size={gridSize} divisions={gridSize} />
+      )}
       <Axis length={10} />
-      
+
       {/* Matrix dimension visualization */}
       {dimensionVisualization}
 
       {/* Transformation overlays */}
       {showTransformed && !isIdentity && <TransformedBasis />}
       {showDeterminantVolume && <DeterminantVolume />}
-      {showTransformedGrid && <TransformedGrid />}
       {showEigenvectors && <EigenvectorAxes />}
 
       {/* Sphere marking the origin */}
@@ -680,6 +685,9 @@ const VectorScene = () => {
         />
       ))}
       
+      {/* Translate gizmo for the selected vector's tip */}
+      <VectorGizmo />
+
       {/* Render user-added vectors */}
       {vectors.map((vector) => (
         // Don't render transformed vectors if the matrix is an identity matrix

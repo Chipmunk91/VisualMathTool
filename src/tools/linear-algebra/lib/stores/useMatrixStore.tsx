@@ -16,7 +16,6 @@ interface MatrixStore {
   /** Animation progress of the transformation: 0 = identity, 1 = full matrix */
   animationT: number;
   showDeterminantVolume: boolean;
-  showTransformedGrid: boolean;
   showEigenvectors: boolean;
   setMatrix: (matrix: Matrix) => void;
   updateMatrixValue: (row: number, col: number, value: number, expression?: string) => void;
@@ -25,7 +24,6 @@ interface MatrixStore {
   toggleDimensionVisualization: () => void;
   setAnimationT: (t: number) => void;
   toggleDeterminantVolume: () => void;
-  toggleTransformedGrid: () => void;
   toggleEigenvectors: () => void;
   transposeMatrix: () => void;
   resetMatrix: () => void; // New function to reset matrix to identity
@@ -79,7 +77,6 @@ export const useMatrixStore = create<MatrixStore>((set) => ({
   showDimensionVisualization: false,
   animationT: 1,
   showDeterminantVolume: false,
-  showTransformedGrid: false,
   showEigenvectors: false,
 
   setMatrix: (matrix) => {
@@ -92,10 +89,6 @@ export const useMatrixStore = create<MatrixStore>((set) => ({
 
   toggleDeterminantVolume: () => {
     set((state) => ({ showDeterminantVolume: !state.showDeterminantVolume }));
-  },
-
-  toggleTransformedGrid: () => {
-    set((state) => ({ showTransformedGrid: !state.showTransformedGrid }));
   },
 
   toggleEigenvectors: () => {

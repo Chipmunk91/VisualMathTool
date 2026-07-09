@@ -19,6 +19,9 @@ export interface Vector {
 
 interface VectorStore {
   vectors: Vector[];
+  /** Vector whose tip currently shows the translate gizmo */
+  selectedVectorId: string | null;
+  setSelectedVector: (id: string | null) => void;
   addVector: (components: number[], expressions?: string[]) => void;
   removeVector: (id: string) => void;
   updateVector: (id: string, components: number[], expression?: string, index?: number) => void;
@@ -31,7 +34,12 @@ interface VectorStore {
 
 export const useVectorStore = create<VectorStore>((set) => ({
   vectors: [],
-  
+  selectedVectorId: null,
+
+  setSelectedVector: (id) => {
+    set({ selectedVectorId: id });
+  },
+
   addVector: (components, expressions) => {
     const id = `vector-${Date.now()}`;
     

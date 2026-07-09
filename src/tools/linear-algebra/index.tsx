@@ -145,6 +145,7 @@ function LinearAlgebraTool() {
             gl={{ antialias: true }}
             shadows
             style={{ background: "#ffffff" }}
+            onPointerMissed={() => useVectorStore.getState().setSelectedVector(null)}
           >
             {/* Ambient and directional lighting */}
             <ambientLight intensity={0.6} />

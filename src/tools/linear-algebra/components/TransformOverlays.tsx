@@ -232,11 +232,10 @@ export const DeterminantVolume = () => {
 export const TransformedGrid = () => {
   const { matrix, animationT } = useMatrixStore();
   const values = matrix.values;
-  const [rows, cols] = matrix.dimension.split("x").map(Number);
-  const isSquare = rows === cols;
+  const cols = values[0]?.length ?? 0;
 
   const geometry = useMemo(() => {
-    if (!isSquare) return null;
+    if (cols < 2) return null;
     const half = 5;
     const points: number[] = [];
     for (let k = -half; k <= half; k++) {
@@ -254,7 +253,7 @@ export const TransformedGrid = () => {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(points), 3));
     return geometry;
-  }, [values, animationT, isSquare, cols]);
+  }, [values, animationT, cols]);
 
   useEffect(() => {
     return () => geometry?.dispose();
@@ -264,7 +263,7 @@ export const TransformedGrid = () => {
 
   return (
     <lineSegments geometry={geometry}>
-      <lineBasicMaterial color="#14B8A6" transparent opacity={0.55} />
+      <lineBasicMaterial color="#888888" transparent opacity={0.75} />
     </lineSegments>
   );
 };

@@ -10,11 +10,11 @@ A collection of interactive math visualization tools that turn abstract concepts
 
 Interactive 3D linear algebra visualization:
 
-- **Interactive 3D Visualization**: Drag and manipulate vectors in real-time 3D space
+- **Interactive 3D Visualization**: Move vectors with a Unity/Blender-style translate gizmo — click a vector's tip to select it, then drag the axis handles
 - **Animated Transformations**: Scrub or play the transformation from identity to your matrix and watch space morph continuously
+- **The Grid Transforms**: For a non-identity matrix, the reference grid itself is replaced by its image under the transformation — space visibly shears, rotates, and squashes
 - **Basis Vectors as Teachers**: î, ĵ, k̂ transform live, and the matrix table's column headers show that each column is exactly where a basis vector lands
 - **Determinant Volume**: The unit cube carried through the transformation — volume = |det|, with an orientation-flip indicator for negative determinants
-- **Transformed Grid**: See the XY-plane grid sheared, rotated, and squashed by the matrix
 - **Eigenvector Axes**: Real eigenvectors drawn as axes in the scene — the directions that only stretch, never rotate
 - **Preset Transformations**: One-click rotation, shear, reflection, projection, and scaling matrices
 - **Real Eigendecomposition & SVD**: Computed with math.js `eigs` — including complex eigenvalues for rotations
@@ -23,12 +23,12 @@ Interactive 3D linear algebra visualization:
 
 ### Equation Playground (`/tools/equation-builder`)
 
-Build equations out of draggable symbol tokens and watch the function come alive:
+One large equation whose symbols are live objects — solve it by physically moving them:
 
-- **Drag & Drop Equation Building**: Compose f(x) from symbols, numbers, operators, and functions — click to append, drag to insert or reorder, click to remove
-- **Live Graph**: y = f(x) plotted instantly as the equation changes, with discontinuity handling (tan, 1/x)
-- **Input Space → Output Space**: A number-line mapping view showing how f stretches, squashes, and folds the input line onto the output line
-- **Probe Point**: Slide x₀ along the input and trace its image on both the graph and the mapping view
+- **Touchable Symbols**: Every term is an interactive object that highlights on hover
+- **Drag Across the Equals Sign**: Move a term to the other side and its sign flips; like terms combine automatically
+- **Divide to Finish**: When the equation reaches a·x = b, the coefficient becomes clickable — divide both sides to solve
+- **Minimal by Design**: Just the equation on a clean page, with preset equations to practice on
 
 More tools (calculus, probability, complex numbers, ...) coming soon.
 

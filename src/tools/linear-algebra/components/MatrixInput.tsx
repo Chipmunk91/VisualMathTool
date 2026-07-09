@@ -25,8 +25,6 @@ const MatrixInput = () => {
     setAnimationT,
     showDeterminantVolume,
     toggleDeterminantVolume,
-    showTransformedGrid,
-    toggleTransformedGrid,
     showEigenvectors,
     toggleEigenvectors,
     transposeMatrix
@@ -279,17 +277,6 @@ const MatrixInput = () => {
                 className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
               />
               <Label htmlFor="show-determinant-volume">Determinant Volume (unit cube)</Label>
-            </div>
-
-            <div className="flex items-center space-x-2">
-              <input
-                type="checkbox"
-                id="show-transformed-grid"
-                checked={showTransformedGrid}
-                onChange={toggleTransformedGrid}
-                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-              />
-              <Label htmlFor="show-transformed-grid">Transformed Grid (XY-plane)</Label>
             </div>
 
             <div className="flex items-center space-x-2">
