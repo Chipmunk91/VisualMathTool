@@ -1,12 +1,12 @@
 import React from "react";
 import { useMatrixStore } from "../lib/stores/useMatrixStore";
-import { 
+import {
   calculateDeterminant,
   calculateTrace,
-  calculateEigenvalues,
-  calculateEigenvectors,
+  calculateEigen,
   calculateSingularValues,
-  isMatrixInvertible
+  isMatrixInvertible,
+  type ComplexValue
 } from "../lib/math";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -20,10 +20,11 @@ const MatrixAnalysis = () => {
   // Calculate matrix properties
   const determinant = isSquare ? calculateDeterminant(matrix) : null;
   const trace = isSquare ? calculateTrace(matrix) : null;
-  const eigenvalues = isSquare ? calculateEigenvalues(matrix) : null;
-  const eigenvectors = isSquare && eigenvalues ? calculateEigenvectors(matrix, eigenvalues) : null;
+  const eigen = isSquare ? calculateEigen(matrix) : null;
   const singularValues = calculateSingularValues(matrix);
   const invertible = isSquare ? isMatrixInvertible(matrix) : null;
+
+  const hasComplexEigenvalues = eigen?.eigenvalues.some((v) => Math.abs(v.im) > 1e-9) ?? false;
 
   return (
     <Card className="mb-4 overflow-auto">
@@ -62,23 +63,29 @@ const MatrixAnalysis = () => {
         </div>
         
         {/* Eigenvalue Decomposition */}
-        {isSquare && eigenvalues && eigenvalues.length > 0 && (
+        {isSquare && eigen && eigen.eigenvalues.length > 0 && (
           <div className="mt-4">
             <h3 className="font-medium mb-2">Eigenvalue Decomposition</h3>
             <div className="space-y-3">
               <div className="bg-muted p-3 rounded-md">
                 <p className="font-medium">Eigenvalues:</p>
-                <p className="break-all">[{eigenvalues.map(v => v.toFixed(4)).join(", ")}]</p>
+                <p className="break-all">[{eigen.eigenvalues.map(formatComplex).join(", ")}]</p>
+                {hasComplexEigenvalues && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Complex eigenvalues mean the transformation rotates — no real
+                    direction is merely stretched.
+                  </p>
+                )}
               </div>
-              
-              {eigenvectors && eigenvectors.length > 0 && (
+
+              {eigen.realEigenpairs.length > 0 && (
                 <div className="bg-muted p-3 rounded-md">
                   <p className="font-medium">Eigenvectors (normalized):</p>
                   <div className="space-y-2 mt-1">
-                    {eigenvectors.map((vector, idx) => (
+                    {eigen.realEigenpairs.map((pair, idx) => (
                       <div key={idx} className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium text-xs">λ = {eigenvalues[idx].toFixed(4)}:</span>
-                        <span className="break-all">[{vector.map(v => v.toFixed(4)).join(", ")}]</span>
+                        <span className="font-medium text-xs">λ = {pair.value.toFixed(4)}:</span>
+                        <span className="break-all">[{pair.vector.map(v => v.toFixed(4)).join(", ")}]</span>
                       </div>
                     ))}
                   </div>
@@ -135,6 +142,13 @@ const MatrixAnalysis = () => {
     </Card>
   );
 };
+
+// Format a possibly-complex eigenvalue for display
+function formatComplex(v: ComplexValue): string {
+  if (Math.abs(v.im) < 1e-9) return v.re.toFixed(4);
+  const sign = v.im >= 0 ? "+" : "−";
+  return `${v.re.toFixed(2)} ${sign} ${Math.abs(v.im).toFixed(2)}i`;
+}
 
 // Helper functions to determine matrix types
 function isDiagonal(matrix: number[][]): boolean {

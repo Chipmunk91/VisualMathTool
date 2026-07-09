@@ -6,30 +6,38 @@ import Axis from "./Axis";
 import Vector from "./Vector";
 import { useMatrixStore, isIdentityMatrix } from "../lib/stores/useMatrixStore";
 import * as THREE from "three";
+import {
+  TransformedBasis,
+  DeterminantVolume,
+  TransformedGrid,
+  EigenvectorAxes,
+} from "./TransformOverlays";
+import { BASIS_COLORS } from "../lib/colors";
 
-// Default vectors that will always be shown for testing
+// The standard basis vectors î, ĵ, k̂ — the "characters" of every linear
+// transformation: the matrix columns are exactly where these land.
 const defaultVectors: VectorType[] = [
   {
     id: "default-x",
-    components: [3, 0, 0],
-    color: "#FF0000",
-    label: "X",
+    components: [1, 0, 0],
+    color: BASIS_COLORS[0],
+    label: "î",
     visible: true,
     isTransformed: false
   },
   {
     id: "default-y",
-    components: [0, 3, 0],
-    color: "#00FF00",
-    label: "Y",
+    components: [0, 1, 0],
+    color: BASIS_COLORS[1],
+    label: "ĵ",
     visible: true,
     isTransformed: false
   },
   {
     id: "default-z",
-    components: [0, 0, 3],
-    color: "#0000FF",
-    label: "Z",
+    components: [0, 0, 1],
+    color: BASIS_COLORS[2],
+    label: "k̂",
     visible: true,
     isTransformed: false
   }
@@ -90,9 +98,15 @@ const calculateMatrixRank = (matrix: number[][]): number => {
 
 const VectorScene = () => {
   const { vectors } = useVectorStore();
-  const { matrix, showTransformed, showDimensionVisualization } = useMatrixStore();
+  const {
+    matrix,
+    showTransformed,
+    showDimensionVisualization,
+    showDeterminantVolume,
+    showTransformedGrid,
+    showEigenvectors,
+  } = useMatrixStore();
   const { camera } = useThree();
-  const [allVectors, setAllVectors] = useState<VectorType[]>([...defaultVectors]);
   
   // Check if the matrix is an identity matrix to decide whether to show transformed vectors
   const isIdentity = useMemo(() => {
@@ -107,10 +121,8 @@ const VectorScene = () => {
   
   // Combine user vectors with default vectors and calculate grid size
   useEffect(() => {
-    console.log("Rendering VectorScene with vectors:", vectors);
     const combinedVectors = [...defaultVectors, ...vectors];
-    setAllVectors(combinedVectors);
-    
+
     // Determine if we need a larger grid size based on vector coordinates
     let maxCoordinate = defaultSize;
     
@@ -645,18 +657,24 @@ const VectorScene = () => {
       
       {/* Matrix dimension visualization */}
       {dimensionVisualization}
-      
-      {/* Debug sphere at origin */}
+
+      {/* Transformation overlays */}
+      {showTransformed && !isIdentity && <TransformedBasis />}
+      {showDeterminantVolume && <DeterminantVolume />}
+      {showTransformedGrid && <TransformedGrid />}
+      {showEigenvectors && <EigenvectorAxes />}
+
+      {/* Sphere marking the origin */}
       <mesh position={[0, 0, 0]}>
         <sphereGeometry args={[0.2, 32, 32]} />
         <meshStandardMaterial color="#FFFFFF" />
       </mesh>
-      
-      {/* Debug vectors for testing */}
+
+      {/* Standard basis vectors î, ĵ, k̂ */}
       {defaultVectors.map((vector) => (
-        <Vector 
-          key={vector.id} 
-          vector={vector} 
+        <Vector
+          key={vector.id}
+          vector={vector}
         />
       ))}
       

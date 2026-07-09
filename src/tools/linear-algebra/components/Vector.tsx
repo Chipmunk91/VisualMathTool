@@ -41,15 +41,25 @@ const Vector = ({ vector }: VectorProps) => {
   
   // Origin is always (0,0,0)
   const start = new THREE.Vector3(0, 0, 0);
-  
+
+  // Animation progress: transformed vectors are drawn at lerp(v, Av, t),
+  // which equals ((1-t)I + tA)v — the interpolated transformation applied to v
+  const animationT = useMatrixStore((state) => state.animationT);
+  const displayComponents = useMemo(() => {
+    if (!isTransformed || !originalVector) return components;
+    return components.map(
+      (c, i) => (originalVector.components[i] ?? 0) * (1 - animationT) + c * animationT
+    );
+  }, [components, isTransformed, originalVector, animationT]);
+
   // End point depends on vector dimensions
   const end = useMemo(() => {
-    if (components.length === 2) {
-      return new THREE.Vector3(components[0], components[1], 0);
+    if (displayComponents.length === 2) {
+      return new THREE.Vector3(displayComponents[0], displayComponents[1], 0);
     } else {
-      return new THREE.Vector3(components[0], components[1], components[2]);
+      return new THREE.Vector3(displayComponents[0], displayComponents[1], displayComponents[2]);
     }
-  }, [components]);
+  }, [displayComponents]);
 
   // Calculate midpoint for arrow placement
   const midPoint = useMemo(() => {
@@ -378,7 +388,7 @@ const Vector = ({ vector }: VectorProps) => {
                   quaternion={camera.quaternion}
                 >
                   {/* Format values to 2 decimal places */}
-                  {`(${components.map(c => c.toFixed(2)).join(', ')})`}
+                  {`(${displayComponents.map(c => c.toFixed(2)).join(', ')})`}
                 </Text>
               );
             }

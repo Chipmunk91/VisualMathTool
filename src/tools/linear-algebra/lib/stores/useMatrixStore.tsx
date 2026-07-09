@@ -13,11 +13,20 @@ interface MatrixStore {
   matrix: Matrix;
   showTransformed: boolean;
   showDimensionVisualization: boolean;
+  /** Animation progress of the transformation: 0 = identity, 1 = full matrix */
+  animationT: number;
+  showDeterminantVolume: boolean;
+  showTransformedGrid: boolean;
+  showEigenvectors: boolean;
   setMatrix: (matrix: Matrix) => void;
   updateMatrixValue: (row: number, col: number, value: number, expression?: string) => void;
   setDimension: (dimension: MatrixDimension) => void;
   toggleShowTransformed: () => void;
   toggleDimensionVisualization: () => void;
+  setAnimationT: (t: number) => void;
+  toggleDeterminantVolume: () => void;
+  toggleTransformedGrid: () => void;
+  toggleEigenvectors: () => void;
   transposeMatrix: () => void;
   resetMatrix: () => void; // New function to reset matrix to identity
 }
@@ -68,9 +77,29 @@ export const useMatrixStore = create<MatrixStore>((set) => ({
   },
   showTransformed: true,
   showDimensionVisualization: false,
-  
+  animationT: 1,
+  showDeterminantVolume: false,
+  showTransformedGrid: false,
+  showEigenvectors: false,
+
   setMatrix: (matrix) => {
     set({ matrix });
+  },
+
+  setAnimationT: (t) => {
+    set({ animationT: Math.min(1, Math.max(0, t)) });
+  },
+
+  toggleDeterminantVolume: () => {
+    set((state) => ({ showDeterminantVolume: !state.showDeterminantVolume }));
+  },
+
+  toggleTransformedGrid: () => {
+    set((state) => ({ showTransformedGrid: !state.showTransformedGrid }));
+  },
+
+  toggleEigenvectors: () => {
+    set((state) => ({ showEigenvectors: !state.showEigenvectors }));
   },
   
   updateMatrixValue: (row, col, value, expression) => {

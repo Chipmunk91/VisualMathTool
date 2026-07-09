@@ -177,293 +177,96 @@ export function calculateTrace(matrix: Matrix): number | null {
   return trace;
 }
 
+export interface ComplexValue {
+  re: number;
+  im: number;
+}
+
+export interface EigenResult {
+  /** All eigenvalues, possibly complex (e.g. rotations) */
+  eigenvalues: ComplexValue[];
+  /** Real eigenvalue/eigenvector pairs — the ones that can be drawn in 3D space */
+  realEigenpairs: { value: number; vector: number[] }[];
+}
+
+// mathjs returns plain numbers for real values and Complex objects otherwise
+function toComplex(v: unknown): ComplexValue {
+  if (typeof v === "number") return { re: v, im: 0 };
+  const c = v as { re?: number; im?: number };
+  return { re: c.re ?? 0, im: c.im ?? 0 };
+}
+
 /**
- * Calculate eigenvalues for a matrix
- * @param matrix The matrix to analyze
- * @returns Array of eigenvalues or null if not a square matrix
+ * Calculate the eigendecomposition of a square matrix using math.js.
+ * Complex eigenvalues (rotations) are reported; eigenvectors are returned
+ * only for real eigenpairs. Defective matrices may have fewer eigenvectors
+ * than eigenvalues.
  */
-export function calculateEigenvalues(matrix: Matrix): number[] | null {
+export function calculateEigen(matrix: Matrix): EigenResult | null {
   try {
     const [rows, cols] = matrix.dimension.split('x').map(Number);
     if (rows !== cols) return null;
-    
-    // Fallback for 2x2 matrices - always use direct calculation
-    if (matrix.dimension === '2x2') {
-      const a = matrix.values[0][0];
-      const b = matrix.values[0][1];
-      const c = matrix.values[1][0];
-      const d = matrix.values[1][1];
-      
-      const trace = a + d;
-      const determinant = a * d - b * c;
-      
-      const discriminant = trace * trace - 4 * determinant;
-      
-      if (discriminant < 0) {
-        // Complex eigenvalues, return real parts
-        return [trace / 2, trace / 2];
-      }
-      
-      const sqrtDiscriminant = Math.sqrt(discriminant);
-      return [
-        (trace + sqrtDiscriminant) / 2, 
-        (trace - sqrtDiscriminant) / 2
-      ];
+
+    const result = math.eigs(matrix.values);
+    const rawValues = (result.values as { valueOf(): unknown[] }).valueOf();
+    const eigenvalues = rawValues.map(toComplex);
+
+    const realEigenpairs: { value: number; vector: number[] }[] = [];
+    for (const pair of result.eigenvectors ?? []) {
+      const value = toComplex(pair.value);
+      if (Math.abs(value.im) > 1e-9) continue;
+
+      const rawVector = (pair.vector as { valueOf(): unknown[] }).valueOf();
+      const components = rawVector.map(toComplex);
+      if (components.some((c) => Math.abs(c.im) > 1e-9)) continue;
+
+      let vector = components.map((c) => c.re);
+      const magnitude = Math.hypot(...vector);
+      if (magnitude < 1e-12) continue;
+      vector = vector.map((x) => x / magnitude);
+
+      realEigenpairs.push({ value: value.re, vector });
     }
-    
-    // For 3x3 matrix, we'll use a simplified approach
-    if (matrix.dimension === '3x3') {
-      // This is an approximation that works for common cases
-      // A full implementation would require solving the characteristic polynomial
-      
-      // Calculate the characteristic polynomial coefficients
-      const m = matrix.values;
-      const a = m[0][0];
-      const b = m[0][1];
-      const c = m[0][2];
-      const d = m[1][0];
-      const e = m[1][1];
-      const f = m[1][2];
-      const g = m[2][0];
-      const h = m[2][1];
-      const i = m[2][2];
-      
-      // Coefficients of characteristic polynomial: λ³ + pλ² + qλ + r = 0
-      const p = -(a + e + i);
-      const q = a*e + a*i + e*i - b*d - c*g - f*h;
-      const r = -(a*e*i + b*f*g + c*d*h - a*f*h - b*d*i - c*e*g);
-      
-      // For a real 3x3 matrix, use diagonal elements as approximation
-      // We're skipping polynomial solving due to math.js compatibility issues
-      console.warn("Using diagonal elements as eigenvalue approximations");
-      return [a, e, i];
-    }
-    
-    return null;
+
+    return { eigenvalues, realEigenpairs };
   } catch (error) {
-    console.error("Error calculating eigenvalues:", error);
+    console.error("Error calculating eigendecomposition:", error);
     return null;
   }
 }
 
 /**
- * Calculate eigenvectors for a given matrix and eigenvalues
- * @param matrix The matrix to analyze
- * @param eigenvalues The eigenvalues of the matrix
- * @returns Array of normalized eigenvectors or null if not computable
- */
-export function calculateEigenvectors(matrix: Matrix, eigenvalues: number[]): number[][] | null {
-  try {
-    const [rows, cols] = matrix.dimension.split('x').map(Number);
-    if (rows !== cols) return null;
-    
-    // Get matrix values
-    const m = matrix.values;
-    
-    // For each eigenvalue, find a corresponding eigenvector
-    const eigenvectors: number[][] = [];
-    
-    for (let i = 0; i < eigenvalues.length; i++) {
-      const lambda = eigenvalues[i];
-      
-      if (matrix.dimension === '2x2') {
-        // For 2x2 matrices
-        const a = m[0][0] - lambda;
-        const b = m[0][1];
-        const c = m[1][0];
-        const d = m[1][1] - lambda;
-        
-        // Find a non-trivial solution to (A - λI)v = 0
-        let v: number[] = [];
-        
-        // Try using first row
-        if (Math.abs(a) > 1e-10 || Math.abs(b) > 1e-10) {
-          // If a ≈ 0, set x = 1 and find y
-          if (Math.abs(a) < 1e-10) {
-            v = [1, 0];
-          } 
-          // If b ≈ 0, set y = 1 and find x
-          else if (Math.abs(b) < 1e-10) {
-            v = [0, 1];
-          }
-          // Otherwise use the first row: ax + by = 0
-          else {
-            v = [-b, a]; // This satisfies ax + by = 0
-          }
-        } 
-        // If first row fails, try second row
-        else if (Math.abs(c) > 1e-10 || Math.abs(d) > 1e-10) {
-          // Similar process with the second row
-          if (Math.abs(c) < 1e-10) {
-            v = [1, 0];
-          } 
-          else if (Math.abs(d) < 1e-10) {
-            v = [0, 1];
-          }
-          else {
-            v = [-d, c];
-          }
-        }
-        
-        // If no solution found, use a default vector
-        if (v.length === 0) {
-          v = [1, 0];
-        }
-        
-        // Normalize the vector
-        const magnitude = Math.sqrt(v[0] * v[0] + v[1] * v[1]);
-        if (magnitude > 0) {
-          v = [v[0] / magnitude, v[1] / magnitude];
-        }
-        
-        eigenvectors.push(v);
-      } 
-      else if (matrix.dimension === '3x3') {
-        // For 3x3 matrices, use a simplified approach
-        // A - λI
-        const a = m[0][0] - lambda;
-        const b = m[0][1];
-        const c = m[0][2];
-        const d = m[1][0];
-        const e = m[1][1] - lambda;
-        const f = m[1][2];
-        const g = m[2][0];
-        const h = m[2][1];
-        const i = m[2][2] - lambda;
-        
-        // Try a simplified approach: Find cross products of rows to get a vector in the null space
-        // Compute cross products of pairs of rows
-        const r1 = [a, b, c];
-        const r2 = [d, e, f];
-        const r3 = [g, h, i];
-        
-        // Cross products
-        const cp12 = [
-          r1[1] * r2[2] - r1[2] * r2[1],
-          r1[2] * r2[0] - r1[0] * r2[2],
-          r1[0] * r2[1] - r1[1] * r2[0]
-        ];
-        const cp13 = [
-          r1[1] * r3[2] - r1[2] * r3[1],
-          r1[2] * r3[0] - r1[0] * r3[2],
-          r1[0] * r3[1] - r1[1] * r3[0]
-        ];
-        const cp23 = [
-          r2[1] * r3[2] - r2[2] * r3[1],
-          r2[2] * r3[0] - r2[0] * r3[2],
-          r2[0] * r3[1] - r2[1] * r3[0]
-        ];
-        
-        // Use the cross product with the largest magnitude
-        let v: number[] = [];
-        const mag12 = Math.sqrt(cp12[0] * cp12[0] + cp12[1] * cp12[1] + cp12[2] * cp12[2]);
-        const mag13 = Math.sqrt(cp13[0] * cp13[0] + cp13[1] * cp13[1] + cp13[2] * cp13[2]);
-        const mag23 = Math.sqrt(cp23[0] * cp23[0] + cp23[1] * cp23[1] + cp23[2] * cp23[2]);
-        
-        if (mag12 >= mag13 && mag12 >= mag23 && mag12 > 1e-10) {
-          v = cp12;
-        } else if (mag13 >= mag12 && mag13 >= mag23 && mag13 > 1e-10) {
-          v = cp13;
-        } else if (mag23 > 1e-10) {
-          v = cp23;
-        } else {
-          // If all cross products are ~0, use a standard basis vector
-          // that's most aligned with eigenvalue position
-          v = i === 0 ? [1, 0, 0] : i === 1 ? [0, 1, 0] : [0, 0, 1];
-        }
-        
-        // Normalize the vector
-        const magnitude = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-        if (magnitude > 0) {
-          v = [v[0] / magnitude, v[1] / magnitude, v[2] / magnitude];
-        }
-        
-        eigenvectors.push(v);
-      }
-    }
-    
-    return eigenvectors;
-  } catch (error) {
-    console.error("Error calculating eigenvectors:", error);
-    return null;
-  }
-}
-
-/**
- * Calculate the singular values of a matrix
- * @param matrix The matrix to analyze
- * @returns Array of singular values or null if calculation fails
+ * Calculate the singular values of a matrix: the square roots of the
+ * eigenvalues of MᵀM (which is symmetric, so its eigenvalues are real).
+ * Works for square and non-square matrices.
  */
 export function calculateSingularValues(matrix: Matrix): number[] | null {
   try {
-    // For a simplified approach, we'll compute the square roots of the eigenvalues
-    // of M^T * M, which gives us the singular values for matrix M
-    const [rows, cols] = matrix.dimension.split('x').map(Number);
-    
-    // Compute M^T (transpose)
-    const mT = Array(cols).fill(0).map(() => Array(rows).fill(0));
-    for (let i = 0; i < rows; i++) {
-      for (let j = 0; j < cols; j++) {
-        mT[j][i] = matrix.values[i][j];
-      }
-    }
-    
-    // Compute M^T * M
-    const mTm = Array(cols).fill(0).map(() => Array(cols).fill(0));
-    for (let i = 0; i < cols; i++) {
-      for (let j = 0; j < cols; j++) {
-        let sum = 0;
-        for (let k = 0; k < rows; k++) {
-          sum += mT[i][k] * matrix.values[k][j];
-        }
-        mTm[i][j] = sum;
-      }
-    }
-    
-    // Try to compute eigenvalues of M^T * M
-    let eigenvalues;
-    
-    if (cols === 2) {
-      // For 2x2
-      const a = mTm[0][0];
-      const b = mTm[0][1];
-      const c = mTm[1][0];
-      const d = mTm[1][1];
-      
-      const trace = a + d;
-      const determinant = a * d - b * c;
-      
-      const discriminant = trace * trace - 4 * determinant;
-      
-      if (discriminant < 0) {
-        eigenvalues = [trace / 2, trace / 2];
-      } else {
-        const sqrtDiscriminant = Math.sqrt(discriminant);
-        eigenvalues = [
-          (trace + sqrtDiscriminant) / 2, 
-          (trace - sqrtDiscriminant) / 2
-        ];
-      }
-    } else if (cols === 3) {
-      // For 3x3, just use diagonal elements as approximation
-      // This is a very rough approximation
-      eigenvalues = [mTm[0][0], mTm[1][1], mTm[2][2]];
-    } else {
-      // For non-square
-      return null;
-    }
-    
-    // Singular values are square roots of eigenvalues of M^T * M
-    const singularValues = eigenvalues
-      .filter(val => val > 0) // Only keep positive eigenvalues
-      .map(val => Math.sqrt(val))
-      .map(val => Math.round(val * 10000) / 10000); // Round to 4 decimal places
-    
-    return singularValues;
+    const a = matrix.values;
+    const ata = math.multiply(math.transpose(a), a) as number[][];
+    const rawValues = (math.eigs(ata).values as { valueOf(): unknown[] }).valueOf();
+
+    return rawValues
+      .map(toComplex)
+      .map((v) => Math.sqrt(Math.max(0, v.re)))
+      .sort((x, y) => y - x)
+      .map((v) => Math.round(v * 10000) / 10000);
   } catch (error) {
     console.error("Error calculating singular values:", error);
     return null;
   }
+}
+
+/**
+ * Interpolate a square matrix with the identity: M(t) = (1-t)·I + t·A.
+ * At t=0 this is the identity (nothing happens), at t=1 the full transform.
+ * Note (1-t)v + t·Av = M(t)v, so lerping transformed points is exactly
+ * equivalent to applying the interpolated matrix.
+ */
+export function interpolateWithIdentity(values: number[][], t: number): number[][] {
+  return values.map((row, i) =>
+    row.map((v, j) => (i === j ? (1 - t) + t * v : t * v))
+  );
 }
 
 /**

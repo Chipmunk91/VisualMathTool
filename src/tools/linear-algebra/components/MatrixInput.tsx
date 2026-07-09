@@ -1,7 +1,10 @@
+import { useEffect, useRef } from "react";
 import { useMatrixStore, MatrixDimension } from "../lib/stores/useMatrixStore";
 import { useVectorStore } from "../lib/stores/useVectorStore";
 import { applyMatrixTransformation } from "../lib/math";
 import { evaluateExpression } from "../lib/mathParser";
+import { getPresets, presetToMatrix } from "../lib/presets";
+import { BASIS_COLORS, BASIS_SYMBOLS } from "../lib/colors";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,16 +12,46 @@ import MatrixAnalysis from "./MatrixAnalysis";
 
 // Extremely simplified component - no side effects
 const MatrixInput = () => {
-  const { 
-    matrix, 
-    updateMatrixValue, 
-    setDimension, 
-    showTransformed, 
-    toggleShowTransformed, 
+  const {
+    matrix,
+    setMatrix,
+    updateMatrixValue,
+    setDimension,
+    showTransformed,
+    toggleShowTransformed,
     showDimensionVisualization,
     toggleDimensionVisualization,
-    transposeMatrix 
+    animationT,
+    setAnimationT,
+    showDeterminantVolume,
+    toggleDeterminantVolume,
+    showTransformedGrid,
+    toggleTransformedGrid,
+    showEigenvectors,
+    toggleEigenvectors,
+    transposeMatrix
   } = useMatrixStore();
+
+  // Play the transformation animation: sweep t from 0 to 1 with easing
+  const animationFrame = useRef<number | null>(null);
+  const playAnimation = () => {
+    if (animationFrame.current !== null) cancelAnimationFrame(animationFrame.current);
+    const duration = 1600;
+    const startTime = performance.now();
+    setAnimationT(0);
+    const step = (now: number) => {
+      const raw = Math.min(1, (now - startTime) / duration);
+      const eased = raw * raw * (3 - 2 * raw); // smoothstep
+      setAnimationT(eased);
+      animationFrame.current = raw < 1 ? requestAnimationFrame(step) : null;
+    };
+    animationFrame.current = requestAnimationFrame(step);
+  };
+  useEffect(() => {
+    return () => {
+      if (animationFrame.current !== null) cancelAnimationFrame(animationFrame.current);
+    };
+  }, []);
 
   // These handlers don't have any side effects beyond the store update
   const handleMatrixChange = (row: number, col: number, value: string) => {
@@ -132,7 +165,33 @@ const MatrixInput = () => {
                 </select>
               </div>
             </div>
-            
+
+            {getPresets(matrix.dimension).length > 0 && (
+              <div>
+                <Label htmlFor="matrix-preset">Preset Transformations</Label>
+                <select
+                  id="matrix-preset"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                  value=""
+                  onChange={(e) => {
+                    const preset = getPresets(matrix.dimension).find((p) => p.id === e.target.value);
+                    if (!preset) return;
+                    setMatrix(presetToMatrix(preset, matrix.dimension));
+                    clearTransformedVectors();
+                  }}
+                >
+                  <option value="" disabled>
+                    Apply a preset…
+                  </option>
+                  {getPresets(matrix.dimension).map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="flex items-center space-x-2">
               <input
                 type="checkbox"
@@ -167,7 +226,39 @@ const MatrixInput = () => {
               />
               <Label htmlFor="show-transformed">Show Transformed Vectors</Label>
             </div>
-            
+
+            {showTransformed && (
+              <div className="rounded-md border border-border p-2 space-y-1">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="animation-t" className="text-xs">
+                    Animate: identity → matrix
+                  </Label>
+                  <button
+                    onClick={playAnimation}
+                    className="rounded bg-primary px-2 py-0.5 text-xs text-primary-foreground"
+                    title="Play the transformation from t=0 (identity) to t=1 (full matrix)"
+                  >
+                    ▶ Play
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="animation-t"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={animationT}
+                    onChange={(e) => setAnimationT(Number(e.target.value))}
+                    className="w-full accent-primary"
+                  />
+                  <span className="w-10 text-right text-xs tabular-nums text-muted-foreground">
+                    t={animationT.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center space-x-2">
               <input
                 type="checkbox"
@@ -178,7 +269,40 @@ const MatrixInput = () => {
               />
               <Label htmlFor="show-dimension-visualization">Visualize Matrix Dimension</Label>
             </div>
-            
+
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="show-determinant-volume"
+                checked={showDeterminantVolume}
+                onChange={toggleDeterminantVolume}
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+              />
+              <Label htmlFor="show-determinant-volume">Determinant Volume (unit cube)</Label>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="show-transformed-grid"
+                checked={showTransformedGrid}
+                onChange={toggleTransformedGrid}
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+              />
+              <Label htmlFor="show-transformed-grid">Transformed Grid (XY-plane)</Label>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="show-eigenvectors"
+                checked={showEigenvectors}
+                onChange={toggleEigenvectors}
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+              />
+              <Label htmlFor="show-eigenvectors">Eigenvector Axes</Label>
+            </div>
+
             <div>
               <Button 
                 onClick={() => {
@@ -262,6 +386,20 @@ const MatrixInput = () => {
         <CardContent className="overflow-y-auto">
           <div className="mb-4 overflow-x-auto">
             <table className="mx-auto border-collapse">
+              <thead>
+                <tr>
+                  {Array.from({ length: cols }).map((_, colIndex) => (
+                    <th
+                      key={colIndex}
+                      className="pb-1 text-center text-xs font-semibold"
+                      style={{ color: BASIS_COLORS[colIndex] }}
+                      title={`Column ${colIndex + 1} is where the basis vector ${BASIS_SYMBOLS[colIndex]} lands`}
+                    >
+                      T({BASIS_SYMBOLS[colIndex]})
+                    </th>
+                  ))}
+                </tr>
+              </thead>
               <tbody>
                 {Array.from({ length: rows }).map((_, rowIndex) => (
                   <tr key={rowIndex}>

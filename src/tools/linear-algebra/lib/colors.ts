@@ -114,3 +114,8 @@ export function getLighterColor(hexColor: string): string {
   // Convert back to hex
   return `#${lighterR.toString(16).padStart(2, '0')}${lighterG.toString(16).padStart(2, '0')}${lighterB.toString(16).padStart(2, '0')}`;
 }
+
+// Colors and symbols for the standard basis vectors î, ĵ, k̂ — used for the
+// basis arrows in the 3D scene and the matrix table column headers
+export const BASIS_COLORS = ["#E11D48", "#16A34A", "#2563EB"];
+export const BASIS_SYMBOLS = ["î", "ĵ", "k̂"];

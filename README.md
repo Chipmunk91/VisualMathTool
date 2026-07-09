@@ -11,10 +11,13 @@ A collection of interactive math visualization tools that turn abstract concepts
 Interactive 3D linear algebra visualization:
 
 - **Interactive 3D Visualization**: Drag and manipulate vectors in real-time 3D space
-- **Matrix Transformations**: Apply linear transformations and watch vectors transform before your eyes
-- **Real-time Analysis**: Instant feedback on vector properties, angles, and relationships
-- **Eigenvalue Decomposition**: Visualize eigenvectors and eigenvalues for square matrices
-- **Singular Value Decomposition**: Understand matrix rank and principal components
+- **Animated Transformations**: Scrub or play the transformation from identity to your matrix and watch space morph continuously
+- **Basis Vectors as Teachers**: î, ĵ, k̂ transform live, and the matrix table's column headers show that each column is exactly where a basis vector lands
+- **Determinant Volume**: The unit cube carried through the transformation — volume = |det|, with an orientation-flip indicator for negative determinants
+- **Transformed Grid**: See the XY-plane grid sheared, rotated, and squashed by the matrix
+- **Eigenvector Axes**: Real eigenvectors drawn as axes in the scene — the directions that only stretch, never rotate
+- **Preset Transformations**: One-click rotation, shear, reflection, projection, and scaling matrices
+- **Real Eigendecomposition & SVD**: Computed with math.js `eigs` — including complex eigenvalues for rotations
 - **Matrix Classification**: Automatic detection of special matrix types (diagonal, symmetric, orthogonal, ...)
 - **Mathematical Expression Support**: Use fractions, powers, and expressions in inputs
 
