@@ -31,6 +31,8 @@ interface LeafTerm {
   pm?: boolean;
   /** num/den is a radicand: the value is √(num/den), display-only */
   radical?: boolean;
+  /** An inverse-function value: fnVal applied to num/den (e.g. arcsin(1/2)), display-only */
+  fnVal?: string;
 }
 
 interface GroupTerm {
@@ -41,7 +43,19 @@ interface GroupTerm {
   inner: LeafTerm[];
 }
 
-type EqTerm = LeafTerm | GroupTerm;
+type FuncName = "sin" | "cos" | "ln" | "exp";
+
+/** A function wrapped around an argument, with a rational coefficient: a·fn(inner) */
+interface FuncTerm {
+  id: string;
+  kind: "func";
+  num: number;
+  den: number;
+  fn: FuncName;
+  inner: LeafTerm[];
+}
+
+type EqTerm = LeafTerm | GroupTerm | FuncTerm;
 
 type Side = "left" | "right";
 
@@ -76,12 +90,27 @@ const group = (num: number, inner: LeafTerm[], den = 1): GroupTerm => ({
   ...reduce(num, den),
   inner: inner.map((l) => leaf(l.num, l.power, l.den)),
 });
+const func = (fn: FuncName, num: number, inner: LeafTerm[], den = 1): FuncTerm => ({
+  id: `t${termCounter++}`,
+  kind: "func",
+  ...reduce(num, den),
+  fn,
+  inner: inner.map((l) => leaf(l.num, l.power, l.den)),
+});
 
 // Scale a term's value: both work identically on leaves and group factors
 const scaleNum = (t: EqTerm, k: number): EqTerm =>
-  t.kind === "leaf" ? leaf(t.num * k, t.power, t.den) : group(t.num * k, t.inner, t.den);
+  t.kind === "leaf"
+    ? leaf(t.num * k, t.power, t.den)
+    : t.kind === "group"
+      ? group(t.num * k, t.inner, t.den)
+      : func(t.fn, t.num * k, t.inner, t.den);
 const scaleDen = (t: EqTerm, k: number): EqTerm =>
-  t.kind === "leaf" ? leaf(t.num, t.power, t.den * k) : group(t.num, t.inner, t.den * k);
+  t.kind === "leaf"
+    ? leaf(t.num, t.power, t.den * k)
+    : t.kind === "group"
+      ? group(t.num, t.inner, t.den * k)
+      : func(t.fn, t.num, t.inner, t.den * k);
 
 const cloneTerm = (t: EqTerm): EqTerm =>
   t.kind === "leaf" ? { ...t } : { ...t, inner: t.inner.map((l) => ({ ...l })) };
@@ -109,6 +138,9 @@ const PRESETS: Preset[] = [
   { name: "x² = 9", make: () => ({ left: [leaf(1, 2)], right: [leaf(9)] }) },
   { name: "x² + 1 = 6", make: () => ({ left: [leaf(1, 2), leaf(1)], right: [leaf(6)] }) },
   { name: "2x² − 6 = 12", make: () => ({ left: [leaf(2, 2), leaf(-6)], right: [leaf(12)] }) },
+  { name: "2sin(x) = 1", make: () => ({ left: [func("sin", 2, [leaf(1, 1)])], right: [leaf(1)] }) },
+  { name: "ln(x) = 2", make: () => ({ left: [func("ln", 1, [leaf(1, 1)])], right: [leaf(2)] }) },
+  { name: "eˣ + 1 = 4", make: () => ({ left: [func("exp", 1, [leaf(1, 1)]), leaf(1)], right: [leaf(4)] }) },
 ];
 
 /**
@@ -117,13 +149,17 @@ const PRESETS: Preset[] = [
  * Groups are kept as-is otherwise — distribution is the player's move.
  */
 function combine(terms: EqTerm[]): EqTerm[] {
-  const groups: GroupTerm[] = [];
+  const passthrough: EqTerm[] = [];
   const leaves: LeafTerm[] = [];
   for (const t of terms) {
     if (t.kind === "group") {
       if (t.num === 0) continue;
       if (t.num === 1 && t.den === 1) leaves.push(...t.inner.map((l) => leaf(l.num, l.power, l.den)));
-      else groups.push(group(t.num, t.inner, t.den));
+      else passthrough.push(group(t.num, t.inner, t.den));
+    } else if (t.kind === "func") {
+      if (t.num !== 0) passthrough.push(func(t.fn, t.num, t.inner, t.den));
+    } else if (t.pm || t.radical || t.fnVal) {
+      passthrough.push({ ...t }); // terminal values never merge
     } else {
       leaves.push(t);
     }
@@ -135,7 +171,7 @@ function combine(terms: EqTerm[]): EqTerm[] {
     const s = sum(leaves.filter((t) => t.power === power));
     if (s.num !== 0) merged.push(leaf(s.num, power, s.den));
   }
-  const result: EqTerm[] = [...groups, ...merged];
+  const result: EqTerm[] = [...passthrough, ...merged];
   if (result.length === 0) result.push(leaf(0));
   return result;
 }
@@ -146,17 +182,24 @@ function termText(t: EqTerm, leading: boolean): string {
   const prefix = leading ? (t.num < 0 ? "−" : "") : ` ${sign} `;
   const mag = Math.abs(t.num);
   const coefStr = mag === 1 && t.den === 1 ? "" : t.den === 1 ? String(mag) : `(${mag}/${t.den})`;
-  if (t.kind === "leaf" && (t.pm || t.radical)) {
-    const core = t.radical
-      ? `√${t.den === 1 ? t.num : `(${t.num}/${t.den})`}`
-      : t.den === 1
-        ? String(t.num)
-        : `${t.num}/${t.den}`;
+  if (t.kind === "leaf" && (t.pm || t.radical || t.fnVal)) {
+    const arg = t.den === 1 ? String(t.num) : `${t.num}/${t.den}`;
+    const core = t.fnVal
+      ? t.fnVal === "e^"
+        ? `e^${arg}`
+        : t.fnVal === "ln"
+          ? `ln ${arg}`
+          : `${t.fnVal}(${arg})`
+      : t.radical
+        ? `√${t.den === 1 ? t.num : `(${t.num}/${t.den})`}`
+        : arg;
     return prefix + `${t.pm ? "±" : ""}${core}`;
   }
   let body: string;
   if (t.kind === "group") {
     body = `${coefStr}(${innerText(t.inner)})`;
+  } else if (t.kind === "func") {
+    body = t.fn === "exp" ? `${coefStr}e^(${innerText(t.inner)})` : `${coefStr}${t.fn}(${innerText(t.inner)})`;
   } else if (t.power === 1 || t.power === 2) {
     body = `${coefStr}x${t.power === 2 ? "²" : ""}`;
   } else if (t.power === 0) {
@@ -176,21 +219,24 @@ interface Step {
   label: string;
   note?: string;
   dangerous?: boolean;
+  /** A standing assumption this step introduced (e.g. "x ≠ 0", "principal value") */
+  pill?: string;
   state: EquationState;
   text: string;
 }
 
 let stepCounter = 0;
-const makeStep = (label: string, state: EquationState, dangerous?: boolean, note?: string): Step => ({
+const makeStep = (label: string, state: EquationState, dangerous?: boolean, note?: string, pill?: string): Step => ({
   id: stepCounter++,
   label,
   note,
   dangerous,
+  pill,
   state: cloneState(state),
   text: equationText(state),
 });
 
-type Role = "term" | "coef" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp";
+type Role = "term" | "coef" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn";
 
 interface SymbolHandlers {
   dragStart: (e: DragEvent, termId: string, side: Side, role: Role) => void;
@@ -335,8 +381,12 @@ const EquationBuilderTool = () => {
 
   const { left, right } = equation;
 
-  // The "dangerous switch": some step divided/multiplied by x, so x ≠ 0 is assumed
-  const xNonZeroAssumed = useMemo(() => history.some((s) => s.dangerous), [history]);
+  // The "dangerous switches": standing assumptions introduced by past steps
+  const assumptions = useMemo(
+    () => Array.from(new Set(history.map((s) => s.pill).filter((p): p is string => !!p))),
+    [history]
+  );
+  const xNonZeroAssumed = assumptions.includes("x ≠ 0");
 
   const flashNotice = (message: string) => {
     setNotice(message);
@@ -344,9 +394,9 @@ const EquationBuilderTool = () => {
     noticeTimer.current = setTimeout(() => setNotice(null), 2800);
   };
 
-  const commitMove = (label: string, next: EquationState, dangerous?: boolean, note?: string) => {
+  const commitMove = (label: string, next: EquationState, dangerous?: boolean, note?: string, pill?: string) => {
     setEquation(next);
-    setHistory((h) => [...h, makeStep(label, next, dangerous, note)]);
+    setHistory((h) => [...h, makeStep(label, next, dangerous, note, pill)]);
     setSelection(null);
     setNotice(null);
   };
@@ -391,19 +441,24 @@ const EquationBuilderTool = () => {
   }, [left, right]);
 
   const solvedTerm = solved ? ((left[0].kind === "leaf" && left[0].power === 1 ? right : left)[0] as LeafTerm) : null;
+  const solvedArg = solvedTerm ? (solvedTerm.den === 1 ? String(solvedTerm.num) : `${solvedTerm.num}/${solvedTerm.den}`) : "";
   const solvedValue = solvedTerm
     ? `${solvedTerm.pm ? "±" : ""}${
-        solvedTerm.radical
-          ? `√${solvedTerm.den === 1 ? solvedTerm.num : `(${solvedTerm.num}/${solvedTerm.den})`}`
-          : solvedTerm.den === 1
-            ? String(solvedTerm.num)
-            : `${solvedTerm.num}/${solvedTerm.den}`
+        solvedTerm.fnVal
+          ? solvedTerm.fnVal === "e^"
+            ? `e^${solvedArg}`
+            : solvedTerm.fnVal === "ln"
+              ? `ln ${solvedArg}`
+              : `${solvedTerm.fnVal}(${solvedArg})`
+          : solvedTerm.radical
+            ? `√${solvedTerm.den === 1 ? solvedTerm.num : `(${solvedTerm.num}/${solvedTerm.den})`}`
+            : solvedArg
       }`
     : null;
   const solvedContradiction = solved && solvedTerm?.num === 0 && xNonZeroAssumed;
 
   // ± / radical results are an end state: no further arithmetic is defined on them
-  const hasTerminal = [...left, ...right].some((t) => t.kind === "leaf" && (t.pm || t.radical));
+  const hasTerminal = [...left, ...right].some((t) => t.kind === "leaf" && (t.pm || t.radical || t.fnVal));
   const guardTerminal = () => {
     if (hasTerminal) {
       flashNotice("± roots are an end state — rewind from the history menu to try another path.");
@@ -506,13 +561,17 @@ const EquationBuilderTool = () => {
       flashNotice("Distribute the parentheses first.");
       return;
     }
+    if ([...equation.left, ...equation.right].some((t) => t.kind === "func")) {
+      flashNotice("Unwrap the function first.");
+      return;
+    }
     if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power === -1)) {
       flashNotice("That would nest x deeper than this playground supports (x² in a denominator).");
       return;
     }
     const divide = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power - 1) as Power, t.den) : t);
     const next = { left: combine(equation.left.map(divide)), right: combine(equation.right.map(divide)) };
-    commitMove("divided both sides by x", next, true, "assumes x ≠ 0 — a solution x = 0 would be lost");
+    commitMove("divided both sides by x", next, true, "assumes x ≠ 0 — a solution x = 0 would be lost", "x ≠ 0");
   };
 
   /** Multiply both sides by x: every power rises by one. Hides the original x ≠ 0 domain. */
@@ -525,13 +584,17 @@ const EquationBuilderTool = () => {
       flashNotice("Distribute the parentheses first.");
       return;
     }
+    if ([...equation.left, ...equation.right].some((t) => t.kind === "func")) {
+      flashNotice("Unwrap the function first.");
+      return;
+    }
     if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power >= 1)) {
       flashNotice("That would raise a power beyond this playground (for now).");
       return;
     }
     const multiply = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power + 1) as Power, t.den) : t);
     const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
-    commitMove("multiplied both sides by x", next, true, "the original equation required x ≠ 0 — that rule is now invisible");
+    commitMove("multiplied both sides by x", next, true, "the original equation required x ≠ 0 — that rule is now invisible", "x ≠ 0");
   };
 
   /** Take the square root of both sides: x² = c → x = ±√c (both roots kept) */
@@ -552,7 +615,7 @@ const EquationBuilderTool = () => {
       return;
     }
     const other = equation[to];
-    if (other.length !== 1 || other[0].kind !== "leaf" || other[0].power !== 0) {
+    if (other.length !== 1 || other[0].kind !== "leaf" || other[0].power !== 0 || other[0].pm || other[0].radical || other[0].fnVal) {
       flashNotice("Gather everything else on the other side first.");
       return;
     }
@@ -575,6 +638,72 @@ const EquationBuilderTool = () => {
     }
     const next = { ...equation, [from]: [leaf(1, 1)], [to]: [result] } as EquationState;
     commitMove("took the square root of both sides", next, false, "keeping ± — both roots survive");
+  };
+
+  /** Unwrap a function by applying its inverse to both sides: fn(x) = c → x = fn⁻¹(c) */
+  const unwrapFunction = (termId: string, from: Side, to: Side) => {
+    if (from === to) return;
+    const source = equation[from].find((t) => t.id === termId);
+    if (!source || source.kind !== "func") return;
+    if (equation[from].length !== 1) {
+      flashNotice("Move the other terms away first — the function must be alone on its side.");
+      return;
+    }
+    if (!(source.num === 1 && source.den === 1)) {
+      flashNotice(
+        source.num < 0
+          ? "Flip the sign of both sides first — the inverse needs a bare function."
+          : "Divide away the coefficient first — the inverse needs a bare function."
+      );
+      return;
+    }
+    const other = equation[to];
+    if (other.length !== 1 || other[0].kind !== "leaf" || other[0].power !== 0 || other[0].pm || other[0].radical || other[0].fnVal) {
+      flashNotice("Gather a single plain number on the other side first.");
+      return;
+    }
+    const c = other[0];
+    if (source.fn === "exp" && c.num <= 0) {
+      flashNotice("e^x is always positive — it can never equal a number ≤ 0.");
+      return;
+    }
+    if ((source.fn === "sin" || source.fn === "cos") && Math.abs(c.num / c.den) > 1) {
+      flashNotice(`${source.fn} never leaves [−1, 1] — no solution here.`);
+      return;
+    }
+    const INVERSE: Record<FuncName, string> = { sin: "arcsin", cos: "arccos", ln: "e^", exp: "ln" };
+    const LABEL: Record<FuncName, string> = {
+      sin: "applied arcsin to both sides",
+      cos: "applied arccos to both sides",
+      ln: "exponentiated both sides (e to each side)",
+      exp: "took the natural log of both sides",
+    };
+    // Exact special values keep the result rational
+    let result: LeafTerm;
+    if (
+      (source.fn === "exp" && c.num === 1 && c.den === 1) ||
+      (source.fn === "sin" && c.num === 0) ||
+      (source.fn === "cos" && c.num === 1 && c.den === 1)
+    ) {
+      result = leaf(0);
+    } else if (source.fn === "ln" && c.num === 0) {
+      result = leaf(1);
+    } else {
+      result = { ...leaf(c.num, 0, c.den), fnVal: INVERSE[source.fn] };
+    }
+    const isTrig = source.fn === "sin" || source.fn === "cos";
+    const next = {
+      ...equation,
+      [from]: combine(source.inner.map((l) => leaf(l.num, l.power, l.den))),
+      [to]: [result],
+    } as EquationState;
+    commitMove(
+      LABEL[source.fn],
+      next,
+      isTrig,
+      isTrig ? "principal value only — the periodic solutions are dropped" : undefined,
+      isTrig ? "principal value" : undefined
+    );
   };
 
   const loadPreset = (index: number) => {
@@ -644,7 +773,8 @@ const EquationBuilderTool = () => {
     | { kind: "xdiv"; termId: string; from: Side }
     | { kind: "xmul"; termId: string; from: Side }
     | { kind: "factor"; termId: string; from: Side }
-    | { kind: "exp"; termId: string; from: Side };
+    | { kind: "exp"; termId: string; from: Side }
+    | { kind: "fn"; termId: string; from: Side };
 
   // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
   // location can route to the opposite side and the target ring is accurate
@@ -668,6 +798,7 @@ const EquationBuilderTool = () => {
     else if (role === "xmul") startDrag(e, { kind: "xmul", termId, from: side });
     else if (role === "factor") startDrag(e, { kind: "factor", termId, from: side });
     else if (role === "exp") startDrag(e, { kind: "exp", termId, from: side });
+    else if (role === "fn") startDrag(e, { kind: "fn", termId, from: side });
     else startDrag(e, { kind: "terms", ids: [termId], from: side });
   };
 
@@ -686,6 +817,7 @@ const EquationBuilderTool = () => {
     else if (payload.kind === "xdiv") divideByX(payload.termId, payload.from, to);
     else if (payload.kind === "xmul") multiplyByX(payload.termId, payload.from, to);
     else if (payload.kind === "exp") takeSquareRoot(payload.termId, payload.from, to);
+    else if (payload.kind === "fn") unwrapFunction(payload.termId, payload.from, to);
   };
 
   const onDrop = (e: DragEvent, to: Side) => {
@@ -840,20 +972,32 @@ const EquationBuilderTool = () => {
             </span>
           );
         }
-        // ± / radical results are terminal — display-only
-        if (t.kind === "leaf" && (t.pm || t.radical)) {
+        // ± / radical / inverse-function results are terminal — display-only
+        if (t.kind === "leaf" && (t.pm || t.radical || t.fnVal)) {
+          const arg = t.den === 1 ? String(t.num) : `${t.num}/${t.den}`;
           return (
             <span key={t.id} className="inline-flex select-none items-center">
               {t.pm && <span className="mr-2">±</span>}
               {t.radical ? (
                 <span className="inline-flex items-baseline">
                   <span>√</span>
-                  <span className="border-t-[0.06em] border-current pt-[0.04em]">
-                    {t.den === 1 ? t.num : `${t.num}/${t.den}`}
-                  </span>
+                  <span className="border-t-[0.06em] border-current pt-[0.04em]">{arg}</span>
+                </span>
+              ) : t.fnVal === "e^" ? (
+                <span className="inline-flex items-center">
+                  <span className="italic">e</span>
+                  <span className="mt-[0.08em] self-start text-[0.5em] leading-none">{arg}</span>
+                </span>
+              ) : t.fnVal === "ln" ? (
+                <span>
+                  ln&thinsp;{arg}
+                </span>
+              ) : t.fnVal ? (
+                <span className="inline-flex items-center">
+                  <span className="mr-1 text-[0.7em]">{t.fnVal}</span>({arg})
                 </span>
               ) : (
-                <span>{t.den === 1 ? t.num : `${t.num}/${t.den}`}</span>
+                <span>{arg}</span>
               )}
             </span>
           );
@@ -965,6 +1109,101 @@ const EquationBuilderTool = () => {
           );
         }
 
+        if (t.kind === "func") {
+          const coefMag = Math.abs(t.num);
+          const showCoef = !(coefMag === 1 && t.den === 1);
+          const fnTitle = "Drag across the equals sign to apply the inverse function to both sides";
+          const inner = t.inner.map((l, j) => (
+            <span key={l.id} className="inline-flex items-center">
+              {(j > 0 || l.num < 0) && (
+                <Sym
+                  termId={t.id}
+                  side={side}
+                  role="term"
+                  highlighted={highlighted}
+                  handlers={symHandlers}
+                  className={j > 0 ? "mx-3" : "mr-0.5"}
+                >
+                  {j > 0 ? (l.num < 0 ? "−" : "+") : "−"}
+                </Sym>
+              )}
+              {renderLeafBody(l, side, highlighted, { termId: t.id, inert: true })}
+            </span>
+          ));
+          return (
+            <span key={t.id} className="inline-flex items-center">
+              {(i > 0 || t.num < 0) && sign}
+              {showCoef &&
+                (t.den === 1 ? (
+                  <Sym
+                    termId={t.id}
+                    side={side}
+                    role="coef"
+                    highlighted={highlighted}
+                    blue
+                    handlers={symHandlers}
+                    title="Drag across the equals sign to divide both sides — the function must be alone on its side"
+                  >
+                    {coefMag}
+                  </Sym>
+                ) : (
+                  <Fraction
+                    termId={t.id}
+                    side={side}
+                    highlighted={highlighted}
+                    numText={coefMag}
+                    numRole="coef"
+                    numBlue
+                    denNumber={t.den}
+                    denX={false}
+                    handlers={symHandlers}
+                  />
+                ))}
+              {t.fn === "exp" ? (
+                <>
+                  <Sym
+                    termId={t.id}
+                    side={side}
+                    role="fn"
+                    highlighted={highlighted}
+                    blue
+                    handlers={symHandlers}
+                    title={fnTitle}
+                    className="italic"
+                  >
+                    e
+                  </Sym>
+                  <span className="mt-[0.08em] inline-flex items-center self-start text-[0.5em] leading-none">
+                    {inner}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Sym
+                    termId={t.id}
+                    side={side}
+                    role="fn"
+                    highlighted={highlighted}
+                    blue
+                    handlers={symHandlers}
+                    title={fnTitle}
+                    className="mr-1 text-[0.7em]"
+                  >
+                    {t.fn}
+                  </Sym>
+                  <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+                    (
+                  </Sym>
+                  {inner}
+                  <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+                    )
+                  </Sym>
+                </>
+              )}
+            </span>
+          );
+        }
+
         return (
           <span key={t.id} className="inline-flex items-center">
             {(i > 0 || t.num < 0) && sign}
@@ -1054,28 +1293,31 @@ const EquationBuilderTool = () => {
         ) : solved ? (
           <span className="font-medium text-emerald-600">Solved — x = {solvedValue}</span>
         ) : null}
-        {xNonZeroAssumed && !solvedContradiction && (
-          <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
-            assuming x ≠ 0
-          </span>
-        )}
+        {!solvedContradiction &&
+          assumptions.map((assumption) => (
+            <span
+              key={assumption}
+              className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+            >
+              {assumption === "x ≠ 0" ? "assuming x ≠ 0" : assumption}
+            </span>
+          ))}
       </div>
 
       {/* Presets + reset, kept out of the way */}
       <div className="absolute bottom-6 flex flex-wrap items-center justify-center gap-2 px-4" data-ui>
-        {PRESETS.map((preset, i) => (
-          <button
-            key={preset.name}
-            onClick={() => loadPreset(i)}
-            className={`rounded-full border px-3 py-1 font-serif text-sm transition-colors ${
-              i === presetIndex
-                ? "border-foreground/40 bg-muted"
-                : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
-            }`}
-          >
-            {preset.name}
-          </button>
-        ))}
+        <select
+          value={presetIndex}
+          onChange={(e) => loadPreset(Number(e.target.value))}
+          className="rounded-full border border-border bg-background px-3 py-1 font-serif text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+          title="Choose an equation"
+        >
+          {PRESETS.map((preset, i) => (
+            <option key={preset.name} value={i}>
+              {preset.name}
+            </option>
+          ))}
+        </select>
         <button
           onClick={() => loadPreset(presetIndex)}
           className="rounded-full border border-border px-3 py-1 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
