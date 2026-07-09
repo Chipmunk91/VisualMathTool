@@ -1,10 +1,12 @@
-import { useMemo, useState, DragEvent } from "react";
+import { useMemo, useRef, useState, DragEvent, PointerEvent as ReactPointerEvent } from "react";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
- * objects. Hover a term to highlight it; drag it across the equals sign
- * and its sign flips (like moving terms when solving by hand). When the
- * equation reaches a·x = b, click the coefficient to divide both sides.
+ * objects. Hovering highlights the symbol itself (not a block). Dragging
+ * on empty space sweeps a selection region: symbols inside it light up as
+ * a selected block that can be dragged across the equals sign together.
+ * Crossing the equals sign flips signs; at a·x = b the coefficient is
+ * clickable to divide both sides.
  */
 
 interface Term {
@@ -62,12 +64,41 @@ function formatNumber(value: number): string {
   return value.toFixed(2);
 }
 
-/** The magnitude part of a term ("2x", "x", "7") — sign is rendered separately */
-function termBody(t: Term): string {
-  const mag = Math.abs(t.coef);
-  if (!t.hasX) return formatNumber(mag);
-  if (mag === 1) return "x";
-  return `${formatNumber(mag)}x`;
+/** One term broken into visual symbols: sign/operator, coefficient, variable */
+interface SymbolSpec {
+  key: string;
+  termId: string;
+  text: string;
+  kind: "op" | "num" | "var";
+  isCoef?: boolean; // the coefficient of an x-term (divide target)
+}
+
+function sideSymbols(terms: Term[]): SymbolSpec[] {
+  const symbols: SymbolSpec[] = [];
+  terms.forEach((t, i) => {
+    if (i > 0) {
+      symbols.push({ key: `${t.id}-op`, termId: t.id, text: t.coef < 0 ? "−" : "+", kind: "op" });
+    } else if (t.coef < 0) {
+      symbols.push({ key: `${t.id}-neg`, termId: t.id, text: "−", kind: "op" });
+    }
+    const mag = Math.abs(t.coef);
+    if (t.hasX) {
+      if (mag !== 1) {
+        symbols.push({ key: `${t.id}-coef`, termId: t.id, text: formatNumber(mag), kind: "num", isCoef: true });
+      }
+      symbols.push({ key: `${t.id}-x`, termId: t.id, text: "x", kind: "var" });
+    } else {
+      symbols.push({ key: `${t.id}-num`, termId: t.id, text: formatNumber(mag), kind: "num" });
+    }
+  });
+  return symbols;
+}
+
+interface Marquee {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
 
 const EquationBuilderTool = () => {
@@ -75,6 +106,9 @@ const EquationBuilderTool = () => {
   const [equation, setEquation] = useState<EquationState>(() => PRESETS[0].make());
   const [dragOver, setDragOver] = useState<Side | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [selection, setSelection] = useState<{ side: Side; termIds: string[] } | null>(null);
+  const [marquee, setMarquee] = useState<Marquee | null>(null);
+  const equationRef = useRef<HTMLDivElement>(null);
 
   const { left, right } = equation;
 
@@ -102,18 +136,20 @@ const EquationBuilderTool = () => {
     ? formatNumber((left[0].hasX ? right : left)[0].coef)
     : null;
 
-  const moveTerm = (id: string, from: Side, to: Side) => {
+  const moveTerms = (ids: string[], from: Side, to: Side) => {
     if (from === to) return;
     setEquation((prev) => {
       const source = [...prev[from]];
-      const index = source.findIndex((t) => t.id === id);
-      if (index === -1) return prev;
-      const [moved] = source.splice(index, 1);
-      // Keep "0" on a side that just lost its last term
-      const target = [...prev[to], term(-moved.coef, moved.hasX)];
-      const next = { ...prev, [from]: combine(source), [to]: combine(target) };
-      return next;
+      const moved: Term[] = [];
+      for (const id of ids) {
+        const index = source.findIndex((t) => t.id === id);
+        if (index !== -1) moved.push(...source.splice(index, 1));
+      }
+      if (moved.length === 0) return prev;
+      const target = [...prev[to], ...moved.map((m) => term(-m.coef, m.hasX))];
+      return { ...prev, [from]: combine(source), [to]: combine(target) } as EquationState;
     });
+    setSelection(null);
   };
 
   const divideBoth = () => {
@@ -128,16 +164,68 @@ const EquationBuilderTool = () => {
         [constSide]: [term(prev[constSide][0].coef / a)],
       } as EquationState;
     });
+    setSelection(null);
   };
 
   const loadPreset = (index: number) => {
     setPresetIndex(index);
     setEquation(PRESETS[index].make());
+    setSelection(null);
   };
 
-  // --- Drag & drop ---
-  const onDragStart = (e: DragEvent, id: string, from: Side) => {
-    e.dataTransfer.setData("text/plain", JSON.stringify({ id, from }));
+  // --- Marquee (drag-to-select a block of symbols on empty space) ---
+  const onBackgroundPointerDown = (e: ReactPointerEvent) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("[data-symbol]")) return; // symbol drags are HTML5 dnd
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    setSelection(null);
+
+    const move = (ev: PointerEvent) => {
+      setMarquee({ x0, y0, x1: ev.clientX, y1: ev.clientY });
+    };
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setMarquee(null);
+
+      const rect = {
+        left: Math.min(x0, ev.clientX),
+        right: Math.max(x0, ev.clientX),
+        top: Math.min(y0, ev.clientY),
+        bottom: Math.max(y0, ev.clientY),
+      };
+      // A tiny sweep is just a click — clear selection and stop
+      if (rect.right - rect.left < 8 && rect.bottom - rect.top < 8) return;
+
+      // Collect the terms whose symbols intersect the region, per side
+      const hits: Record<Side, Set<string>> = { left: new Set(), right: new Set() };
+      const spans = equationRef.current?.querySelectorAll<HTMLElement>("[data-symbol]") ?? [];
+      spans.forEach((span) => {
+        const b = span.getBoundingClientRect();
+        const overlaps = b.left < rect.right && b.right > rect.left && b.top < rect.bottom && b.bottom > rect.top;
+        if (!overlaps) return;
+        const side = span.dataset.side as Side;
+        const termId = span.dataset.termId;
+        if (side && termId) hits[side].add(termId);
+      });
+
+      // A block lives on one side of the equation — take the side with more hits
+      const side: Side = hits.left.size >= hits.right.size ? "left" : "right";
+      if (hits[side].size === 0) return;
+      setSelection({ side, termIds: Array.from(hits[side]) });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  // --- Drag & drop of symbols / selected blocks ---
+  const onSymbolDragStart = (e: DragEvent, termId: string, side: Side) => {
+    const ids =
+      selection && selection.side === side && selection.termIds.includes(termId)
+        ? selection.termIds
+        : [termId];
+    e.dataTransfer.setData("text/plain", JSON.stringify({ ids, from: side }));
     setDragging(true);
   };
   const onDrop = (e: DragEvent, to: Side) => {
@@ -145,81 +233,81 @@ const EquationBuilderTool = () => {
     setDragOver(null);
     setDragging(false);
     try {
-      const { id, from } = JSON.parse(e.dataTransfer.getData("text/plain"));
-      moveTerm(id, from, to);
+      const { ids, from } = JSON.parse(e.dataTransfer.getData("text/plain"));
+      moveTerms(ids, from, to);
     } catch {
-      // not a term drag — ignore
+      // not a symbol drag — ignore
     }
   };
 
-  const renderSide = (terms: Term[], side: Side) => (
-    <span
-      className={`inline-flex items-baseline gap-3 rounded-xl px-3 py-1 transition-colors ${
-        dragOver === side ? "bg-amber-100/80 ring-2 ring-amber-300" : dragging ? "bg-muted/60" : ""
-      }`}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragOver(side);
-      }}
-      onDragLeave={() => setDragOver((cur) => (cur === side ? null : cur))}
-      onDrop={(e) => onDrop(e, side)}
-    >
-      {terms.map((t, i) => {
-        const isDivideCoef = divideCandidate?.xSide === side && t.hasX;
-        return (
-          <span key={t.id} className="inline-flex items-baseline gap-3">
-            {/* Operator between terms; leading minus is part of the first term */}
-            {i > 0 && <span className="select-none text-muted-foreground">{t.coef < 0 ? "−" : "+"}</span>}
+  const renderSide = (terms: Term[], side: Side) => {
+    const symbols = sideSymbols(terms);
+    return (
+      <span
+        className={`inline-flex items-baseline rounded-xl px-2 py-1 transition-shadow ${
+          dragOver === side ? "ring-2 ring-amber-300" : dragging ? "ring-1 ring-border" : ""
+        }`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(side);
+        }}
+        onDragLeave={() => setDragOver((cur) => (cur === side ? null : cur))}
+        onDrop={(e) => onDrop(e, side)}
+      >
+        {symbols.map((sym) => {
+          const isSelected = selection?.side === side && selection.termIds.includes(sym.termId);
+          const isDivideCoef = sym.isCoef && divideCandidate?.xSide === side;
+          const base =
+            "cursor-grab select-none transition-colors duration-150 active:cursor-grabbing";
+          const spacing = sym.kind === "op" ? "mx-4" : "";
+          const italic = sym.kind === "var" ? "italic" : "";
+          const color = isDivideCoef
+            ? "text-sky-600 underline decoration-sky-300 decoration-2 underline-offset-8 hover:text-sky-500 cursor-pointer"
+            : isSelected
+              ? "text-amber-500"
+              : "hover:text-amber-500";
+          return (
             <span
+              key={sym.key}
+              data-symbol
+              data-term-id={sym.termId}
+              data-side={side}
               draggable
-              onDragStart={(e) => onDragStart(e, t.id, side)}
+              onDragStart={(e) => onSymbolDragStart(e, sym.termId, side)}
               onDragEnd={() => {
                 setDragging(false);
                 setDragOver(null);
               }}
-              title="Drag me to the other side of the equals sign"
-              className="cursor-grab select-none rounded-lg px-1 transition-colors duration-150 hover:bg-amber-100 hover:text-amber-600 active:cursor-grabbing"
+              onClick={isDivideCoef ? (e) => { e.stopPropagation(); divideBoth(); } : undefined}
+              title={
+                isDivideCoef
+                  ? `Click to divide both sides by ${sym.text}`
+                  : "Drag across the equals sign — or sweep empty space to select a block"
+              }
+              className={`${base} ${spacing} ${italic} ${color}`}
             >
-              {i === 0 && t.coef < 0 && "−"}
-              {isDivideCoef && Math.abs(t.coef) !== 1 ? (
-                <>
-                  <span
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      divideBoth();
-                    }}
-                    title={`Click to divide both sides by ${formatNumber(Math.abs(t.coef))}`}
-                    className="cursor-pointer rounded px-0.5 text-sky-600 underline decoration-sky-300 decoration-2 underline-offset-8 transition-colors hover:bg-sky-100"
-                  >
-                    {formatNumber(Math.abs(t.coef))}
-                  </span>
-                  <span className="italic">x</span>
-                </>
-              ) : t.hasX ? (
-                <>
-                  {Math.abs(t.coef) !== 1 && formatNumber(Math.abs(t.coef))}
-                  <span className="italic">x</span>
-                </>
-              ) : (
-                termBody(t)
-              )}
+              {sym.text}
             </span>
-          </span>
-        );
-      })}
-    </span>
-  );
+          );
+        })}
+      </span>
+    );
+  };
 
   return (
-    <div className="relative flex h-full w-full flex-col items-center justify-center bg-background text-foreground">
+    <div
+      className="relative flex h-full w-full flex-col items-center justify-center bg-background text-foreground"
+      onPointerDown={onBackgroundPointerDown}
+    >
       {/* The equation */}
       <div
+        ref={equationRef}
         className={`font-serif text-6xl tracking-wide transition-colors duration-300 sm:text-7xl ${
           solved ? "text-emerald-600" : ""
         }`}
       >
         {renderSide(left, "left")}
-        <span className="mx-4 select-none">=</span>
+        <span className="mx-5 select-none">=</span>
         {renderSide(right, "right")}
       </div>
 
@@ -231,8 +319,12 @@ const EquationBuilderTool = () => {
           <span>
             Click the <span className="text-sky-600">coefficient</span> to divide both sides.
           </span>
+        ) : selection ? (
+          <span>
+            <span className="text-amber-500">Block selected</span> — drag it across the equals sign.
+          </span>
         ) : (
-          <span>Drag a term across the equals sign — its sign flips.</span>
+          <span>Drag a symbol across the equals sign, or sweep empty space to select a block.</span>
         )}
       </div>
 
@@ -259,6 +351,19 @@ const EquationBuilderTool = () => {
           ↺ Reset
         </button>
       </div>
+
+      {/* Marquee rectangle while sweeping */}
+      {marquee && (
+        <div
+          className="pointer-events-none fixed z-50 rounded border border-amber-400 bg-amber-200/20"
+          style={{
+            left: Math.min(marquee.x0, marquee.x1),
+            top: Math.min(marquee.y0, marquee.y1),
+            width: Math.abs(marquee.x1 - marquee.x0),
+            height: Math.abs(marquee.y1 - marquee.y0),
+          }}
+        />
+      )}
     </div>
   );
 };
