@@ -3,17 +3,16 @@ import { History, TriangleAlert } from "lucide-react";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
- * objects. Hover highlights the symbol itself; sweeping empty space
- * selects a block. Moves:
- *   - drag a term across "=" → it moves with its sign flipped
- *   - drag the (blue) coefficient of a lone a·x across → divides both sides
- *   - drag a fraction's denominator across → multiplies both sides
- *   - drag the x of a lone x-term across → divides both sides by x
- *     (dangerous: assumes x ≠ 0 — remembered in the step history)
- *   - drag an x out of a denominator → multiplies both sides by x
- * Every move is recorded in a step history behind the ⏱ menu; steps that
- * assume x ≠ 0 are flagged, and a solution of x = 0 under that assumption
- * is called out as invalid.
+ * objects. Every glyph does literally what it is:
+ *   - a term (grabbed by its sign, number, or x) crosses "=" with its sign flipped
+ *   - a numeral in coefficient position divides both sides by that number
+ *   - a leading "−" on a lone term flips the sign of both sides
+ *   - a fraction's denominator multiplies both sides by it
+ *   - the x of a lone x-term divides both sides by x (dangerous: assumes
+ *     x ≠ 0 — remembered in the step history)
+ *   - an x in a denominator multiplies both sides by x
+ * Drops anywhere route to the opposite side; dropping back on the source
+ * side cancels. Every move lands in the step history behind the menu.
  */
 
 // Terms are (num/den) · x^power with den > 0, reduced, power ∈ {-1, 0, 1}
@@ -27,6 +26,8 @@ interface Term {
 }
 
 type Side = "left" | "right";
+
+const opposite = (side: Side): Side => (side === "left" ? "right" : "left");
 
 interface EquationState {
   left: Term[];
@@ -121,7 +122,7 @@ const makeStep = (label: string, state: EquationState, dangerous?: boolean, note
   text: equationText(state),
 });
 
-type Role = "term" | "coef" | "den" | "xdiv" | "xmul";
+type Role = "term" | "coef" | "den" | "xdiv" | "xmul" | "neg";
 
 interface SymbolHandlers {
   dragStart: (e: DragEvent, termId: string, side: Side, role: Role) => void;
@@ -172,15 +173,47 @@ interface FractionProps {
   side: Side;
   highlighted: boolean;
   numText: string | number;
+  numRole?: Role;
+  numBlue?: boolean;
+  numTitle?: string;
   denNumber: number | null;
   denX: boolean;
   handlers: SymbolHandlers;
 }
 
-/** Stacked fraction, sized and centered to sit on the equation's math axis */
-const Fraction = ({ termId, side, highlighted, numText, denNumber, denX, handlers }: FractionProps) => (
-  <span className="mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
-    <Sym termId={termId} side={side} role="term" highlighted={highlighted} handlers={handlers} className="px-[0.15em]">
+/**
+ * Stacked fraction, sized and centered to sit on the equation's math axis.
+ * Term-highlight is applied to the container so the bar colors with it;
+ * blue action glyphs (numerals that divide, denominators that multiply)
+ * override via their own color class.
+ */
+const Fraction = ({
+  termId,
+  side,
+  highlighted,
+  numText,
+  numRole = "term",
+  numBlue,
+  numTitle,
+  denNumber,
+  denX,
+  handlers,
+}: FractionProps) => (
+  <span
+    className={`mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none ${
+      highlighted ? "text-amber-500" : ""
+    }`}
+  >
+    <Sym
+      termId={termId}
+      side={side}
+      role={numRole}
+      highlighted={false}
+      blue={numBlue}
+      title={numTitle}
+      handlers={handlers}
+      className="px-[0.15em]"
+    >
       {numText}
     </Sym>
     <span className="my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
@@ -190,7 +223,7 @@ const Fraction = ({ termId, side, highlighted, numText, denNumber, denX, handler
           termId={termId}
           side={side}
           role="den"
-          highlighted={highlighted}
+          highlighted={false}
           blue
           handlers={handlers}
           title={`Drag across to multiply both sides by ${denNumber}`}
@@ -203,7 +236,7 @@ const Fraction = ({ termId, side, highlighted, numText, denNumber, denX, handler
           termId={termId}
           side={side}
           role="xmul"
-          highlighted={highlighted}
+          highlighted={false}
           blue
           handlers={handlers}
           title="Drag across to multiply both sides by x"
@@ -222,7 +255,6 @@ const EquationBuilderTool = () => {
   const [history, setHistory] = useState<Step[]>(() => [makeStep("start", PRESETS[0].make())]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dragOver, setDragOver] = useState<Side | null>(null);
-  const [dragging, setDragging] = useState(false);
   const [selection, setSelection] = useState<{ side: Side; termIds: string[] } | null>(null);
   const [hoveredTermId, setHoveredTermId] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
@@ -248,10 +280,9 @@ const EquationBuilderTool = () => {
     setNotice(null);
   };
 
-  // The coefficient of a lone a·x (|a| ≠ 1) is draggable to divide both sides
+  // A lone x-ish term (x or 1/x) whose numeral can be dragged across to divide
   const divideSide: Side | null = useMemo(() => {
-    const alone = (side: Term[]) =>
-      side.length === 1 && side[0].power === 1 && !(Math.abs(side[0].num) === 1 && side[0].den === 1) && side[0].num !== 0;
+    const alone = (side: Term[]) => side.length === 1 && side[0].power !== 0 && Math.abs(side[0].num) > 1;
     if (alone(left)) return "left";
     if (alone(right)) return "right";
     return null;
@@ -265,7 +296,15 @@ const EquationBuilderTool = () => {
     return null;
   }, [left, right]);
 
-  const hasFraction = useMemo(() => [...left, ...right].some((t) => t.den !== 1), [left, right]);
+  // A lone negative term whose leading − can be dragged across to negate both sides
+  const negSide: Side | null = useMemo(() => {
+    const alone = (side: Term[]) => side.length === 1 && side[0].num < 0;
+    if (alone(left)) return "left";
+    if (alone(right)) return "right";
+    return null;
+  }, [left, right]);
+
+  const hasFraction = useMemo(() => [...left, ...right].some((t) => t.den !== 1 || t.power === -1), [left, right]);
 
   const solved = useMemo(() => {
     const check = (a: Term[], b: Term[]) =>
@@ -286,26 +325,28 @@ const EquationBuilderTool = () => {
       const index = source.findIndex((t) => t.id === id);
       if (index !== -1) moved.push(...source.splice(index, 1));
     }
-    if (moved.length === 0) return;
-    const target = [...equation[to], ...moved.map((m) => term(-m.num, m.power, m.den))];
+    // The lone "0" placeholder isn't a movable object
+    const real = moved.filter((m) => m.num !== 0);
+    if (real.length === 0) return;
+    const target = [...equation[to], ...real.map((m) => term(-m.num, m.power, m.den))];
     const next = { ...equation, [from]: combine(source), [to]: combine(target) } as EquationState;
-    commitMove(`moved ${moved.map((m) => termText(m, true).trim()).join(", ")} across`, next);
+    commitMove(`moved ${real.map((m) => termText(m, true).trim()).join(", ")} across`, next);
   };
 
-  /** Divide every term on both sides by the signed coefficient of the lone x-term */
-  const divideByCoefficient = (termId: string, from: Side, to: Side) => {
+  /** Divide every term on both sides by the (positive) numeral that was dragged */
+  const divideByNumber = (termId: string, from: Side, to: Side) => {
     if (from === to) return;
-    const xTerm = equation[from].find((t) => t.id === termId);
-    if (!xTerm || xTerm.power !== 1) return;
+    const source = equation[from].find((t) => t.id === termId);
+    if (!source || source.power === 0) return;
     if (equation[from].length !== 1) {
       flashNotice("Move the other terms away first — the x term must be alone to divide.");
       return;
     }
-    const a = { num: xTerm.num, den: xTerm.den };
-    if (a.num === 0) return;
-    const divide = (t: Term) => term(t.num * a.den, t.power, t.den * a.num);
+    const v = Math.abs(source.num);
+    if (v <= 1) return;
+    const divide = (t: Term) => term(t.num, t.power, t.den * v);
     const next = { left: combine(equation.left.map(divide)), right: combine(equation.right.map(divide)) };
-    commitMove(`divided both sides by ${a.den === 1 ? a.num : `${a.num}/${a.den}`}`, next);
+    commitMove(`divided both sides by ${v}`, next);
   };
 
   /** Multiply every term on both sides by a fraction's numeric denominator */
@@ -317,6 +358,14 @@ const EquationBuilderTool = () => {
     const multiply = (t: Term) => term(t.num * d, t.power, t.den);
     const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
     commitMove(`multiplied both sides by ${d}`, next);
+  };
+
+  /** Multiply both sides by −1 — the escape hatch from states like −x = 3 */
+  const negateBothSides = (_termId: string, from: Side, to: Side) => {
+    if (from === to) return;
+    const negate = (t: Term) => term(-t.num, t.power, t.den);
+    const next = { left: combine(equation.left.map(negate)), right: combine(equation.right.map(negate)) };
+    commitMove("flipped the sign of both sides (× −1)", next);
   };
 
   /** Divide both sides by x: every power drops by one. Assumes x ≠ 0. */
@@ -414,12 +463,17 @@ const EquationBuilderTool = () => {
     | { kind: "terms"; ids: string[]; from: Side }
     | { kind: "coef"; termId: string; from: Side }
     | { kind: "den"; termId: string; from: Side }
+    | { kind: "neg"; termId: string; from: Side }
     | { kind: "xdiv"; termId: string; from: Side }
     | { kind: "xmul"; termId: string; from: Side };
 
+  // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
+  // location can route to the opposite side and the target ring is accurate
+  const dragPayloadRef = useRef<DragPayload | null>(null);
+
   const startDrag = (e: DragEvent, payload: DragPayload) => {
     e.dataTransfer.setData("text/plain", JSON.stringify(payload));
-    setDragging(true);
+    dragPayloadRef.current = payload;
   };
 
   const onSymbolDragStart = (e: DragEvent, termId: string, side: Side, role: Role) => {
@@ -430,64 +484,94 @@ const EquationBuilderTool = () => {
     }
     if (role === "coef") startDrag(e, { kind: "coef", termId, from: side });
     else if (role === "den") startDrag(e, { kind: "den", termId, from: side });
+    else if (role === "neg") startDrag(e, { kind: "neg", termId, from: side });
     else if (role === "xdiv") startDrag(e, { kind: "xdiv", termId, from: side });
     else if (role === "xmul") startDrag(e, { kind: "xmul", termId, from: side });
     else startDrag(e, { kind: "terms", ids: [termId], from: side });
   };
 
+  const finishDrag = () => {
+    dragPayloadRef.current = null;
+    setDragOver(null);
+  };
+
+  const performDrop = (payload: DragPayload, to: Side) => {
+    if (payload.kind === "terms") moveTerms(payload.ids, payload.from, to);
+    else if (payload.kind === "coef") divideByNumber(payload.termId, payload.from, to);
+    else if (payload.kind === "den") multiplyByDenominator(payload.termId, payload.from, to);
+    else if (payload.kind === "neg") negateBothSides(payload.termId, payload.from, to);
+    else if (payload.kind === "xdiv") divideByX(payload.termId, payload.from, to);
+    else if (payload.kind === "xmul") multiplyByX(payload.termId, payload.from, to);
+  };
+
   const onDrop = (e: DragEvent, to: Side) => {
     e.preventDefault();
-    setDragOver(null);
-    setDragging(false);
     try {
       const payload = JSON.parse(e.dataTransfer.getData("text/plain")) as DragPayload;
-      if (payload.kind === "terms") moveTerms(payload.ids, payload.from, to);
-      else if (payload.kind === "coef") divideByCoefficient(payload.termId, payload.from, to);
-      else if (payload.kind === "den") multiplyByDenominator(payload.termId, payload.from, to);
-      else if (payload.kind === "xdiv") divideByX(payload.termId, payload.from, to);
-      else if (payload.kind === "xmul") multiplyByX(payload.termId, payload.from, to);
+      performDrop(payload, to);
     } catch {
       // not a symbol drag — ignore
     }
+    finishDrag();
   };
 
   // --- Rendering ---
   const symHandlers: SymbolHandlers = {
     dragStart: onSymbolDragStart,
-    dragEnd: () => {
-      setDragging(false);
-      setDragOver(null);
-    },
+    dragEnd: finishDrag,
     hover: setHoveredTermId,
   };
 
   const renderSide = (terms: Term[], side: Side) => (
     <span
       className={`inline-flex items-center rounded-xl px-2 py-1 transition-shadow ${
-        dragOver === side ? "ring-2 ring-amber-300" : dragging ? "ring-1 ring-border" : ""
+        dragOver === side ? "ring-2 ring-amber-300" : ""
       }`}
       onDragOver={(e) => {
         e.preventDefault();
-        setDragOver(side);
+        e.stopPropagation();
+        const payload = dragPayloadRef.current;
+        // Only ring the side a drop here would actually act on
+        if (payload) setDragOver(payload.from === side ? null : side);
       }}
-      onDragLeave={() => setDragOver((cur) => (cur === side ? null : cur))}
-      onDrop={(e) => onDrop(e, side)}
+      onDrop={(e) => {
+        e.stopPropagation();
+        onDrop(e, side); // dropping back on the source side is a cancel
+      }}
     >
       {terms.map((t, i) => {
+        // The lone "0" placeholder is display-only
+        if (t.num === 0) {
+          return (
+            <span key={t.id} className="select-none">
+              0
+            </span>
+          );
+        }
         // The whole term is one interactive unit: selected via marquee, or
         // hovered via any of its symbols
         const highlighted =
           !!(selection?.side === side && selection.termIds.includes(t.id)) || hoveredTermId === t.id;
         const magnitude = Math.abs(t.num);
+        const canDivide = divideSide === side && magnitude > 1;
+        const divideTitle = canDivide
+          ? `Drag across the equals sign to divide both sides by ${magnitude}`
+          : "Drag across to divide — but the x term must be alone on its side";
         return (
           <span key={t.id} className="inline-flex items-center">
             {(i > 0 || t.num < 0) && (
               <Sym
                 termId={t.id}
                 side={side}
-                role="term"
+                role={i === 0 && negSide === side ? "neg" : "term"}
                 highlighted={highlighted}
+                blue={i === 0 && negSide === side}
                 handlers={symHandlers}
+                title={
+                  i === 0 && negSide === side
+                    ? "Drag across the equals sign to flip the sign of both sides"
+                    : undefined
+                }
                 className={i > 0 ? "mx-4" : "mr-1"}
               >
                 {i > 0 ? (t.num < 0 ? "−" : "+") : "−"}
@@ -502,13 +586,9 @@ const EquationBuilderTool = () => {
                       side={side}
                       role="coef"
                       highlighted={highlighted}
-                      blue={divideSide === side}
+                      blue={canDivide}
                       handlers={symHandlers}
-                      title={
-                        divideSide === side
-                          ? `Drag across the equals sign to divide both sides by ${t.num}`
-                          : "Drag across to divide — but the x term must be alone on its side"
-                      }
+                      title={divideTitle}
                     >
                       {magnitude}
                     </Sym>
@@ -518,6 +598,9 @@ const EquationBuilderTool = () => {
                       side={side}
                       highlighted={highlighted}
                       numText={magnitude}
+                      numRole={magnitude > 1 ? "coef" : "term"}
+                      numBlue={canDivide}
+                      numTitle={magnitude > 1 ? divideTitle : undefined}
                       denNumber={t.den}
                       denX={false}
                       handlers={symHandlers}
@@ -562,6 +645,9 @@ const EquationBuilderTool = () => {
                 side={side}
                 highlighted={highlighted}
                 numText={magnitude}
+                numRole={magnitude > 1 ? "coef" : "term"}
+                numBlue={canDivide}
+                numTitle={magnitude > 1 ? divideTitle : undefined}
                 denNumber={t.den === 1 ? null : t.den}
                 denX
                 handlers={symHandlers}
@@ -577,6 +663,17 @@ const EquationBuilderTool = () => {
     <div
       className="relative flex h-full w-full flex-col items-center justify-center bg-background text-foreground"
       onPointerDown={onBackgroundPointerDown}
+      onDragOver={(e) => {
+        // Any drop in the tool routes to the opposite side, so users don't
+        // have to hit the side span exactly (the "=" gap is not a dead zone)
+        e.preventDefault();
+        const payload = dragPayloadRef.current;
+        if (payload) setDragOver(opposite(payload.from));
+      }}
+      onDrop={(e) => {
+        const payload = dragPayloadRef.current;
+        if (payload) onDrop(e, opposite(payload.from));
+      }}
     >
       {/* History menu button */}
       <div className="absolute right-4 top-4" data-ui>
@@ -649,7 +746,11 @@ const EquationBuilderTool = () => {
             Drag the <span className="text-sky-600">coefficient</span> across to divide — or the{" "}
             <span className="text-sky-600 italic">x</span> itself, if you dare.
           </span>
-        ) : hasFraction || [...left, ...right].some((t) => t.power === -1) ? (
+        ) : negSide ? (
+          <span>
+            Drag the <span className="text-sky-600">−</span> across to flip the sign of both sides.
+          </span>
+        ) : hasFraction ? (
           <span>
             Drag a <span className="text-sky-600">denominator</span> across to multiply both sides.
           </span>
