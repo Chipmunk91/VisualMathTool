@@ -19,7 +19,7 @@ import { History, TriangleAlert } from "lucide-react";
 
 // Leaf terms are (num/den) · x^power with den > 0, reduced, power ∈ {-1, 0, 1}.
 // Group terms are (num/den) · (sum of leaf terms) — parentheses with a factor.
-type Power = -1 | 0 | 1;
+type Power = -1 | 0 | 1 | 2;
 
 interface LeafTerm {
   id: string;
@@ -27,6 +27,10 @@ interface LeafTerm {
   num: number;
   den: number;
   power: Power;
+  /** Result of a square root: shown with a ± prefix (both roots kept) */
+  pm?: boolean;
+  /** num/den is a radicand: the value is √(num/den), display-only */
+  radical?: boolean;
 }
 
 interface GroupTerm {
@@ -96,12 +100,15 @@ const PRESETS: Preset[] = [
   { name: "2x − 3 = −7", make: () => ({ left: [leaf(2, 1), leaf(-3)], right: [leaf(-7)] }) },
   { name: "5x + 4 = 3x", make: () => ({ left: [leaf(5, 1), leaf(4)], right: [leaf(3, 1)] }) },
   { name: "6/x = 2", make: () => ({ left: [leaf(6, -1)], right: [leaf(2)] }) },
-  { name: "4/x + 1 = 3", make: () => ({ left: [leaf(4, -1), leaf(1)], right: [leaf(3)] }) },
+
   { name: "2(x + 3) = 8", make: () => ({ left: [group(2, [leaf(1, 1), leaf(3)])], right: [leaf(8)] }) },
   {
     name: "3(x − 2) = 2x + 1",
     make: () => ({ left: [group(3, [leaf(1, 1), leaf(-2)])], right: [leaf(2, 1), leaf(1)] }),
   },
+  { name: "x² = 9", make: () => ({ left: [leaf(1, 2)], right: [leaf(9)] }) },
+  { name: "x² + 1 = 6", make: () => ({ left: [leaf(1, 2), leaf(1)], right: [leaf(6)] }) },
+  { name: "2x² − 6 = 12", make: () => ({ left: [leaf(2, 2), leaf(-6)], right: [leaf(12)] }) },
 ];
 
 /**
@@ -124,7 +131,7 @@ function combine(terms: EqTerm[]): EqTerm[] {
   const sum = (list: LeafTerm[]) =>
     list.reduce((acc, t) => reduce(acc.num * t.den + t.num * acc.den, acc.den * t.den), { num: 0, den: 1 });
   const merged: LeafTerm[] = [];
-  for (const power of [1, 0, -1] as Power[]) {
+  for (const power of [2, 1, 0, -1] as Power[]) {
     const s = sum(leaves.filter((t) => t.power === power));
     if (s.num !== 0) merged.push(leaf(s.num, power, s.den));
   }
@@ -139,11 +146,19 @@ function termText(t: EqTerm, leading: boolean): string {
   const prefix = leading ? (t.num < 0 ? "−" : "") : ` ${sign} `;
   const mag = Math.abs(t.num);
   const coefStr = mag === 1 && t.den === 1 ? "" : t.den === 1 ? String(mag) : `(${mag}/${t.den})`;
+  if (t.kind === "leaf" && (t.pm || t.radical)) {
+    const core = t.radical
+      ? `√${t.den === 1 ? t.num : `(${t.num}/${t.den})`}`
+      : t.den === 1
+        ? String(t.num)
+        : `${t.num}/${t.den}`;
+    return prefix + `${t.pm ? "±" : ""}${core}`;
+  }
   let body: string;
   if (t.kind === "group") {
     body = `${coefStr}(${innerText(t.inner)})`;
-  } else if (t.power === 1) {
-    body = `${coefStr}x`;
+  } else if (t.power === 1 || t.power === 2) {
+    body = `${coefStr}x${t.power === 2 ? "²" : ""}`;
   } else if (t.power === 0) {
     body = t.den === 1 ? String(mag) : `${mag}/${t.den}`;
   } else {
@@ -175,7 +190,7 @@ const makeStep = (label: string, state: EquationState, dangerous?: boolean, note
   text: equationText(state),
 });
 
-type Role = "term" | "coef" | "den" | "neg" | "xdiv" | "xmul" | "factor";
+type Role = "term" | "coef" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp";
 
 interface SymbolHandlers {
   dragStart: (e: DragEvent, termId: string, side: Side, role: Role) => void;
@@ -214,7 +229,7 @@ const Sym = ({ termId, side, role, highlighted, blue, title, className = "", han
     onPointerLeave={blue ? undefined : () => handlers.hover(null)}
     title={title ?? "Drag across the equals sign — or sweep empty space to select a block"}
     className={`cursor-grab select-none transition-colors duration-150 active:cursor-grabbing ${
-      blue ? "text-sky-600 hover:text-sky-400" : highlighted ? "text-amber-500" : ""
+      blue ? "hover:text-amber-500" : highlighted ? "text-amber-500" : ""
     } ${className}`}
   >
     {children}
@@ -376,12 +391,31 @@ const EquationBuilderTool = () => {
   }, [left, right]);
 
   const solvedTerm = solved ? ((left[0].kind === "leaf" && left[0].power === 1 ? right : left)[0] as LeafTerm) : null;
-  const solvedValue = solvedTerm ? (solvedTerm.den === 1 ? String(solvedTerm.num) : `${solvedTerm.num}/${solvedTerm.den}`) : null;
+  const solvedValue = solvedTerm
+    ? `${solvedTerm.pm ? "±" : ""}${
+        solvedTerm.radical
+          ? `√${solvedTerm.den === 1 ? solvedTerm.num : `(${solvedTerm.num}/${solvedTerm.den})`}`
+          : solvedTerm.den === 1
+            ? String(solvedTerm.num)
+            : `${solvedTerm.num}/${solvedTerm.den}`
+      }`
+    : null;
   const solvedContradiction = solved && solvedTerm?.num === 0 && xNonZeroAssumed;
+
+  // ± / radical results are an end state: no further arithmetic is defined on them
+  const hasTerminal = [...left, ...right].some((t) => t.kind === "leaf" && (t.pm || t.radical));
+  const guardTerminal = () => {
+    if (hasTerminal) {
+      flashNotice("± roots are an end state — rewind from the history menu to try another path.");
+      return true;
+    }
+    return false;
+  };
 
   // --- Algebra moves ---
   const moveTerms = (ids: string[], from: Side, to: Side) => {
     if (from === to) return;
+    if (guardTerminal()) return;
     const source = [...equation[from]];
     const moved: EqTerm[] = [];
     for (const id of ids) {
@@ -398,6 +432,7 @@ const EquationBuilderTool = () => {
 
   /** Divide every term on both sides by the (positive) numeral that was dragged */
   const divideByNumber = (termId: string, from: Side, to: Side, isFactor = false) => {
+    if (guardTerminal()) return;
     if (from === to) {
       if (isFactor) flashNotice("Drop the factor onto the parenthesis to distribute it.");
       return;
@@ -422,6 +457,7 @@ const EquationBuilderTool = () => {
 
   /** Multiply every term on both sides by a fraction's numeric denominator */
   const multiplyByDenominator = (termId: string, from: Side, to: Side) => {
+    if (guardTerminal()) return;
     if (from === to) return;
     const source = equation[from].find((t) => t.id === termId);
     if (!source || source.den === 1) return;
@@ -433,6 +469,7 @@ const EquationBuilderTool = () => {
 
   /** Multiply both sides by −1 — the escape hatch from states like −x = 3 */
   const negateBothSides = (_termId: string, from: Side, to: Side) => {
+    if (guardTerminal()) return;
     if (from === to) return;
     const negate = (t: EqTerm) => scaleNum(t, -1);
     const next = { left: combine(equation.left.map(negate)), right: combine(equation.right.map(negate)) };
@@ -441,6 +478,7 @@ const EquationBuilderTool = () => {
 
   /** Distribute a group's factor over its parenthesis: a(bx + c) → abx + ac */
   const distributeFactor = (termId: string, from: Side) => {
+    if (guardTerminal()) return;
     const source = equation[from].find((t) => t.id === termId);
     if (!source || source.kind !== "group") return;
     const label = `distributed ${termText(source, true).trim().startsWith("−") ? `−${Math.abs(source.num)}` : Math.abs(source.num)}${
@@ -457,6 +495,7 @@ const EquationBuilderTool = () => {
   /** Divide both sides by x: every power drops by one. Assumes x ≠ 0. */
   const divideByX = (termId: string, from: Side, to: Side) => {
     if (from === to) return;
+    if (guardTerminal()) return;
     const xTerm = equation[from].find((t) => t.id === termId);
     if (!xTerm || xTerm.kind !== "leaf" || xTerm.power !== 1) return;
     if (equation[from].length !== 1) {
@@ -479,19 +518,63 @@ const EquationBuilderTool = () => {
   /** Multiply both sides by x: every power rises by one. Hides the original x ≠ 0 domain. */
   const multiplyByX = (termId: string, from: Side, to: Side) => {
     if (from === to) return;
+    if (guardTerminal()) return;
     const source = equation[from].find((t) => t.id === termId);
     if (!source || source.kind !== "leaf" || source.power !== -1) return;
     if (hasGroups) {
       flashNotice("Distribute the parentheses first.");
       return;
     }
-    if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power === 1)) {
-      flashNotice("That would create an x² term — beyond this playground (for now).");
+    if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power >= 1)) {
+      flashNotice("That would raise a power beyond this playground (for now).");
       return;
     }
     const multiply = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power + 1) as Power, t.den) : t);
     const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
     commitMove("multiplied both sides by x", next, true, "the original equation required x ≠ 0 — that rule is now invisible");
+  };
+
+  /** Take the square root of both sides: x² = c → x = ±√c (both roots kept) */
+  const takeSquareRoot = (termId: string, from: Side, to: Side) => {
+    if (from === to) return;
+    const source = equation[from].find((t) => t.id === termId);
+    if (!source || source.kind !== "leaf" || source.power !== 2) return;
+    if (equation[from].length !== 1) {
+      flashNotice("Move the other terms away first — the x² term must be alone.");
+      return;
+    }
+    if (!(source.num === 1 && source.den === 1)) {
+      flashNotice(
+        source.num < 0
+          ? "Flip the sign of both sides first — the square root needs a bare x²."
+          : "Divide away the coefficient first — the square root needs a bare x²."
+      );
+      return;
+    }
+    const other = equation[to];
+    if (other.length !== 1 || other[0].kind !== "leaf" || other[0].power !== 0) {
+      flashNotice("Gather everything else on the other side first.");
+      return;
+    }
+    const c = other[0];
+    if (c.num < 0) {
+      flashNotice("x² can never equal a negative number — no real solutions here.");
+      return;
+    }
+    const isSquare = (n: number) => {
+      const r = Math.round(Math.sqrt(n));
+      return r * r === n;
+    };
+    let result: LeafTerm;
+    if (c.num === 0) {
+      result = leaf(0);
+    } else if (isSquare(c.num) && isSquare(c.den)) {
+      result = { ...leaf(Math.round(Math.sqrt(c.num)), 0, Math.round(Math.sqrt(c.den))), pm: true };
+    } else {
+      result = { ...leaf(c.num, 0, c.den), radical: true, pm: true };
+    }
+    const next = { ...equation, [from]: [leaf(1, 1)], [to]: [result] } as EquationState;
+    commitMove("took the square root of both sides", next, false, "keeping ± — both roots survive");
   };
 
   const loadPreset = (index: number) => {
@@ -560,7 +643,8 @@ const EquationBuilderTool = () => {
     | { kind: "neg"; termId: string; from: Side }
     | { kind: "xdiv"; termId: string; from: Side }
     | { kind: "xmul"; termId: string; from: Side }
-    | { kind: "factor"; termId: string; from: Side };
+    | { kind: "factor"; termId: string; from: Side }
+    | { kind: "exp"; termId: string; from: Side };
 
   // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
   // location can route to the opposite side and the target ring is accurate
@@ -583,6 +667,7 @@ const EquationBuilderTool = () => {
     else if (role === "xdiv") startDrag(e, { kind: "xdiv", termId, from: side });
     else if (role === "xmul") startDrag(e, { kind: "xmul", termId, from: side });
     else if (role === "factor") startDrag(e, { kind: "factor", termId, from: side });
+    else if (role === "exp") startDrag(e, { kind: "exp", termId, from: side });
     else startDrag(e, { kind: "terms", ids: [termId], from: side });
   };
 
@@ -600,6 +685,7 @@ const EquationBuilderTool = () => {
     else if (payload.kind === "neg") negateBothSides(payload.termId, payload.from, to);
     else if (payload.kind === "xdiv") divideByX(payload.termId, payload.from, to);
     else if (payload.kind === "xmul") multiplyByX(payload.termId, payload.from, to);
+    else if (payload.kind === "exp") takeSquareRoot(payload.termId, payload.from, to);
   };
 
   const onDrop = (e: DragEvent, to: Side) => {
@@ -629,7 +715,7 @@ const EquationBuilderTool = () => {
     const divideTitle = canDivide
       ? `Drag across the equals sign to divide both sides by ${magnitude}`
       : "Drag across to divide — but the x term must be alone on its side";
-    if (t.power === 1) {
+    if (t.power === 1 || t.power === 2) {
       return (
         <>
           {!(magnitude === 1 && t.den === 1) &&
@@ -676,6 +762,20 @@ const EquationBuilderTool = () => {
           >
             x
           </Sym>
+          {t.power === 2 && (
+            <Sym
+              termId={termId}
+              side={side}
+              role={inert ? "term" : "exp"}
+              highlighted={highlighted}
+              blue={!inert}
+              handlers={symHandlers}
+              title={inert ? undefined : "Drag across the equals sign to take the square root of both sides"}
+              className="self-start mt-[0.08em] text-[0.5em] leading-none"
+            >
+              2
+            </Sym>
+          )}
         </>
       );
     }
@@ -740,6 +840,24 @@ const EquationBuilderTool = () => {
             </span>
           );
         }
+        // ± / radical results are terminal — display-only
+        if (t.kind === "leaf" && (t.pm || t.radical)) {
+          return (
+            <span key={t.id} className="inline-flex select-none items-center">
+              {t.pm && <span className="mr-2">±</span>}
+              {t.radical ? (
+                <span className="inline-flex items-baseline">
+                  <span>√</span>
+                  <span className="border-t-[0.06em] border-current pt-[0.04em]">
+                    {t.den === 1 ? t.num : `${t.num}/${t.den}`}
+                  </span>
+                </span>
+              ) : (
+                <span>{t.den === 1 ? t.num : `${t.num}/${t.den}`}</span>
+              )}
+            </span>
+          );
+        }
         const highlighted =
           !!(selection?.side === side && selection.termIds.includes(t.id)) || hoveredTermId === t.id;
         const sign = (
@@ -797,7 +915,7 @@ const EquationBuilderTool = () => {
                 ))}
               <span
                 className={`inline-flex items-center rounded-lg transition-colors ${
-                  parenHover === t.id ? "bg-sky-100 text-sky-600 dark:bg-sky-950/50" : ""
+                  parenHover === t.id ? "bg-amber-100 text-amber-600 dark:bg-amber-950/40" : ""
                 }`}
                 onDragOver={(e) => {
                   const payload = dragPayloadRef.current;
@@ -935,13 +1053,7 @@ const EquationBuilderTool = () => {
           </span>
         ) : solved ? (
           <span className="font-medium text-emerald-600">Solved — x = {solvedValue}</span>
-        ) : selection ? (
-          <span>
-            <span className="text-amber-500">Block selected</span> — drag it across the equals sign.
-          </span>
-        ) : (
-          <span>Drag a symbol across the equals sign, or sweep empty space to select a block.</span>
-        )}
+        ) : null}
         {xNonZeroAssumed && !solvedContradiction && (
           <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
             assuming x ≠ 0
