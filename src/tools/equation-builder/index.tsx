@@ -6,6 +6,8 @@ import { History, TriangleAlert } from "lucide-react";
  * objects. Every glyph does literally what it is:
  *   - a term (grabbed by its sign, number, or x) crosses "=" with its sign flipped
  *   - a numeral in coefficient position divides both sides by that number
+ *   - a group factor like the 2 in 2(x + 3) distributes when dropped on the
+ *     parenthesis, or divides both sides when dragged across "="
  *   - a leading "−" on a lone term flips the sign of both sides
  *   - a fraction's denominator multiplies both sides by it
  *   - the x of a lone x-term divides both sides by x (dangerous: assumes
@@ -15,23 +17,35 @@ import { History, TriangleAlert } from "lucide-react";
  * side cancels. Every move lands in the step history behind the menu.
  */
 
-// Terms are (num/den) · x^power with den > 0, reduced, power ∈ {-1, 0, 1}
+// Leaf terms are (num/den) · x^power with den > 0, reduced, power ∈ {-1, 0, 1}.
+// Group terms are (num/den) · (sum of leaf terms) — parentheses with a factor.
 type Power = -1 | 0 | 1;
 
-interface Term {
+interface LeafTerm {
   id: string;
+  kind: "leaf";
   num: number;
   den: number;
   power: Power;
 }
+
+interface GroupTerm {
+  id: string;
+  kind: "group";
+  num: number; // the factor's numerator (signed)
+  den: number; // the factor's denominator
+  inner: LeafTerm[];
+}
+
+type EqTerm = LeafTerm | GroupTerm;
 
 type Side = "left" | "right";
 
 const opposite = (side: Side): Side => (side === "left" ? "right" : "left");
 
 interface EquationState {
-  left: Term[];
-  right: Term[];
+  left: EqTerm[];
+  right: EqTerm[];
 }
 
 const gcd = (a: number, b: number): number => (b === 0 ? Math.abs(a) : gcd(b, a % b));
@@ -46,15 +60,31 @@ function reduce(num: number, den: number): { num: number; den: number } {
 }
 
 let termCounter = 0;
-const term = (num: number, power: Power = 0, den = 1): Term => ({
-  id: `term-${termCounter++}`,
+const leaf = (num: number, power: Power = 0, den = 1): LeafTerm => ({
+  id: `t${termCounter++}`,
+  kind: "leaf",
   ...reduce(num, den),
   power,
 });
+const group = (num: number, inner: LeafTerm[], den = 1): GroupTerm => ({
+  id: `t${termCounter++}`,
+  kind: "group",
+  ...reduce(num, den),
+  inner: inner.map((l) => leaf(l.num, l.power, l.den)),
+});
+
+// Scale a term's value: both work identically on leaves and group factors
+const scaleNum = (t: EqTerm, k: number): EqTerm =>
+  t.kind === "leaf" ? leaf(t.num * k, t.power, t.den) : group(t.num * k, t.inner, t.den);
+const scaleDen = (t: EqTerm, k: number): EqTerm =>
+  t.kind === "leaf" ? leaf(t.num, t.power, t.den * k) : group(t.num, t.inner, t.den * k);
+
+const cloneTerm = (t: EqTerm): EqTerm =>
+  t.kind === "leaf" ? { ...t } : { ...t, inner: t.inner.map((l) => ({ ...l })) };
 
 const cloneState = (state: EquationState): EquationState => ({
-  left: state.left.map((t) => ({ ...t })),
-  right: state.right.map((t) => ({ ...t })),
+  left: state.left.map(cloneTerm),
+  right: state.right.map(cloneTerm),
 });
 
 interface Preset {
@@ -63,35 +93,57 @@ interface Preset {
 }
 
 const PRESETS: Preset[] = [
-  { name: "2x − 3 = −7", make: () => ({ left: [term(2, 1), term(-3)], right: [term(-7)] }) },
-  { name: "2x + 4 = −3", make: () => ({ left: [term(2, 1), term(4)], right: [term(-3)] }) },
-  { name: "5x + 4 = 3x", make: () => ({ left: [term(5, 1), term(4)], right: [term(3, 1)] }) },
-  { name: "6/x = 2", make: () => ({ left: [term(6, -1)], right: [term(2)] }) },
-  { name: "4/x + 1 = 3", make: () => ({ left: [term(4, -1), term(1)], right: [term(3)] }) },
+  { name: "2x − 3 = −7", make: () => ({ left: [leaf(2, 1), leaf(-3)], right: [leaf(-7)] }) },
+  { name: "5x + 4 = 3x", make: () => ({ left: [leaf(5, 1), leaf(4)], right: [leaf(3, 1)] }) },
+  { name: "6/x = 2", make: () => ({ left: [leaf(6, -1)], right: [leaf(2)] }) },
+  { name: "4/x + 1 = 3", make: () => ({ left: [leaf(4, -1), leaf(1)], right: [leaf(3)] }) },
+  { name: "2(x + 3) = 8", make: () => ({ left: [group(2, [leaf(1, 1), leaf(3)])], right: [leaf(8)] }) },
+  {
+    name: "3(x − 2) = 2x + 1",
+    make: () => ({ left: [group(3, [leaf(1, 1), leaf(-2)])], right: [leaf(2, 1), leaf(1)] }),
+  },
 ];
 
-/** Merge like terms on a side (grouped by power) with exact rational arithmetic */
-function combine(terms: Term[]): Term[] {
-  const sum = (group: Term[]) =>
-    group.reduce((acc, t) => reduce(acc.num * t.den + t.num * acc.den, acc.den * t.den), { num: 0, den: 1 });
-  const result: Term[] = [];
-  for (const power of [1, 0, -1] as Power[]) {
-    const s = sum(terms.filter((t) => t.power === power));
-    if (s.num !== 0) result.push(term(s.num, power, s.den));
+/**
+ * Normalize a side: unwrap groups whose factor became 1, drop zero terms,
+ * and merge like leaf terms (grouped by power) with exact rational arithmetic.
+ * Groups are kept as-is otherwise — distribution is the player's move.
+ */
+function combine(terms: EqTerm[]): EqTerm[] {
+  const groups: GroupTerm[] = [];
+  const leaves: LeafTerm[] = [];
+  for (const t of terms) {
+    if (t.kind === "group") {
+      if (t.num === 0) continue;
+      if (t.num === 1 && t.den === 1) leaves.push(...t.inner.map((l) => leaf(l.num, l.power, l.den)));
+      else groups.push(group(t.num, t.inner, t.den));
+    } else {
+      leaves.push(t);
+    }
   }
-  if (result.length === 0) result.push(term(0));
+  const sum = (list: LeafTerm[]) =>
+    list.reduce((acc, t) => reduce(acc.num * t.den + t.num * acc.den, acc.den * t.den), { num: 0, den: 1 });
+  const merged: LeafTerm[] = [];
+  for (const power of [1, 0, -1] as Power[]) {
+    const s = sum(leaves.filter((t) => t.power === power));
+    if (s.num !== 0) merged.push(leaf(s.num, power, s.den));
+  }
+  const result: EqTerm[] = [...groups, ...merged];
+  if (result.length === 0) result.push(leaf(0));
   return result;
 }
 
-/** Plain-text rendering of a term's magnitude, for history rows and labels */
-function termText(t: Term, leading: boolean): string {
+/** Plain-text rendering of a term, for history rows and labels */
+function termText(t: EqTerm, leading: boolean): string {
   const sign = t.num < 0 ? "−" : "+";
   const prefix = leading ? (t.num < 0 ? "−" : "") : ` ${sign} `;
   const mag = Math.abs(t.num);
+  const coefStr = mag === 1 && t.den === 1 ? "" : t.den === 1 ? String(mag) : `(${mag}/${t.den})`;
   let body: string;
-  if (t.power === 1) {
-    const coef = mag === 1 && t.den === 1 ? "" : t.den === 1 ? String(mag) : `(${mag}/${t.den})`;
-    body = `${coef}x`;
+  if (t.kind === "group") {
+    body = `${coefStr}(${innerText(t.inner)})`;
+  } else if (t.power === 1) {
+    body = `${coefStr}x`;
   } else if (t.power === 0) {
     body = t.den === 1 ? String(mag) : `${mag}/${t.den}`;
   } else {
@@ -100,8 +152,9 @@ function termText(t: Term, leading: boolean): string {
   return prefix + body;
 }
 
-const sideText = (terms: Term[]) => terms.map((t, i) => termText(t, i === 0)).join("");
-const equationText = (state: EquationState) => `${sideText(state.left)} = ${sideText(state.right)}`;
+const innerText = (terms: LeafTerm[]) => terms.map((t, i) => termText(t, i === 0)).join("");
+const sideTextOf = (terms: EqTerm[]) => terms.map((t, i) => termText(t, i === 0)).join("");
+const equationText = (state: EquationState) => `${sideTextOf(state.left)} = ${sideTextOf(state.right)}`;
 
 interface Step {
   id: number;
@@ -122,7 +175,7 @@ const makeStep = (label: string, state: EquationState, dangerous?: boolean, note
   text: equationText(state),
 });
 
-type Role = "term" | "coef" | "den" | "xdiv" | "xmul" | "neg";
+type Role = "term" | "coef" | "den" | "neg" | "xdiv" | "xmul" | "factor";
 
 interface SymbolHandlers {
   dragStart: (e: DragEvent, termId: string, side: Side, role: Role) => void;
@@ -178,14 +231,15 @@ interface FractionProps {
   numTitle?: string;
   denNumber: number | null;
   denX: boolean;
+  /** Inert fractions (inside parentheses) have no blue action glyphs */
+  inert?: boolean;
   handlers: SymbolHandlers;
 }
 
 /**
  * Stacked fraction, sized and centered to sit on the equation's math axis.
  * Term-highlight is applied to the container so the bar colors with it;
- * blue action glyphs (numerals that divide, denominators that multiply)
- * override via their own color class.
+ * blue action glyphs override via their own color class.
  */
 const Fraction = ({
   termId,
@@ -197,6 +251,7 @@ const Fraction = ({
   numTitle,
   denNumber,
   denX,
+  inert,
   handlers,
 }: FractionProps) => (
   <span
@@ -207,10 +262,10 @@ const Fraction = ({
     <Sym
       termId={termId}
       side={side}
-      role={numRole}
+      role={inert ? "term" : numRole}
       highlighted={false}
-      blue={numBlue}
-      title={numTitle}
+      blue={!inert && numBlue}
+      title={inert ? undefined : numTitle}
       handlers={handlers}
       className="px-[0.15em]"
     >
@@ -222,11 +277,11 @@ const Fraction = ({
         <Sym
           termId={termId}
           side={side}
-          role="den"
+          role={inert ? "term" : "den"}
           highlighted={false}
-          blue
+          blue={!inert}
           handlers={handlers}
-          title={`Drag across to multiply both sides by ${denNumber}`}
+          title={inert ? undefined : `Drag across to multiply both sides by ${denNumber}`}
         >
           {denNumber}
         </Sym>
@@ -235,11 +290,11 @@ const Fraction = ({
         <Sym
           termId={termId}
           side={side}
-          role="xmul"
+          role={inert ? "term" : "xmul"}
           highlighted={false}
-          blue
+          blue={!inert}
           handlers={handlers}
-          title="Drag across to multiply both sides by x"
+          title={inert ? undefined : "Drag across to multiply both sides by x"}
           className="italic"
         >
           x
@@ -255,6 +310,7 @@ const EquationBuilderTool = () => {
   const [history, setHistory] = useState<Step[]>(() => [makeStep("start", PRESETS[0].make())]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dragOver, setDragOver] = useState<Side | null>(null);
+  const [parenHover, setParenHover] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ side: Side; termIds: string[] } | null>(null);
   const [hoveredTermId, setHoveredTermId] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
@@ -280,101 +336,46 @@ const EquationBuilderTool = () => {
     setNotice(null);
   };
 
-  // A lone x-ish term (x or 1/x) whose numeral can be dragged across to divide
+  // A lone x-ish leaf (x or 1/x) whose numeral can be dragged across to divide
   const divideSide: Side | null = useMemo(() => {
-    const alone = (side: Term[]) => side.length === 1 && side[0].power !== 0 && Math.abs(side[0].num) > 1;
+    const alone = (side: EqTerm[]) =>
+      side.length === 1 && side[0].kind === "leaf" && side[0].power !== 0 && Math.abs(side[0].num) > 1;
     if (alone(left)) return "left";
     if (alone(right)) return "right";
     return null;
   }, [left, right]);
 
-  // The x of a lone x-term is draggable to divide both sides by x
+  // The x of a lone x-leaf is draggable to divide both sides by x
   const xDivideSide: Side | null = useMemo(() => {
-    const alone = (side: Term[]) => side.length === 1 && side[0].power === 1 && side[0].num !== 0;
+    const alone = (side: EqTerm[]) =>
+      side.length === 1 && side[0].kind === "leaf" && side[0].power === 1 && side[0].num !== 0;
     if (alone(left)) return "left";
     if (alone(right)) return "right";
     return null;
   }, [left, right]);
 
-  // A lone negative term whose leading − can be dragged across to negate both sides
+  // A lone negative term (leaf or group) whose leading − negates both sides
   const negSide: Side | null = useMemo(() => {
-    const alone = (side: Term[]) => side.length === 1 && side[0].num < 0;
+    const alone = (side: EqTerm[]) => side.length === 1 && side[0].num < 0;
     if (alone(left)) return "left";
     if (alone(right)) return "right";
     return null;
   }, [left, right]);
-
-  /**
-   * Strategy coach: recommend the best next move toward isolating x —
-   * gather x terms, clear constants off the x side, free x from the
-   * denominator, divide the coefficient, clear its denominator, flip the
-   * sign — rather than advertising whichever blue handle happens to be lit.
-   */
-  const coachTip: ReactNode = useMemo(() => {
-    const xTerms = (side: Term[]) => side.filter((t) => t.power !== 0 && t.num !== 0);
-    const leftX = xTerms(left);
-    const rightX = xTerms(right);
-    const glyph = (text: ReactNode) => <span className="font-serif text-foreground">{text}</span>;
-
-    // x on both sides → gather them first (move the smaller one)
-    if (leftX.length > 0 && rightX.length > 0) {
-      const size = (t: Term) => Math.abs(t.num / t.den);
-      const candidate = size(leftX[0]) <= size(rightX[0]) ? leftX[0] : rightX[0];
-      return <>Get the x terms together — drag {glyph(termText(candidate, true).trim())} across the equals sign.</>;
-    }
-    if (leftX.length === 0 && rightX.length === 0) {
-      return <>No x remains on either side — rewind a step from the history menu (top right).</>;
-    }
-
-    const xSide: Side = leftX.length > 0 ? "left" : "right";
-    const xTerm = (leftX.length > 0 ? leftX : rightX)[0];
-
-    // Constants sharing the x side → move them away
-    const stray = equation[xSide].find((t) => t.power === 0 && t.num !== 0);
-    if (stray) {
-      return <>Isolate the x term — drag {glyph(termText(stray, true).trim())} across the equals sign.</>;
-    }
-
-    // The x-ish term is alone on its side
-    if (xTerm.power === -1) {
-      return (
-        <>
-          x is trapped in the denominator — drag the <i className="text-sky-600">x</i> across to multiply both sides.
-        </>
-      );
-    }
-    if (Math.abs(xTerm.num) > 1) {
-      return (
-        <>
-          Drag the <span className="text-sky-600">{Math.abs(xTerm.num)}</span> across to divide both sides — or the{" "}
-          <i className="text-sky-600">x</i> itself, if you dare.
-        </>
-      );
-    }
-    if (xTerm.den > 1) {
-      return (
-        <>
-          Drag the <span className="text-sky-600">{xTerm.den}</span> under the x across to multiply both sides.
-        </>
-      );
-    }
-    if (xTerm.num < 0) {
-      return (
-        <>
-          Drag the <span className="text-sky-600">−</span> across to flip the sign of both sides.
-        </>
-      );
-    }
-    return <>Drag a symbol across the equals sign, or sweep empty space to select a block.</>;
-  }, [left, right, equation]);
 
   const solved = useMemo(() => {
-    const check = (a: Term[], b: Term[]) =>
-      a.length === 1 && a[0].power === 1 && a[0].num === 1 && a[0].den === 1 && b.length === 1 && b[0].power === 0;
+    const check = (a: EqTerm[], b: EqTerm[]) =>
+      a.length === 1 &&
+      a[0].kind === "leaf" &&
+      a[0].power === 1 &&
+      a[0].num === 1 &&
+      a[0].den === 1 &&
+      b.length === 1 &&
+      b[0].kind === "leaf" &&
+      b[0].power === 0;
     return check(left, right) || check(right, left);
   }, [left, right]);
 
-  const solvedTerm = solved ? (left[0].power === 1 ? right : left)[0] : null;
+  const solvedTerm = solved ? ((left[0].kind === "leaf" && left[0].power === 1 ? right : left)[0] as LeafTerm) : null;
   const solvedValue = solvedTerm ? (solvedTerm.den === 1 ? String(solvedTerm.num) : `${solvedTerm.num}/${solvedTerm.den}`) : null;
   const solvedContradiction = solved && solvedTerm?.num === 0 && xNonZeroAssumed;
 
@@ -382,7 +383,7 @@ const EquationBuilderTool = () => {
   const moveTerms = (ids: string[], from: Side, to: Side) => {
     if (from === to) return;
     const source = [...equation[from]];
-    const moved: Term[] = [];
+    const moved: EqTerm[] = [];
     for (const id of ids) {
       const index = source.findIndex((t) => t.id === id);
       if (index !== -1) moved.push(...source.splice(index, 1));
@@ -390,23 +391,31 @@ const EquationBuilderTool = () => {
     // The lone "0" placeholder isn't a movable object
     const real = moved.filter((m) => m.num !== 0);
     if (real.length === 0) return;
-    const target = [...equation[to], ...real.map((m) => term(-m.num, m.power, m.den))];
+    const target = [...equation[to], ...real.map((m) => scaleNum(m, -1))];
     const next = { ...equation, [from]: combine(source), [to]: combine(target) } as EquationState;
     commitMove(`moved ${real.map((m) => termText(m, true).trim()).join(", ")} across`, next);
   };
 
   /** Divide every term on both sides by the (positive) numeral that was dragged */
-  const divideByNumber = (termId: string, from: Side, to: Side) => {
-    if (from === to) return;
+  const divideByNumber = (termId: string, from: Side, to: Side, isFactor = false) => {
+    if (from === to) {
+      if (isFactor) flashNotice("Drop the factor onto the parenthesis to distribute it.");
+      return;
+    }
     const source = equation[from].find((t) => t.id === termId);
-    if (!source || source.power === 0) return;
+    if (!source) return;
+    if (source.kind === "leaf" && source.power === 0) return;
     if (equation[from].length !== 1) {
-      flashNotice("Move the other terms away first — the x term must be alone to divide.");
+      flashNotice(
+        isFactor
+          ? "Move the other terms away first — or drop the factor on the parenthesis to distribute."
+          : "Move the other terms away first — the x term must be alone to divide."
+      );
       return;
     }
     const v = Math.abs(source.num);
     if (v <= 1) return;
-    const divide = (t: Term) => term(t.num, t.power, t.den * v);
+    const divide = (t: EqTerm) => scaleDen(t, v);
     const next = { left: combine(equation.left.map(divide)), right: combine(equation.right.map(divide)) };
     commitMove(`divided both sides by ${v}`, next);
   };
@@ -417,7 +426,7 @@ const EquationBuilderTool = () => {
     const source = equation[from].find((t) => t.id === termId);
     if (!source || source.den === 1) return;
     const d = source.den;
-    const multiply = (t: Term) => term(t.num * d, t.power, t.den);
+    const multiply = (t: EqTerm) => scaleNum(t, d);
     const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
     commitMove(`multiplied both sides by ${d}`, next);
   };
@@ -425,25 +434,44 @@ const EquationBuilderTool = () => {
   /** Multiply both sides by −1 — the escape hatch from states like −x = 3 */
   const negateBothSides = (_termId: string, from: Side, to: Side) => {
     if (from === to) return;
-    const negate = (t: Term) => term(-t.num, t.power, t.den);
+    const negate = (t: EqTerm) => scaleNum(t, -1);
     const next = { left: combine(equation.left.map(negate)), right: combine(equation.right.map(negate)) };
     commitMove("flipped the sign of both sides (× −1)", next);
   };
+
+  /** Distribute a group's factor over its parenthesis: a(bx + c) → abx + ac */
+  const distributeFactor = (termId: string, from: Side) => {
+    const source = equation[from].find((t) => t.id === termId);
+    if (!source || source.kind !== "group") return;
+    const label = `distributed ${termText(source, true).trim().startsWith("−") ? `−${Math.abs(source.num)}` : Math.abs(source.num)}${
+      source.den !== 1 ? `/${source.den}` : ""
+    } over (${innerText(source.inner)})`;
+    const expanded = source.inner.map((l) => leaf(l.num * source.num, l.power, l.den * source.den));
+    const rest = equation[from].filter((t) => t.id !== termId);
+    const next = { ...equation, [from]: combine([...rest, ...expanded]) } as EquationState;
+    commitMove(label, next);
+  };
+
+  const hasGroups = [...left, ...right].some((t) => t.kind === "group");
 
   /** Divide both sides by x: every power drops by one. Assumes x ≠ 0. */
   const divideByX = (termId: string, from: Side, to: Side) => {
     if (from === to) return;
     const xTerm = equation[from].find((t) => t.id === termId);
-    if (!xTerm || xTerm.power !== 1) return;
+    if (!xTerm || xTerm.kind !== "leaf" || xTerm.power !== 1) return;
     if (equation[from].length !== 1) {
       flashNotice("Move the other terms away first — the x term must be alone to divide by x.");
       return;
     }
-    if ([...equation.left, ...equation.right].some((t) => t.power === -1)) {
+    if (hasGroups) {
+      flashNotice("Distribute the parentheses first.");
+      return;
+    }
+    if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power === -1)) {
       flashNotice("That would nest x deeper than this playground supports (x² in a denominator).");
       return;
     }
-    const divide = (t: Term) => term(t.num, (t.power - 1) as Power, t.den);
+    const divide = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power - 1) as Power, t.den) : t);
     const next = { left: combine(equation.left.map(divide)), right: combine(equation.right.map(divide)) };
     commitMove("divided both sides by x", next, true, "assumes x ≠ 0 — a solution x = 0 would be lost");
   };
@@ -452,12 +480,16 @@ const EquationBuilderTool = () => {
   const multiplyByX = (termId: string, from: Side, to: Side) => {
     if (from === to) return;
     const source = equation[from].find((t) => t.id === termId);
-    if (!source || source.power !== -1) return;
-    if ([...equation.left, ...equation.right].some((t) => t.power === 1)) {
+    if (!source || source.kind !== "leaf" || source.power !== -1) return;
+    if (hasGroups) {
+      flashNotice("Distribute the parentheses first.");
+      return;
+    }
+    if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power === 1)) {
       flashNotice("That would create an x² term — beyond this playground (for now).");
       return;
     }
-    const multiply = (t: Term) => term(t.num, (t.power + 1) as Power, t.den);
+    const multiply = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power + 1) as Power, t.den) : t);
     const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
     commitMove("multiplied both sides by x", next, true, "the original equation required x ≠ 0 — that rule is now invisible");
   };
@@ -527,7 +559,8 @@ const EquationBuilderTool = () => {
     | { kind: "den"; termId: string; from: Side }
     | { kind: "neg"; termId: string; from: Side }
     | { kind: "xdiv"; termId: string; from: Side }
-    | { kind: "xmul"; termId: string; from: Side };
+    | { kind: "xmul"; termId: string; from: Side }
+    | { kind: "factor"; termId: string; from: Side };
 
   // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
   // location can route to the opposite side and the target ring is accurate
@@ -549,17 +582,20 @@ const EquationBuilderTool = () => {
     else if (role === "neg") startDrag(e, { kind: "neg", termId, from: side });
     else if (role === "xdiv") startDrag(e, { kind: "xdiv", termId, from: side });
     else if (role === "xmul") startDrag(e, { kind: "xmul", termId, from: side });
+    else if (role === "factor") startDrag(e, { kind: "factor", termId, from: side });
     else startDrag(e, { kind: "terms", ids: [termId], from: side });
   };
 
   const finishDrag = () => {
     dragPayloadRef.current = null;
     setDragOver(null);
+    setParenHover(null);
   };
 
   const performDrop = (payload: DragPayload, to: Side) => {
     if (payload.kind === "terms") moveTerms(payload.ids, payload.from, to);
     else if (payload.kind === "coef") divideByNumber(payload.termId, payload.from, to);
+    else if (payload.kind === "factor") divideByNumber(payload.termId, payload.from, to, true);
     else if (payload.kind === "den") multiplyByDenominator(payload.termId, payload.from, to);
     else if (payload.kind === "neg") negateBothSides(payload.termId, payload.from, to);
     else if (payload.kind === "xdiv") divideByX(payload.termId, payload.from, to);
@@ -584,7 +620,101 @@ const EquationBuilderTool = () => {
     hover: setHoveredTermId,
   };
 
-  const renderSide = (terms: Term[], side: Side) => (
+  /** The magnitude portion of a leaf term (numeral, x, fraction) */
+  const renderLeafBody = (t: LeafTerm, side: Side, highlighted: boolean, opts: { termId?: string; inert?: boolean } = {}) => {
+    const termId = opts.termId ?? t.id;
+    const inert = opts.inert ?? false;
+    const magnitude = Math.abs(t.num);
+    const canDivide = !inert && divideSide === side && magnitude > 1;
+    const divideTitle = canDivide
+      ? `Drag across the equals sign to divide both sides by ${magnitude}`
+      : "Drag across to divide — but the x term must be alone on its side";
+    if (t.power === 1) {
+      return (
+        <>
+          {!(magnitude === 1 && t.den === 1) &&
+            (t.den === 1 ? (
+              <Sym
+                termId={termId}
+                side={side}
+                role={inert ? "term" : "coef"}
+                highlighted={highlighted}
+                blue={canDivide}
+                handlers={symHandlers}
+                title={inert ? undefined : divideTitle}
+              >
+                {magnitude}
+              </Sym>
+            ) : (
+              <Fraction
+                termId={termId}
+                side={side}
+                highlighted={highlighted}
+                numText={magnitude}
+                numRole={magnitude > 1 ? "coef" : "term"}
+                numBlue={canDivide}
+                numTitle={magnitude > 1 ? divideTitle : undefined}
+                denNumber={t.den}
+                denX={false}
+                inert={inert}
+                handlers={symHandlers}
+              />
+            ))}
+          <Sym
+            termId={termId}
+            side={side}
+            role={!inert && xDivideSide === side ? "xdiv" : "term"}
+            highlighted={highlighted}
+            blue={!inert && xDivideSide === side}
+            handlers={symHandlers}
+            title={
+              !inert && xDivideSide === side
+                ? "Drag across the equals sign to divide both sides by x (assumes x ≠ 0)"
+                : undefined
+            }
+            className="italic"
+          >
+            x
+          </Sym>
+        </>
+      );
+    }
+    if (t.power === 0) {
+      return t.den === 1 ? (
+        <Sym termId={termId} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+          {magnitude}
+        </Sym>
+      ) : (
+        <Fraction
+          termId={termId}
+          side={side}
+          highlighted={highlighted}
+          numText={magnitude}
+          denNumber={t.den}
+          denX={false}
+          inert={inert}
+          handlers={symHandlers}
+        />
+      );
+    }
+    return (
+      <Fraction
+        termId={termId}
+        side={side}
+        highlighted={highlighted}
+        numText={magnitude}
+        numRole={!inert && magnitude > 1 ? "coef" : "term"}
+        numBlue={canDivide}
+        numTitle={!inert && magnitude > 1 ? divideTitle : undefined}
+        denNumber={t.den === 1 ? null : t.den}
+        denX
+        inert={inert}
+        handlers={symHandlers}
+      />
+    );
+  };
+
+  const renderSide = (terms: EqTerm[], side: Side) => (
     <span
       className={`inline-flex items-center rounded-xl px-2 py-1 transition-shadow ${
         dragOver === side ? "ring-2 ring-amber-300" : ""
@@ -610,111 +740,117 @@ const EquationBuilderTool = () => {
             </span>
           );
         }
-        // The whole term is one interactive unit: selected via marquee, or
-        // hovered via any of its symbols
         const highlighted =
           !!(selection?.side === side && selection.termIds.includes(t.id)) || hoveredTermId === t.id;
-        const magnitude = Math.abs(t.num);
-        const canDivide = divideSide === side && magnitude > 1;
-        const divideTitle = canDivide
-          ? `Drag across the equals sign to divide both sides by ${magnitude}`
-          : "Drag across to divide — but the x term must be alone on its side";
+        const sign = (
+          <Sym
+            termId={t.id}
+            side={side}
+            role={i === 0 && negSide === side ? "neg" : "term"}
+            highlighted={highlighted}
+            blue={i === 0 && negSide === side}
+            handlers={symHandlers}
+            title={
+              i === 0 && negSide === side
+                ? "Drag across the equals sign to flip the sign of both sides"
+                : undefined
+            }
+            className={i > 0 ? "mx-4" : "mr-1"}
+          >
+            {i > 0 ? (t.num < 0 ? "−" : "+") : "−"}
+          </Sym>
+        );
+
+        if (t.kind === "group") {
+          const factorMag = Math.abs(t.num);
+          const showFactor = !(factorMag === 1 && t.den === 1);
+          const factorTitle = `Drop onto the parenthesis to distribute — or drag across the equals sign to divide both sides by ${factorMag}`;
+          return (
+            <span key={t.id} className="inline-flex items-center">
+              {(i > 0 || t.num < 0) && sign}
+              {showFactor &&
+                (t.den === 1 ? (
+                  <Sym
+                    termId={t.id}
+                    side={side}
+                    role="factor"
+                    highlighted={highlighted}
+                    blue
+                    handlers={symHandlers}
+                    title={factorTitle}
+                  >
+                    {factorMag}
+                  </Sym>
+                ) : (
+                  <Fraction
+                    termId={t.id}
+                    side={side}
+                    highlighted={highlighted}
+                    numText={factorMag}
+                    numRole="factor"
+                    numBlue
+                    numTitle={factorTitle}
+                    denNumber={t.den}
+                    denX={false}
+                    handlers={symHandlers}
+                  />
+                ))}
+              <span
+                className={`inline-flex items-center rounded-lg transition-colors ${
+                  parenHover === t.id ? "bg-sky-100 text-sky-600 dark:bg-sky-950/50" : ""
+                }`}
+                onDragOver={(e) => {
+                  const payload = dragPayloadRef.current;
+                  if (payload?.kind === "factor" && payload.termId === t.id) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setParenHover(t.id);
+                    setDragOver(null);
+                  }
+                }}
+                onDragLeave={() => setParenHover((cur) => (cur === t.id ? null : cur))}
+                onDrop={(e) => {
+                  const payload = dragPayloadRef.current;
+                  if (payload?.kind === "factor" && payload.termId === t.id) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    distributeFactor(t.id, side);
+                    finishDrag();
+                  }
+                }}
+              >
+                <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+                  (
+                </Sym>
+                {t.inner.map((l, j) => (
+                  <span key={l.id} className="inline-flex items-center">
+                    {(j > 0 || l.num < 0) && (
+                      <Sym
+                        termId={t.id}
+                        side={side}
+                        role="term"
+                        highlighted={highlighted}
+                        handlers={symHandlers}
+                        className={j > 0 ? "mx-3" : "mr-0.5"}
+                      >
+                        {j > 0 ? (l.num < 0 ? "−" : "+") : "−"}
+                      </Sym>
+                    )}
+                    {renderLeafBody(l, side, highlighted, { termId: t.id, inert: true })}
+                  </span>
+                ))}
+                <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+                  )
+                </Sym>
+              </span>
+            </span>
+          );
+        }
+
         return (
           <span key={t.id} className="inline-flex items-center">
-            {(i > 0 || t.num < 0) && (
-              <Sym
-                termId={t.id}
-                side={side}
-                role={i === 0 && negSide === side ? "neg" : "term"}
-                highlighted={highlighted}
-                blue={i === 0 && negSide === side}
-                handlers={symHandlers}
-                title={
-                  i === 0 && negSide === side
-                    ? "Drag across the equals sign to flip the sign of both sides"
-                    : undefined
-                }
-                className={i > 0 ? "mx-4" : "mr-1"}
-              >
-                {i > 0 ? (t.num < 0 ? "−" : "+") : "−"}
-              </Sym>
-            )}
-            {t.power === 1 ? (
-              <>
-                {!(magnitude === 1 && t.den === 1) &&
-                  (t.den === 1 ? (
-                    <Sym
-                      termId={t.id}
-                      side={side}
-                      role="coef"
-                      highlighted={highlighted}
-                      blue={canDivide}
-                      handlers={symHandlers}
-                      title={divideTitle}
-                    >
-                      {magnitude}
-                    </Sym>
-                  ) : (
-                    <Fraction
-                      termId={t.id}
-                      side={side}
-                      highlighted={highlighted}
-                      numText={magnitude}
-                      numRole={magnitude > 1 ? "coef" : "term"}
-                      numBlue={canDivide}
-                      numTitle={magnitude > 1 ? divideTitle : undefined}
-                      denNumber={t.den}
-                      denX={false}
-                      handlers={symHandlers}
-                    />
-                  ))}
-                <Sym
-                  termId={t.id}
-                  side={side}
-                  role={xDivideSide === side ? "xdiv" : "term"}
-                  highlighted={highlighted}
-                  blue={xDivideSide === side}
-                  handlers={symHandlers}
-                  title={
-                    xDivideSide === side
-                      ? "Drag across the equals sign to divide both sides by x (assumes x ≠ 0)"
-                      : undefined
-                  }
-                  className="italic"
-                >
-                  x
-                </Sym>
-              </>
-            ) : t.power === 0 ? (
-              t.den === 1 ? (
-                <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
-                  {magnitude}
-                </Sym>
-              ) : (
-                <Fraction
-                  termId={t.id}
-                  side={side}
-                  highlighted={highlighted}
-                  numText={magnitude}
-                  denNumber={t.den}
-                  denX={false}
-                  handlers={symHandlers}
-                />
-              )
-            ) : (
-              <Fraction
-                termId={t.id}
-                side={side}
-                highlighted={highlighted}
-                numText={magnitude}
-                numRole={magnitude > 1 ? "coef" : "term"}
-                numBlue={canDivide}
-                numTitle={magnitude > 1 ? divideTitle : undefined}
-                denNumber={t.den === 1 ? null : t.den}
-                denX
-                handlers={symHandlers}
-              />
-            )}
+            {(i > 0 || t.num < 0) && sign}
+            {renderLeafBody(t, side, highlighted)}
           </span>
         );
       })}
@@ -789,7 +925,7 @@ const EquationBuilderTool = () => {
         {renderSide(right, "right")}
       </div>
 
-      {/* State line: notice, solved, or contextual hint — plus the active assumption */}
+      {/* State line: notice, solved, or a neutral hint — plus the active assumption */}
       <div className="mt-10 flex h-6 items-center gap-3 text-sm text-muted-foreground">
         {notice ? (
           <span className="text-rose-500">{notice}</span>
@@ -804,7 +940,7 @@ const EquationBuilderTool = () => {
             <span className="text-amber-500">Block selected</span> — drag it across the equals sign.
           </span>
         ) : (
-          <span>{coachTip}</span>
+          <span>Drag a symbol across the equals sign, or sweep empty space to select a block.</span>
         )}
         {xNonZeroAssumed && !solvedContradiction && (
           <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
