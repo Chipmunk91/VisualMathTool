@@ -304,7 +304,69 @@ const EquationBuilderTool = () => {
     return null;
   }, [left, right]);
 
-  const hasFraction = useMemo(() => [...left, ...right].some((t) => t.den !== 1 || t.power === -1), [left, right]);
+  /**
+   * Strategy coach: recommend the best next move toward isolating x —
+   * gather x terms, clear constants off the x side, free x from the
+   * denominator, divide the coefficient, clear its denominator, flip the
+   * sign — rather than advertising whichever blue handle happens to be lit.
+   */
+  const coachTip: ReactNode = useMemo(() => {
+    const xTerms = (side: Term[]) => side.filter((t) => t.power !== 0 && t.num !== 0);
+    const leftX = xTerms(left);
+    const rightX = xTerms(right);
+    const glyph = (text: ReactNode) => <span className="font-serif text-foreground">{text}</span>;
+
+    // x on both sides → gather them first (move the smaller one)
+    if (leftX.length > 0 && rightX.length > 0) {
+      const size = (t: Term) => Math.abs(t.num / t.den);
+      const candidate = size(leftX[0]) <= size(rightX[0]) ? leftX[0] : rightX[0];
+      return <>Get the x terms together — drag {glyph(termText(candidate, true).trim())} across the equals sign.</>;
+    }
+    if (leftX.length === 0 && rightX.length === 0) {
+      return <>No x remains on either side — rewind a step from the history menu (top right).</>;
+    }
+
+    const xSide: Side = leftX.length > 0 ? "left" : "right";
+    const xTerm = (leftX.length > 0 ? leftX : rightX)[0];
+
+    // Constants sharing the x side → move them away
+    const stray = equation[xSide].find((t) => t.power === 0 && t.num !== 0);
+    if (stray) {
+      return <>Isolate the x term — drag {glyph(termText(stray, true).trim())} across the equals sign.</>;
+    }
+
+    // The x-ish term is alone on its side
+    if (xTerm.power === -1) {
+      return (
+        <>
+          x is trapped in the denominator — drag the <i className="text-sky-600">x</i> across to multiply both sides.
+        </>
+      );
+    }
+    if (Math.abs(xTerm.num) > 1) {
+      return (
+        <>
+          Drag the <span className="text-sky-600">{Math.abs(xTerm.num)}</span> across to divide both sides — or the{" "}
+          <i className="text-sky-600">x</i> itself, if you dare.
+        </>
+      );
+    }
+    if (xTerm.den > 1) {
+      return (
+        <>
+          Drag the <span className="text-sky-600">{xTerm.den}</span> under the x across to multiply both sides.
+        </>
+      );
+    }
+    if (xTerm.num < 0) {
+      return (
+        <>
+          Drag the <span className="text-sky-600">−</span> across to flip the sign of both sides.
+        </>
+      );
+    }
+    return <>Drag a symbol across the equals sign, or sweep empty space to select a block.</>;
+  }, [left, right, equation]);
 
   const solved = useMemo(() => {
     const check = (a: Term[], b: Term[]) =>
@@ -741,21 +803,8 @@ const EquationBuilderTool = () => {
           <span>
             <span className="text-amber-500">Block selected</span> — drag it across the equals sign.
           </span>
-        ) : divideSide ? (
-          <span>
-            Drag the <span className="text-sky-600">coefficient</span> across to divide — or the{" "}
-            <span className="text-sky-600 italic">x</span> itself, if you dare.
-          </span>
-        ) : negSide ? (
-          <span>
-            Drag the <span className="text-sky-600">−</span> across to flip the sign of both sides.
-          </span>
-        ) : hasFraction ? (
-          <span>
-            Drag a <span className="text-sky-600">denominator</span> across to multiply both sides.
-          </span>
         ) : (
-          <span>Drag a symbol across the equals sign, or sweep empty space to select a block.</span>
+          <span>{coachTip}</span>
         )}
         {xNonZeroAssumed && !solvedContradiction && (
           <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
