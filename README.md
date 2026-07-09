@@ -21,6 +21,15 @@ Interactive 3D linear algebra visualization:
 - **Matrix Classification**: Automatic detection of special matrix types (diagonal, symmetric, orthogonal, ...)
 - **Mathematical Expression Support**: Use fractions, powers, and expressions in inputs
 
+### Equation Playground (`/tools/equation-builder`)
+
+Build equations out of draggable symbol tokens and watch the function come alive:
+
+- **Drag & Drop Equation Building**: Compose f(x) from symbols, numbers, operators, and functions — click to append, drag to insert or reorder, click to remove
+- **Live Graph**: y = f(x) plotted instantly as the equation changes, with discontinuity handling (tan, 1/x)
+- **Input Space → Output Space**: A number-line mapping view showing how f stretches, squashes, and folds the input line onto the output line
+- **Probe Point**: Slide x₀ along the input and trace its image on both the graph and the mapping view
+
 More tools (calculus, probability, complex numbers, ...) coming soon.
 
 ## 🚀 Getting Started

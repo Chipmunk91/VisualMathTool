@@ -92,12 +92,12 @@ export const TransformedBasis = () => {
 
   if (isIdentityMatrix(values)) return null;
 
+  // The default basis is hidden while this overlay is visible, so draw the
+  // image of every basis vector — including ones the matrix leaves in place
   const arrows = [];
   for (let j = 0; j < cols; j++) {
     const basis = [0, 0, 0].map((_, k) => (k === j ? 1 : 0)).slice(0, cols);
     const tip = mapPoint(values, basis, animationT);
-    // Skip columns that don't move their basis vector (e.g. k̂ under a Z-rotation)
-    if (tip.distanceTo(embed(basis)) < 0.01) continue;
     arrows.push(
       <Arrow key={j} tip={tip} color={BASIS_COLORS[j]} opacity={0.9} label={BASIS_LABELS[j]} />
     );

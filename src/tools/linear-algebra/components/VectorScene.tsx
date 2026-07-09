@@ -670,8 +670,10 @@ const VectorScene = () => {
         <meshStandardMaterial color="#FFFFFF" />
       </mesh>
 
-      {/* Standard basis vectors î, ĵ, k̂ */}
-      {defaultVectors.map((vector) => (
+      {/* Standard basis vectors î, ĵ, k̂ — hidden while a non-identity
+          transform is shown so the transformed basis can take their place
+          without cluttering the origin */}
+      {(!showTransformed || isIdentity) && defaultVectors.map((vector) => (
         <Vector
           key={vector.id}
           vector={vector}

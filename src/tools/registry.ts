@@ -1,5 +1,5 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
-import { Box, type LucideIcon } from "lucide-react";
+import { Box, FunctionSquare, type LucideIcon } from "lucide-react";
 
 export interface ToolDefinition {
   /** URL segment for the tool: /tools/<id> */
@@ -26,6 +26,15 @@ export const tools: ToolDefinition[] = [
     category: "Linear Algebra",
     icon: Box,
     component: lazy(() => import("./linear-algebra")),
+  },
+  {
+    id: "equation-builder",
+    name: "Equation Playground",
+    description:
+      "Build f(x) by dragging symbols and operations into an equation, then watch how it maps input space to output space — graph and number-line views update live.",
+    category: "Functions",
+    icon: FunctionSquare,
+    component: lazy(() => import("./equation-builder")),
   },
 ];
 
