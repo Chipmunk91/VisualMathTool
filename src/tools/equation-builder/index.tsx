@@ -121,6 +121,101 @@ const makeStep = (label: string, state: EquationState, dangerous?: boolean, note
   text: equationText(state),
 });
 
+type Role = "term" | "coef" | "den" | "xdiv" | "xmul";
+
+interface SymbolHandlers {
+  dragStart: (e: DragEvent, termId: string, side: Side, role: Role) => void;
+  dragEnd: () => void;
+  hover: (termId: string | null) => void;
+}
+
+interface SymProps {
+  termId: string;
+  side: Side;
+  role: Role;
+  highlighted: boolean;
+  blue?: boolean;
+  title?: string;
+  className?: string;
+  handlers: SymbolHandlers;
+  children: ReactNode;
+}
+
+/**
+ * One interactive symbol. Module-level on purpose: defining this inside the
+ * tool component would give it a new identity every render, remounting the
+ * DOM node mid-drag and silently cancelling HTML5 drag-and-drop.
+ * Hovering any non-blue symbol highlights its whole term (the unit that a
+ * drag from here would move); blue symbols are their own affordance.
+ */
+const Sym = ({ termId, side, role, highlighted, blue, title, className = "", handlers, children }: SymProps) => (
+  <span
+    data-symbol
+    data-term-id={termId}
+    data-side={side}
+    draggable
+    onDragStart={(e) => handlers.dragStart(e, termId, side, role)}
+    onDragEnd={handlers.dragEnd}
+    onPointerEnter={blue ? undefined : () => handlers.hover(termId)}
+    onPointerLeave={blue ? undefined : () => handlers.hover(null)}
+    title={title ?? "Drag across the equals sign — or sweep empty space to select a block"}
+    className={`cursor-grab select-none transition-colors duration-150 active:cursor-grabbing ${
+      blue ? "text-sky-600 hover:text-sky-400" : highlighted ? "text-amber-500" : ""
+    } ${className}`}
+  >
+    {children}
+  </span>
+);
+
+interface FractionProps {
+  termId: string;
+  side: Side;
+  highlighted: boolean;
+  numText: string | number;
+  denNumber: number | null;
+  denX: boolean;
+  handlers: SymbolHandlers;
+}
+
+/** Stacked fraction, sized and centered to sit on the equation's math axis */
+const Fraction = ({ termId, side, highlighted, numText, denNumber, denX, handlers }: FractionProps) => (
+  <span className="mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
+    <Sym termId={termId} side={side} role="term" highlighted={highlighted} handlers={handlers} className="px-[0.15em]">
+      {numText}
+    </Sym>
+    <span className="my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
+    <span className="inline-flex items-center">
+      {denNumber !== null && (
+        <Sym
+          termId={termId}
+          side={side}
+          role="den"
+          highlighted={highlighted}
+          blue
+          handlers={handlers}
+          title={`Drag across to multiply both sides by ${denNumber}`}
+        >
+          {denNumber}
+        </Sym>
+      )}
+      {denX && (
+        <Sym
+          termId={termId}
+          side={side}
+          role="xmul"
+          highlighted={highlighted}
+          blue
+          handlers={handlers}
+          title="Drag across to multiply both sides by x"
+          className="italic"
+        >
+          x
+        </Sym>
+      )}
+    </span>
+  </span>
+);
+
 const EquationBuilderTool = () => {
   const [presetIndex, setPresetIndex] = useState(0);
   const [equation, setEquation] = useState<EquationState>(() => PRESETS[0].make());
@@ -129,6 +224,7 @@ const EquationBuilderTool = () => {
   const [dragOver, setDragOver] = useState<Side | null>(null);
   const [dragging, setDragging] = useState(false);
   const [selection, setSelection] = useState<{ side: Side; termIds: string[] } | null>(null);
+  const [hoveredTermId, setHoveredTermId] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -326,8 +422,6 @@ const EquationBuilderTool = () => {
     setDragging(true);
   };
 
-  type Role = "term" | "coef" | "den" | "xdiv" | "xmul";
-
   const onSymbolDragStart = (e: DragEvent, termId: string, side: Side, role: Role) => {
     // A selected block always moves as a whole, whatever symbol is grabbed
     if (selection && selection.side === side && selection.termIds.includes(termId)) {
@@ -358,93 +452,18 @@ const EquationBuilderTool = () => {
   };
 
   // --- Rendering ---
-  const symbolClass = (opts: { selected: boolean; blue?: boolean }) => {
-    const base = "cursor-grab select-none transition-colors duration-150 active:cursor-grabbing";
-    if (opts.blue) return `${base} text-sky-600 hover:text-sky-400`;
-    if (opts.selected) return `${base} text-amber-500`;
-    return `${base} hover:text-amber-500`;
+  const symHandlers: SymbolHandlers = {
+    dragStart: onSymbolDragStart,
+    dragEnd: () => {
+      setDragging(false);
+      setDragOver(null);
+    },
+    hover: setHoveredTermId,
   };
-
-  interface SymProps {
-    termId: string;
-    side: Side;
-    role: Role;
-    selected: boolean;
-    blue?: boolean;
-    title?: string;
-    className?: string;
-    children: ReactNode;
-  }
-  const Sym = ({ termId, side, role, selected, blue, title, className = "", children }: SymProps) => (
-    <span
-      data-symbol
-      data-term-id={termId}
-      data-side={side}
-      draggable
-      onDragStart={(e) => onSymbolDragStart(e, termId, side, role)}
-      onDragEnd={() => {
-        setDragging(false);
-        setDragOver(null);
-      }}
-      title={title ?? "Drag across the equals sign — or sweep empty space to select a block"}
-      className={`${symbolClass({ selected, blue })} ${className}`}
-    >
-      {children}
-    </span>
-  );
-
-  /** Stacked fraction. The denominator may contain a numeric part and/or an x. */
-  const Fraction = ({
-    t,
-    side,
-    selected,
-    numContent,
-    denNumber,
-    denX,
-  }: {
-    t: Term;
-    side: Side;
-    selected: boolean;
-    numContent: ReactNode;
-    denNumber: number | null;
-    denX: boolean;
-  }) => (
-    <span className="inline-flex flex-col items-center self-center text-[0.55em] leading-tight">
-      <span className="inline-flex items-baseline">{numContent}</span>
-      <span className="my-0.5 h-[0.06em] w-full min-w-[1.2em] rounded bg-current" aria-hidden />
-      <span className="inline-flex items-baseline">
-        {denNumber !== null && (
-          <Sym
-            termId={t.id}
-            side={side}
-            role="den"
-            selected={selected}
-            blue
-            title={`Drag across to multiply both sides by ${denNumber}`}
-          >
-            {denNumber}
-          </Sym>
-        )}
-        {denX && (
-          <Sym
-            termId={t.id}
-            side={side}
-            role="xmul"
-            selected={selected}
-            blue
-            title="Drag across to multiply both sides by x"
-            className="italic"
-          >
-            x
-          </Sym>
-        )}
-      </span>
-    </span>
-  );
 
   const renderSide = (terms: Term[], side: Side) => (
     <span
-      className={`inline-flex items-baseline rounded-xl px-2 py-1 transition-shadow ${
+      className={`inline-flex items-center rounded-xl px-2 py-1 transition-shadow ${
         dragOver === side ? "ring-2 ring-amber-300" : dragging ? "ring-1 ring-border" : ""
       }`}
       onDragOver={(e) => {
@@ -455,12 +474,22 @@ const EquationBuilderTool = () => {
       onDrop={(e) => onDrop(e, side)}
     >
       {terms.map((t, i) => {
-        const selected = !!(selection?.side === side && selection.termIds.includes(t.id));
+        // The whole term is one interactive unit: selected via marquee, or
+        // hovered via any of its symbols
+        const highlighted =
+          !!(selection?.side === side && selection.termIds.includes(t.id)) || hoveredTermId === t.id;
         const magnitude = Math.abs(t.num);
         return (
-          <span key={t.id} className="inline-flex items-baseline">
+          <span key={t.id} className="inline-flex items-center">
             {(i > 0 || t.num < 0) && (
-              <Sym termId={t.id} side={side} role="term" selected={selected} className={i > 0 ? "mx-4" : "mr-1"}>
+              <Sym
+                termId={t.id}
+                side={side}
+                role="term"
+                highlighted={highlighted}
+                handlers={symHandlers}
+                className={i > 0 ? "mx-4" : "mr-1"}
+              >
                 {i > 0 ? (t.num < 0 ? "−" : "+") : "−"}
               </Sym>
             )}
@@ -472,8 +501,9 @@ const EquationBuilderTool = () => {
                       termId={t.id}
                       side={side}
                       role="coef"
-                      selected={selected}
+                      highlighted={highlighted}
                       blue={divideSide === side}
+                      handlers={symHandlers}
                       title={
                         divideSide === side
                           ? `Drag across the equals sign to divide both sides by ${t.num}`
@@ -484,24 +514,22 @@ const EquationBuilderTool = () => {
                     </Sym>
                   ) : (
                     <Fraction
-                      t={t}
+                      termId={t.id}
                       side={side}
-                      selected={selected}
-                      numContent={
-                        <Sym termId={t.id} side={side} role="term" selected={selected}>
-                          {magnitude}
-                        </Sym>
-                      }
+                      highlighted={highlighted}
+                      numText={magnitude}
                       denNumber={t.den}
                       denX={false}
+                      handlers={symHandlers}
                     />
                   ))}
                 <Sym
                   termId={t.id}
                   side={side}
                   role={xDivideSide === side ? "xdiv" : "term"}
-                  selected={selected}
+                  highlighted={highlighted}
                   blue={xDivideSide === side}
+                  handlers={symHandlers}
                   title={
                     xDivideSide === side
                       ? "Drag across the equals sign to divide both sides by x (assumes x ≠ 0)"
@@ -514,35 +542,29 @@ const EquationBuilderTool = () => {
               </>
             ) : t.power === 0 ? (
               t.den === 1 ? (
-                <Sym termId={t.id} side={side} role="term" selected={selected}>
+                <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
                   {magnitude}
                 </Sym>
               ) : (
                 <Fraction
-                  t={t}
+                  termId={t.id}
                   side={side}
-                  selected={selected}
-                  numContent={
-                    <Sym termId={t.id} side={side} role="term" selected={selected}>
-                      {magnitude}
-                    </Sym>
-                  }
+                  highlighted={highlighted}
+                  numText={magnitude}
                   denNumber={t.den}
                   denX={false}
+                  handlers={symHandlers}
                 />
               )
             ) : (
               <Fraction
-                t={t}
+                termId={t.id}
                 side={side}
-                selected={selected}
-                numContent={
-                  <Sym termId={t.id} side={side} role="term" selected={selected}>
-                    {magnitude}
-                  </Sym>
-                }
+                highlighted={highlighted}
+                numText={magnitude}
                 denNumber={t.den === 1 ? null : t.den}
                 denX
+                handlers={symHandlers}
               />
             )}
           </span>
@@ -550,8 +572,6 @@ const EquationBuilderTool = () => {
       })}
     </span>
   );
-
-  const dangerousSteps = history.filter((s) => s.dangerous).length;
 
   return (
     <div
@@ -601,7 +621,7 @@ const EquationBuilderTool = () => {
       {/* The equation */}
       <div
         ref={equationRef}
-        className={`flex items-baseline font-serif text-6xl tracking-wide transition-colors duration-300 sm:text-7xl ${
+        className={`flex items-center leading-none font-serif text-6xl tracking-wide transition-colors duration-300 sm:text-7xl ${
           solvedContradiction ? "text-rose-500" : solved ? "text-emerald-600" : ""
         }`}
       >
