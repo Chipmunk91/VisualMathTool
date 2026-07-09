@@ -1,191 +1,96 @@
-# Matrix Meets Vector 🧮✨
+# Visual Math Tools 🧮✨
 
-An interactive 3D linear algebra visualization platform that brings matrices and vectors to life! Transform abstract mathematical concepts into engaging visual experiences, inspired by the educational philosophy of 3Blue1Brown.
+A collection of interactive math visualization tools that turn abstract concepts into engaging visual experiences, inspired by the educational philosophy of 3Blue1Brown.
 
-![Matrix Meets Vector](client/public/favicon.png)
+**100% serverless** — a pure static site built with Vite + React. No backend, no database, nothing to deploy but static files.
 
-## ✨ Features
+## 🧰 Tools
+
+### Matrix Meets Vector (`/tools/linear-algebra`)
+
+Interactive 3D linear algebra visualization:
 
 - **Interactive 3D Visualization**: Drag and manipulate vectors in real-time 3D space
 - **Matrix Transformations**: Apply linear transformations and watch vectors transform before your eyes
-- **Real-time Analysis**: Get instant feedback on vector properties, angles, and relationships
+- **Real-time Analysis**: Instant feedback on vector properties, angles, and relationships
 - **Eigenvalue Decomposition**: Visualize eigenvectors and eigenvalues for square matrices
 - **Singular Value Decomposition**: Understand matrix rank and principal components
-- **Matrix Classification**: Automatic detection of special matrix types (diagonal, symmetric, orthogonal, etc.)
-- **Mathematical Expression Support**: Use fractions, powers, and mathematical expressions in inputs
-- **Responsive Design**: Works seamlessly across desktop and mobile devices
+- **Matrix Classification**: Automatic detection of special matrix types (diagonal, symmetric, orthogonal, ...)
+- **Mathematical Expression Support**: Use fractions, powers, and expressions in inputs
 
-## 🎯 Educational Goals
-
-This tool helps students and educators:
-- Build intuitive understanding of linear transformations
-- Visualize the geometric meaning of matrix operations
-- Explore eigenspaces and principal component analysis
-- Understand how matrices transform vector spaces
-- Connect abstract algebra concepts to visual geometry
+More tools (calculus, probability, complex numbers, ...) coming soon.
 
 ## 🚀 Getting Started
 
-### Prerequisites
+Requires Node.js v18+.
 
-- Node.js (v18 or higher)
-- npm or yarn package manager
+```bash
+npm install
+npm run dev        # start the dev server with hot reload
+```
 
-### Installation
+Other scripts:
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd matrix-meets-vector
-   ```
+```bash
+npm run build      # production build to dist/
+npm run preview    # serve the production build locally
+npm run check      # type-check with tsc
+```
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-3. **Start the development server**
-   ```bash
-   npm run dev
-   ```
-
-4. **Open your browser**
-   Navigate to `http://localhost:5000` to start exploring!
+The production build in `dist/` is fully static and relocatable (relative base + hash routing), so it can be dropped onto any static host — GitHub Pages, Netlify, Vercel, S3, or a plain file server.
 
 ## 🏗️ Project Structure
 
 ```
-matrix-meets-vector/
-├── client/                 # Frontend React application
-│   ├── src/
-│   │   ├── components/     # React components
-│   │   │   ├── ui/         # UI component library
-│   │   │   ├── Vector.tsx  # 3D vector rendering
-│   │   │   ├── VectorScene.tsx # Main 3D scene
-│   │   │   ├── MatrixInput.tsx # Matrix input interface
-│   │   │   └── ...
-│   │   ├── lib/
-│   │   │   ├── stores/     # Zustand state management
-│   │   │   ├── math.ts     # Mathematical computations
-│   │   │   └── utils.ts    # Utility functions
-│   │   └── pages/          # Application pages
-│   ├── public/             # Static assets
-│   └── index.html          # Main HTML template
-├── server/                 # Backend Express server
-├── shared/                 # Shared types and schemas
-└── README.md
+index.html              # single entry page
+public/                 # static assets (favicons)
+src/
+  main.tsx              # React entry point
+  App.tsx               # router + shared tool shell (header, suspense)
+  pages/                # top-level pages (Home, NotFound)
+  components/ui/        # shared UI primitives (shadcn-style)
+  lib/                  # shared utilities
+  tools/
+    registry.ts         # ← the tool registry: one entry per tool
+    linear-algebra/     # Matrix Meets Vector
+      index.tsx         # tool entry component
+      components/       # tool-specific components (3D scene, inputs, analysis)
+      lib/              # tool-specific math, parsing, colors, stores
 ```
 
-## 🎮 How to Use
+## ➕ Adding a New Tool
 
-### Basic Vector Operations
+1. Create `src/tools/<your-tool>/index.tsx` that default-exports a React component. The component is rendered inside a full-height shell (`h-full` container below a slim header) — everything else is up to you.
+2. Register it in `src/tools/registry.ts`:
 
-1. **Add Vectors**: Use the Vector Input panel to create new vectors
-2. **Drag Vectors**: Click and drag vector endpoints to move them in 3D space
-3. **Transform Vectors**: Set up transformation matrices and watch vectors change
-4. **Analyze Results**: View detailed analysis of vector properties and relationships
+```ts
+{
+  id: "your-tool",              // route becomes /tools/your-tool
+  name: "Your Tool",
+  description: "What it does.",
+  category: "Calculus",
+  icon: TrendingUp,             // any lucide-react icon
+  component: lazy(() => import("./your-tool")),
+}
+```
 
-### Matrix Transformations
+That's it — the route and the home page card are generated from the registry. Tools are lazy-loaded, so each one only downloads when opened.
 
-1. **Choose Matrix Dimension**: Select 2×2, 2×3, 3×2, or 3×3 matrices
-2. **Enter Values**: Use mathematical expressions like `1/2`, `sqrt(2)`, or `2^3`
-3. **Apply Transformation**: Watch your vectors transform in real-time
-4. **Explore Properties**: View eigenvalues, eigenvectors, and singular values
+Keep tool-specific code (components, stores, math helpers) inside the tool's own folder; promote something to `src/components/` or `src/lib/` only when a second tool needs it.
 
-### Advanced Features
+## 🛠️ Tech Stack
 
-- **Matrix Visualization**: Toggle dimension visualization to see transformation spaces
-- **Vector Analysis**: Compare original and transformed vectors
-- **Mathematical Expressions**: Use complex expressions in matrix and vector inputs
-- **Export/Import**: Save and load your mathematical explorations
-
-## 🛠️ Technology Stack
-
-- **Frontend**: React 18, TypeScript, Three.js, React Three Fiber
-- **3D Graphics**: Three.js for WebGL rendering
-- **State Management**: Zustand for reactive state management
-- **UI Components**: Radix UI components with Tailwind CSS
-- **Math Processing**: Custom mathematical expression parser
-- **Backend**: Express.js with TypeScript
-- **Build Tool**: Vite for fast development and building
-
-## 📚 Mathematical Concepts Covered
-
-- **Linear Transformations**: Scaling, rotation, reflection, shearing
-- **Vector Spaces**: 2D and 3D vector operations and properties
-- **Matrix Operations**: Multiplication, determinants, traces
-- **Eigendecomposition**: Eigenvalues and eigenvectors
-- **Singular Value Decomposition**: Matrix rank and principal components
-- **Matrix Classification**: Identity, diagonal, symmetric, orthogonal matrices
-
-## 🎨 Customization
-
-The application supports various customization options:
-
-- **Vector Colors**: Automatic color assignment with customizable palettes
-- **Mathematical Expressions**: Full expression parsing for complex inputs
-- **Visualization Modes**: Toggle between different rendering styles
-- **Analysis Depth**: Choose from basic to advanced mathematical analysis
+- **React 18** + **TypeScript** + **Vite**
+- **Three.js** via @react-three/fiber and @react-three/drei (3D rendering)
+- **Zustand** (state management)
+- **mathjs** (math parsing and computation)
+- **Tailwind CSS** + shadcn-style UI primitives
+- **wouter** (tiny hash-based router)
 
 ## 🤝 Contributing
 
-We welcome contributions! Here's how you can help:
-
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Make your changes**: Follow the existing code style and patterns
-4. **Add tests**: Ensure your changes work correctly
-5. **Commit your changes**: `git commit -m 'Add amazing feature'`
-6. **Push to the branch**: `git push origin feature/amazing-feature`
-7. **Open a Pull Request**: Describe your changes and their benefits
-
-### Development Guidelines
-
-- Use TypeScript for type safety
-- Follow React best practices and hooks patterns
-- Write clear, documented code
-- Test mathematical computations thoroughly
-- Ensure responsive design across devices
-
-## 📖 Educational Resources
-
-This project is inspired by:
-- **3Blue1Brown**: Essence of Linear Algebra series
-- **Interactive Mathematics**: Visual learning approaches
-- **Mathematical Visualization**: Making abstract concepts tangible
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**Vectors not appearing?**
-- Check browser WebGL support
-- Ensure proper vector dimensions
-- Verify mathematical expressions are valid
-
-**Matrix transformations not working?**
-- Confirm matrix dimensions match vector dimensions
-- Check for numerical stability in matrix values
-- Verify mathematical expressions parse correctly
-
-**Performance issues?**
-- Reduce the number of active vectors
-- Close unnecessary browser tabs
-- Check system WebGL capabilities
+See [CONTRIBUTING.md](CONTRIBUTING.md). The easiest contribution: add a new tool (see above).
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **3Blue1Brown** for inspiring visual mathematics education
-- **Three.js community** for powerful 3D graphics capabilities
-- **React Three Fiber** for seamless React-Three.js integration
-- **Educational mathematics community** for feedback and inspiration
-
----
-
-**Happy Learning!** 🎓 Transform your understanding of linear algebra, one vector at a time.
-
-For questions, suggestions, or educational collaborations, feel free to open an issue or reach out to the community!
+MIT — see [LICENSE](LICENSE).

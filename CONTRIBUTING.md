@@ -45,18 +45,20 @@ Thank you for your interest in contributing to Matrix Meets Vector! This project
 ### Project Structure
 
 ```
-client/src/
-├── components/          # React components
-│   ├── ui/             # Reusable UI components
-│   ├── Vector.tsx      # 3D vector rendering
-│   ├── VectorScene.tsx # Main 3D scene
-│   └── ...
-├── lib/
-│   ├── stores/         # State management (Zustand)
-│   ├── math.ts         # Mathematical computations
-│   └── utils.ts        # Helper functions
-└── pages/              # Application pages
+src/
+├── App.tsx              # Router + shared tool shell
+├── pages/               # Top-level pages (Home, NotFound)
+├── components/ui/       # Shared UI primitives
+├── lib/                 # Shared utilities
+└── tools/
+    ├── registry.ts      # Tool registry — one entry per tool
+    └── linear-algebra/  # Matrix Meets Vector
+        ├── index.tsx    # Tool entry component
+        ├── components/  # 3D scene, inputs, analysis panels
+        └── lib/         # Math, parsing, colors, Zustand stores
 ```
+
+The easiest way to contribute a new tool: add a folder under `src/tools/` and register it in `src/tools/registry.ts` (see the README for a walkthrough).
 
 ## 📏 Code Standards
 

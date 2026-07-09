@@ -114,13 +114,5 @@ Thumbs.db
 vite.config.js.timestamp-*
 vite.config.ts.*
 
-# Server public directory
-server/public
 
-# Replit specific
-.replit
-replit.nix
 
-# Development assets (keep only necessary ones)
-attached_assets/
-!attached_assets/MatrixMeetsVector.png
