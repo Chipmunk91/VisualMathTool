@@ -18,6 +18,7 @@ import {
   combine,
 } from "./model";
 import { parseEquation, renderMathPreview } from "./parse";
+import { GraphPane, isFunctionEquation } from "./graph";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -1915,6 +1916,9 @@ const EquationBuilderTool = () => {
             </span>
           ))}
       </div>
+
+      {/* Open-world reveal: the graph pane appears once a function enters the equation */}
+      {isFunctionEquation(equation) && <GraphPane left={left} right={right} />}
 
       {/* Presets + reset, kept out of the way */}
       <div className="absolute bottom-6 flex flex-wrap items-center justify-center gap-2 px-4" data-ui>
