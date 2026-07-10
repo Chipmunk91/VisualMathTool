@@ -1,5 +1,22 @@
 import { useMemo, useRef, useState, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { History, TriangleAlert } from "lucide-react";
+import { History, Search, TriangleAlert } from "lucide-react";
+import {
+  Power,
+  LeafTerm,
+  FuncName,
+  EqTerm,
+  Side,
+  EquationState,
+  opposite,
+  leaf,
+  group,
+  func,
+  scaleNum,
+  scaleDen,
+  cloneState,
+  combine,
+} from "./model";
+import { parseEquation, renderMathPreview } from "./parse";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -16,109 +33,6 @@ import { History, TriangleAlert } from "lucide-react";
  * Drops anywhere route to the opposite side; dropping back on the source
  * side cancels. Every move lands in the step history behind the menu.
  */
-
-// Leaf terms are (num/den) · x^power with den > 0, reduced, power ∈ {-1, 0, 1}.
-// Group terms are (num/den) · (sum of leaf terms) — parentheses with a factor.
-type Power = -1 | 0 | 1 | 2;
-
-interface LeafTerm {
-  id: string;
-  kind: "leaf";
-  num: number;
-  den: number;
-  power: Power;
-  /** Result of a square root: shown with a ± prefix (both roots kept) */
-  pm?: boolean;
-  /** num/den is a radicand: the value is √(num/den), display-only */
-  radical?: boolean;
-  /** An inverse-function value: fnVal applied to num/den (e.g. arcsin(1/2)), display-only */
-  fnVal?: string;
-}
-
-interface GroupTerm {
-  id: string;
-  kind: "group";
-  num: number; // the factor's numerator (signed)
-  den: number; // the factor's denominator
-  inner: LeafTerm[];
-}
-
-type FuncName = "sin" | "cos" | "ln" | "exp";
-
-/** A function wrapped around an argument, with a rational coefficient: a·fn(inner) */
-interface FuncTerm {
-  id: string;
-  kind: "func";
-  num: number;
-  den: number;
-  fn: FuncName;
-  inner: LeafTerm[];
-}
-
-type EqTerm = LeafTerm | GroupTerm | FuncTerm;
-
-type Side = "left" | "right";
-
-const opposite = (side: Side): Side => (side === "left" ? "right" : "left");
-
-interface EquationState {
-  left: EqTerm[];
-  right: EqTerm[];
-}
-
-const gcd = (a: number, b: number): number => (b === 0 ? Math.abs(a) : gcd(b, a % b));
-
-function reduce(num: number, den: number): { num: number; den: number } {
-  if (den < 0) {
-    num = -num;
-    den = -den;
-  }
-  const g = gcd(Math.abs(num), den) || 1;
-  return { num: num / g, den: den / g };
-}
-
-let termCounter = 0;
-const leaf = (num: number, power: Power = 0, den = 1): LeafTerm => ({
-  id: `t${termCounter++}`,
-  kind: "leaf",
-  ...reduce(num, den),
-  power,
-});
-const group = (num: number, inner: LeafTerm[], den = 1): GroupTerm => ({
-  id: `t${termCounter++}`,
-  kind: "group",
-  ...reduce(num, den),
-  inner: inner.map((l) => leaf(l.num, l.power, l.den)),
-});
-const func = (fn: FuncName, num: number, inner: LeafTerm[], den = 1): FuncTerm => ({
-  id: `t${termCounter++}`,
-  kind: "func",
-  ...reduce(num, den),
-  fn,
-  inner: inner.map((l) => leaf(l.num, l.power, l.den)),
-});
-
-// Scale a term's value: both work identically on leaves and group factors
-const scaleNum = (t: EqTerm, k: number): EqTerm =>
-  t.kind === "leaf"
-    ? leaf(t.num * k, t.power, t.den)
-    : t.kind === "group"
-      ? group(t.num * k, t.inner, t.den)
-      : func(t.fn, t.num * k, t.inner, t.den);
-const scaleDen = (t: EqTerm, k: number): EqTerm =>
-  t.kind === "leaf"
-    ? leaf(t.num, t.power, t.den * k)
-    : t.kind === "group"
-      ? group(t.num, t.inner, t.den * k)
-      : func(t.fn, t.num, t.inner, t.den * k);
-
-const cloneTerm = (t: EqTerm): EqTerm =>
-  t.kind === "leaf" ? { ...t } : { ...t, inner: t.inner.map((l) => ({ ...l })) };
-
-const cloneState = (state: EquationState): EquationState => ({
-  left: state.left.map(cloneTerm),
-  right: state.right.map(cloneTerm),
-});
 
 interface Preset {
   name: string;
@@ -142,39 +56,6 @@ const PRESETS: Preset[] = [
   { name: "ln(x) = 2", make: () => ({ left: [func("ln", 1, [leaf(1, 1)])], right: [leaf(2)] }) },
   { name: "eˣ + 1 = 4", make: () => ({ left: [func("exp", 1, [leaf(1, 1)]), leaf(1)], right: [leaf(4)] }) },
 ];
-
-/**
- * Normalize a side: unwrap groups whose factor became 1, drop zero terms,
- * and merge like leaf terms (grouped by power) with exact rational arithmetic.
- * Groups are kept as-is otherwise — distribution is the player's move.
- */
-function combine(terms: EqTerm[]): EqTerm[] {
-  const passthrough: EqTerm[] = [];
-  const leaves: LeafTerm[] = [];
-  for (const t of terms) {
-    if (t.kind === "group") {
-      if (t.num === 0) continue;
-      if (t.num === 1 && t.den === 1) leaves.push(...t.inner.map((l) => leaf(l.num, l.power, l.den)));
-      else passthrough.push(group(t.num, t.inner, t.den));
-    } else if (t.kind === "func") {
-      if (t.num !== 0) passthrough.push(func(t.fn, t.num, t.inner, t.den));
-    } else if (t.pm || t.radical || t.fnVal) {
-      passthrough.push({ ...t }); // terminal values never merge
-    } else {
-      leaves.push(t);
-    }
-  }
-  const sum = (list: LeafTerm[]) =>
-    list.reduce((acc, t) => reduce(acc.num * t.den + t.num * acc.den, acc.den * t.den), { num: 0, den: 1 });
-  const merged: LeafTerm[] = [];
-  for (const power of [2, 1, 0, -1] as Power[]) {
-    const s = sum(leaves.filter((t) => t.power === power));
-    if (s.num !== 0) merged.push(leaf(s.num, power, s.den));
-  }
-  const result: EqTerm[] = [...passthrough, ...merged];
-  if (result.length === 0) result.push(leaf(0));
-  return result;
-}
 
 /** Plain-text rendering of a term, for history rows and labels */
 function termText(t: EqTerm, leading: boolean): string {
@@ -376,6 +257,8 @@ const EquationBuilderTool = () => {
   const [hoveredTermId, setHoveredTermId] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [inputText, setInputText] = useState("");
+  const [inputMsg, setInputMsg] = useState<{ kind: "err" | "warn"; text: string } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const equationRef = useRef<HTMLDivElement>(null);
 
@@ -671,10 +554,11 @@ const EquationBuilderTool = () => {
       flashNotice(`${source.fn} never leaves [−1, 1] — no solution here.`);
       return;
     }
-    const INVERSE: Record<FuncName, string> = { sin: "arcsin", cos: "arccos", ln: "e^", exp: "ln" };
+    const INVERSE: Record<FuncName, string> = { sin: "arcsin", cos: "arccos", tan: "arctan", ln: "e^", exp: "ln" };
     const LABEL: Record<FuncName, string> = {
       sin: "applied arcsin to both sides",
       cos: "applied arccos to both sides",
+      tan: "applied arctan to both sides",
       ln: "exponentiated both sides (e to each side)",
       exp: "took the natural log of both sides",
     };
@@ -682,7 +566,7 @@ const EquationBuilderTool = () => {
     let result: LeafTerm;
     if (
       (source.fn === "exp" && c.num === 1 && c.den === 1) ||
-      (source.fn === "sin" && c.num === 0) ||
+      ((source.fn === "sin" || source.fn === "tan") && c.num === 0) ||
       (source.fn === "cos" && c.num === 1 && c.den === 1)
     ) {
       result = leaf(0);
@@ -691,7 +575,7 @@ const EquationBuilderTool = () => {
     } else {
       result = { ...leaf(c.num, 0, c.den), fnVal: INVERSE[source.fn] };
     }
-    const isTrig = source.fn === "sin" || source.fn === "cos";
+    const isTrig = source.fn === "sin" || source.fn === "cos" || source.fn === "tan";
     const next = {
       ...equation,
       [from]: combine(source.inner.map((l) => leaf(l.num, l.power, l.den))),
@@ -713,6 +597,26 @@ const EquationBuilderTool = () => {
     setHistory([makeStep("start", state)]);
     setSelection(null);
     setNotice(null);
+  };
+
+  // Typed equation: live pretty-math preview and Enter-to-load
+  const inputPreview = useMemo(
+    () => (inputText.trim() ? renderMathPreview(inputText) : null),
+    [inputText]
+  );
+
+  const submitInput = () => {
+    const result = parseEquation(inputText);
+    if (result.ok) {
+      setPresetIndex(-1);
+      setEquation(result.state);
+      setHistory([makeStep("start", result.state)]);
+      setSelection(null);
+      setNotice(null);
+      setInputMsg(null);
+    } else {
+      setInputMsg({ kind: result.stage === "parse" ? "err" : "warn", text: result.message });
+    }
   };
 
   const restoreStep = (index: number) => {
@@ -1230,6 +1134,39 @@ const EquationBuilderTool = () => {
         if (payload) onDrop(e, opposite(payload.from));
       }}
     >
+      {/* Typed equation input with live parse preview */}
+      <div className="absolute left-1/2 top-4 w-[min(560px,75vw)] -translate-x-1/2" data-ui>
+        <div className="flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 shadow-sm transition-colors focus-within:border-foreground/40">
+          <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <input
+            value={inputText}
+            onChange={(e) => {
+              setInputText(e.target.value);
+              setInputMsg(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submitInput();
+            }}
+            placeholder="type an equation… e.g. 2(x + 3) = 8"
+            spellCheck={false}
+            className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+          />
+        </div>
+        {(inputPreview || inputMsg) && (
+          <div className="mt-2 flex flex-col items-center gap-1">
+            {inputPreview && <div className="font-serif text-2xl">{inputPreview}</div>}
+            {inputMsg && (
+              <div className={`text-xs ${inputMsg.kind === "err" ? "text-rose-500" : "text-amber-600"}`}>
+                {inputMsg.text}
+              </div>
+            )}
+            {inputPreview && !inputMsg && (
+              <div className="text-xs text-muted-foreground/70">press Enter to load</div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* History menu button */}
       <div className="absolute right-4 top-4" data-ui>
         <button
@@ -1312,6 +1249,7 @@ const EquationBuilderTool = () => {
           className="rounded-full border border-border bg-background px-3 py-1 font-serif text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
           title="Choose an equation"
         >
+          {presetIndex === -1 && <option value={-1}>custom</option>}
           {PRESETS.map((preset, i) => (
             <option key={preset.name} value={i}>
               {preset.name}
@@ -1319,7 +1257,7 @@ const EquationBuilderTool = () => {
           ))}
         </select>
         <button
-          onClick={() => loadPreset(presetIndex)}
+          onClick={() => restoreStep(0)}
           className="rounded-full border border-border px-3 py-1 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
           title="Reset the current equation"
         >
