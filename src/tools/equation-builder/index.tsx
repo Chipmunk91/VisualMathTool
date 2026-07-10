@@ -257,6 +257,7 @@ const EquationBuilderTool = () => {
   const [hoveredTermId, setHoveredTermId] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [dragPreview, setDragPreview] = useState<{ kind: "ok" | "reject" | "cancel"; text: string } | null>(null);
   const [inputText, setInputText] = useState("");
   const [inputMsg, setInputMsg] = useState<{ kind: "err" | "warn"; text: string } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -284,19 +285,10 @@ const EquationBuilderTool = () => {
     setNotice(null);
   };
 
-  // A lone x-ish leaf (x or 1/x) whose numeral can be dragged across to divide
-  const divideSide: Side | null = useMemo(() => {
-    const alone = (side: EqTerm[]) =>
-      side.length === 1 && side[0].kind === "leaf" && side[0].power !== 0 && Math.abs(side[0].num) > 1;
-    if (alone(left)) return "left";
-    if (alone(right)) return "right";
-    return null;
-  }, [left, right]);
-
-  // The x of a lone x-leaf is draggable to divide both sides by x
+  // The x of a lone x-leaf (x or x²) is draggable to divide both sides by x
   const xDivideSide: Side | null = useMemo(() => {
     const alone = (side: EqTerm[]) =>
-      side.length === 1 && side[0].kind === "leaf" && side[0].power === 1 && side[0].num !== 0;
+      side.length === 1 && side[0].kind === "leaf" && (side[0].power === 1 || side[0].power === 2) && side[0].num !== 0;
     if (alone(left)) return "left";
     if (alone(right)) return "right";
     return null;
@@ -340,20 +332,26 @@ const EquationBuilderTool = () => {
     : null;
   const solvedContradiction = solved && solvedTerm?.num === 0 && xNonZeroAssumed;
 
-  // ± / radical results are an end state: no further arithmetic is defined on them
+  // ± / radical / inverse results are an end state: no further arithmetic is defined on them
   const hasTerminal = [...left, ...right].some((t) => t.kind === "leaf" && (t.pm || t.radical || t.fnVal));
-  const guardTerminal = () => {
-    if (hasTerminal) {
-      flashNotice("± roots are an end state — rewind from the history menu to try another path.");
-      return true;
-    }
-    return false;
-  };
+  const hasGroups = [...left, ...right].some((t) => t.kind === "group");
+  const hasFuncs = [...left, ...right].some((t) => t.kind === "func");
 
-  // --- Algebra moves ---
-  const moveTerms = (ids: string[], from: Side, to: Side) => {
-    if (from === to) return;
-    if (guardTerminal()) return;
+  // --- Algebra moves ---------------------------------------------------
+  // Every move is a pure computation returning the would-be outcome, a
+  // rejection reason (string), or null (a no-op / cancel). The same
+  // functions power the actual drop AND the live preview shown mid-drag.
+  interface MoveOutcome {
+    next: EquationState;
+    label: string;
+    dangerous?: boolean;
+    note?: string;
+    pill?: string;
+  }
+  type MoveResult = MoveOutcome | string | null;
+
+  const tryMoveTerms = (ids: string[], from: Side, to: Side): MoveResult => {
+    if (from === to) return null;
     const source = [...equation[from]];
     const moved: EqTerm[] = [];
     for (const id of ids) {
@@ -362,151 +360,115 @@ const EquationBuilderTool = () => {
     }
     // The lone "0" placeholder isn't a movable object
     const real = moved.filter((m) => m.num !== 0);
-    if (real.length === 0) return;
+    if (real.length === 0) return null;
     const target = [...equation[to], ...real.map((m) => scaleNum(m, -1))];
     const next = { ...equation, [from]: combine(source), [to]: combine(target) } as EquationState;
-    commitMove(`moved ${real.map((m) => termText(m, true).trim()).join(", ")} across`, next);
+    return { next, label: `moved ${real.map((m) => termText(m, true).trim()).join(", ")} across` };
   };
 
   /** Divide every term on both sides by the (positive) numeral that was dragged */
-  const divideByNumber = (termId: string, from: Side, to: Side, isFactor = false) => {
-    if (guardTerminal()) return;
-    if (from === to) {
-      if (isFactor) flashNotice("Drop the factor onto the parenthesis to distribute it.");
-      return;
-    }
+  const tryDivideByNumber = (termId: string, from: Side, to: Side, isFactor = false): MoveResult => {
+    if (from === to) return isFactor ? "drop the factor onto the parenthesis to distribute it" : null;
     const source = equation[from].find((t) => t.id === termId);
-    if (!source) return;
-    if (source.kind === "leaf" && source.power === 0) return;
-    if (equation[from].length !== 1) {
-      flashNotice(
-        isFactor
-          ? "Move the other terms away first — or drop the factor on the parenthesis to distribute."
-          : "Move the other terms away first — the x term must be alone to divide."
-      );
-      return;
-    }
+    if (!source) return null;
     const v = Math.abs(source.num);
-    if (v <= 1) return;
+    if (v <= 1) return null;
     const divide = (t: EqTerm) => scaleDen(t, v);
     const next = { left: combine(equation.left.map(divide)), right: combine(equation.right.map(divide)) };
-    commitMove(`divided both sides by ${v}`, next);
+    return { next, label: `divided both sides by ${v}` };
   };
 
   /** Multiply every term on both sides by a fraction's numeric denominator */
-  const multiplyByDenominator = (termId: string, from: Side, to: Side) => {
-    if (guardTerminal()) return;
-    if (from === to) return;
+  const tryMultiplyByDenominator = (termId: string, from: Side, to: Side): MoveResult => {
+    if (from === to) return null;
     const source = equation[from].find((t) => t.id === termId);
-    if (!source || source.den === 1) return;
+    if (!source || source.den === 1) return null;
     const d = source.den;
     const multiply = (t: EqTerm) => scaleNum(t, d);
     const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
-    commitMove(`multiplied both sides by ${d}`, next);
+    return { next, label: `multiplied both sides by ${d}` };
   };
 
   /** Multiply both sides by −1 — the escape hatch from states like −x = 3 */
-  const negateBothSides = (_termId: string, from: Side, to: Side) => {
-    if (guardTerminal()) return;
-    if (from === to) return;
+  const tryNegateBothSides = (_termId: string, from: Side, to: Side): MoveResult => {
+    if (from === to) return null;
     const negate = (t: EqTerm) => scaleNum(t, -1);
     const next = { left: combine(equation.left.map(negate)), right: combine(equation.right.map(negate)) };
-    commitMove("flipped the sign of both sides (× −1)", next);
+    return { next, label: "flipped the sign of both sides (× −1)" };
   };
 
   /** Distribute a group's factor over its parenthesis: a(bx + c) → abx + ac */
-  const distributeFactor = (termId: string, from: Side) => {
-    if (guardTerminal()) return;
+  const tryDistributeFactor = (termId: string, from: Side): MoveResult => {
     const source = equation[from].find((t) => t.id === termId);
-    if (!source || source.kind !== "group") return;
+    if (!source || source.kind !== "group") return null;
     const label = `distributed ${termText(source, true).trim().startsWith("−") ? `−${Math.abs(source.num)}` : Math.abs(source.num)}${
       source.den !== 1 ? `/${source.den}` : ""
     } over (${innerText(source.inner)})`;
     const expanded = source.inner.map((l) => leaf(l.num * source.num, l.power, l.den * source.den));
     const rest = equation[from].filter((t) => t.id !== termId);
     const next = { ...equation, [from]: combine([...rest, ...expanded]) } as EquationState;
-    commitMove(label, next);
+    return { next, label };
   };
 
-  const hasGroups = [...left, ...right].some((t) => t.kind === "group");
-
   /** Divide both sides by x: every power drops by one. Assumes x ≠ 0. */
-  const divideByX = (termId: string, from: Side, to: Side) => {
-    if (from === to) return;
-    if (guardTerminal()) return;
+  const tryDivideByX = (termId: string, from: Side, to: Side): MoveResult => {
+    if (from === to) return null;
     const xTerm = equation[from].find((t) => t.id === termId);
-    if (!xTerm || xTerm.kind !== "leaf" || xTerm.power !== 1) return;
-    if (equation[from].length !== 1) {
-      flashNotice("Move the other terms away first — the x term must be alone to divide by x.");
-      return;
-    }
-    if (hasGroups) {
-      flashNotice("Distribute the parentheses first.");
-      return;
-    }
-    if ([...equation.left, ...equation.right].some((t) => t.kind === "func")) {
-      flashNotice("Unwrap the function first.");
-      return;
-    }
+    if (!xTerm || xTerm.kind !== "leaf" || !(xTerm.power === 1 || xTerm.power === 2)) return null;
+    if (hasGroups) return "distribute the parentheses first";
+    if (hasFuncs) return "unwrap the function first";
     if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power === -1)) {
-      flashNotice("That would nest x deeper than this playground supports (x² in a denominator).");
-      return;
+      return "that would nest x deeper than this playground supports";
     }
     const divide = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power - 1) as Power, t.den) : t);
     const next = { left: combine(equation.left.map(divide)), right: combine(equation.right.map(divide)) };
-    commitMove("divided both sides by x", next, true, "assumes x ≠ 0 — a solution x = 0 would be lost", "x ≠ 0");
+    return {
+      next,
+      label: "divided both sides by x",
+      dangerous: true,
+      note: "assumes x ≠ 0 — a solution x = 0 would be lost",
+      pill: "x ≠ 0",
+    };
   };
 
   /** Multiply both sides by x: every power rises by one. Hides the original x ≠ 0 domain. */
-  const multiplyByX = (termId: string, from: Side, to: Side) => {
-    if (from === to) return;
-    if (guardTerminal()) return;
+  const tryMultiplyByX = (termId: string, from: Side, to: Side): MoveResult => {
+    if (from === to) return null;
     const source = equation[from].find((t) => t.id === termId);
-    if (!source || source.kind !== "leaf" || source.power !== -1) return;
-    if (hasGroups) {
-      flashNotice("Distribute the parentheses first.");
-      return;
-    }
-    if ([...equation.left, ...equation.right].some((t) => t.kind === "func")) {
-      flashNotice("Unwrap the function first.");
-      return;
-    }
+    if (!source || source.kind !== "leaf" || source.power !== -1) return null;
+    if (hasGroups) return "distribute the parentheses first";
+    if (hasFuncs) return "unwrap the function first";
     if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power >= 1)) {
-      flashNotice("That would raise a power beyond this playground (for now).");
-      return;
+      return "that would raise a power beyond this playground (for now)";
     }
     const multiply = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power + 1) as Power, t.den) : t);
     const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
-    commitMove("multiplied both sides by x", next, true, "the original equation required x ≠ 0 — that rule is now invisible", "x ≠ 0");
+    return {
+      next,
+      label: "multiplied both sides by x",
+      dangerous: true,
+      note: "the original equation required x ≠ 0 — that rule is now invisible",
+      pill: "x ≠ 0",
+    };
   };
 
   /** Take the square root of both sides: x² = c → x = ±√c (both roots kept) */
-  const takeSquareRoot = (termId: string, from: Side, to: Side) => {
-    if (from === to) return;
+  const tryTakeSquareRoot = (termId: string, from: Side, to: Side): MoveResult => {
+    if (from === to) return null;
     const source = equation[from].find((t) => t.id === termId);
-    if (!source || source.kind !== "leaf" || source.power !== 2) return;
-    if (equation[from].length !== 1) {
-      flashNotice("Move the other terms away first — the x² term must be alone.");
-      return;
-    }
+    if (!source || source.kind !== "leaf" || source.power !== 2) return null;
+    if (equation[from].length !== 1) return "move the other terms away first — the x² term must be alone";
     if (!(source.num === 1 && source.den === 1)) {
-      flashNotice(
-        source.num < 0
-          ? "Flip the sign of both sides first — the square root needs a bare x²."
-          : "Divide away the coefficient first — the square root needs a bare x²."
-      );
-      return;
+      return source.num < 0
+        ? "flip the sign of both sides first — the square root needs a bare x²"
+        : "divide away the coefficient first — the square root needs a bare x²";
     }
     const other = equation[to];
     if (other.length !== 1 || other[0].kind !== "leaf" || other[0].power !== 0 || other[0].pm || other[0].radical || other[0].fnVal) {
-      flashNotice("Gather everything else on the other side first.");
-      return;
+      return "gather everything else on the other side first";
     }
     const c = other[0];
-    if (c.num < 0) {
-      flashNotice("x² can never equal a negative number — no real solutions here.");
-      return;
-    }
+    if (c.num < 0) return "x² can never equal a negative number — no real solutions here";
     const isSquare = (n: number) => {
       const r = Math.round(Math.sqrt(n));
       return r * r === n;
@@ -520,39 +482,28 @@ const EquationBuilderTool = () => {
       result = { ...leaf(c.num, 0, c.den), radical: true, pm: true };
     }
     const next = { ...equation, [from]: [leaf(1, 1)], [to]: [result] } as EquationState;
-    commitMove("took the square root of both sides", next, false, "keeping ± — both roots survive");
+    return { next, label: "took the square root of both sides", note: "keeping ± — both roots survive" };
   };
 
   /** Unwrap a function by applying its inverse to both sides: fn(x) = c → x = fn⁻¹(c) */
-  const unwrapFunction = (termId: string, from: Side, to: Side) => {
-    if (from === to) return;
+  const tryUnwrapFunction = (termId: string, from: Side, to: Side): MoveResult => {
+    if (from === to) return null;
     const source = equation[from].find((t) => t.id === termId);
-    if (!source || source.kind !== "func") return;
-    if (equation[from].length !== 1) {
-      flashNotice("Move the other terms away first — the function must be alone on its side.");
-      return;
-    }
+    if (!source || source.kind !== "func") return null;
+    if (equation[from].length !== 1) return "move the other terms away first — the function must be alone on its side";
     if (!(source.num === 1 && source.den === 1)) {
-      flashNotice(
-        source.num < 0
-          ? "Flip the sign of both sides first — the inverse needs a bare function."
-          : "Divide away the coefficient first — the inverse needs a bare function."
-      );
-      return;
+      return source.num < 0
+        ? "flip the sign of both sides first — the inverse needs a bare function"
+        : "divide away the coefficient first — the inverse needs a bare function";
     }
     const other = equation[to];
     if (other.length !== 1 || other[0].kind !== "leaf" || other[0].power !== 0 || other[0].pm || other[0].radical || other[0].fnVal) {
-      flashNotice("Gather a single plain number on the other side first.");
-      return;
+      return "gather a single plain number on the other side first";
     }
     const c = other[0];
-    if (source.fn === "exp" && c.num <= 0) {
-      flashNotice("e^x is always positive — it can never equal a number ≤ 0.");
-      return;
-    }
+    if (source.fn === "exp" && c.num <= 0) return "e^x is always positive — it can never equal a number ≤ 0";
     if ((source.fn === "sin" || source.fn === "cos") && Math.abs(c.num / c.den) > 1) {
-      flashNotice(`${source.fn} never leaves [−1, 1] — no solution here.`);
-      return;
+      return `${source.fn} never leaves [−1, 1] — no solution here`;
     }
     const INVERSE: Record<FuncName, string> = { sin: "arcsin", cos: "arccos", tan: "arctan", ln: "e^", exp: "ln" };
     const LABEL: Record<FuncName, string> = {
@@ -581,13 +532,13 @@ const EquationBuilderTool = () => {
       [from]: combine(source.inner.map((l) => leaf(l.num, l.power, l.den))),
       [to]: [result],
     } as EquationState;
-    commitMove(
-      LABEL[source.fn],
+    return {
       next,
-      isTrig,
-      isTrig ? "principal value only — the periodic solutions are dropped" : undefined,
-      isTrig ? "principal value" : undefined
-    );
+      label: LABEL[source.fn],
+      dangerous: isTrig,
+      note: isTrig ? "principal value only — the periodic solutions are dropped" : undefined,
+      pill: isTrig ? "principal value" : undefined,
+    };
   };
 
   const loadPreset = (index: number) => {
@@ -706,29 +657,76 @@ const EquationBuilderTool = () => {
     else startDrag(e, { kind: "terms", ids: [termId], from: side });
   };
 
+  const previewKeyRef = useRef<string | null>(null);
+
   const finishDrag = () => {
     dragPayloadRef.current = null;
+    previewKeyRef.current = null;
     setDragOver(null);
     setParenHover(null);
+    setDragPreview(null);
   };
 
-  const performDrop = (payload: DragPayload, to: Side) => {
-    if (payload.kind === "terms") moveTerms(payload.ids, payload.from, to);
-    else if (payload.kind === "coef") divideByNumber(payload.termId, payload.from, to);
-    else if (payload.kind === "factor") divideByNumber(payload.termId, payload.from, to, true);
-    else if (payload.kind === "den") multiplyByDenominator(payload.termId, payload.from, to);
-    else if (payload.kind === "neg") negateBothSides(payload.termId, payload.from, to);
-    else if (payload.kind === "xdiv") divideByX(payload.termId, payload.from, to);
-    else if (payload.kind === "xmul") multiplyByX(payload.termId, payload.from, to);
-    else if (payload.kind === "exp") takeSquareRoot(payload.termId, payload.from, to);
-    else if (payload.kind === "fn") unwrapFunction(payload.termId, payload.from, to);
+  type DropTarget = { kind: "side"; side: Side } | { kind: "parens"; termId: string; side: Side };
+
+  /** The single dispatcher shared by real drops and the mid-drag preview */
+  const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
+    if (hasTerminal) return "± roots and inverse values are an end state — rewind from the history menu";
+    if (target.kind === "parens") {
+      if (payload.kind === "factor" && payload.termId === target.termId) {
+        return tryDistributeFactor(payload.termId, target.side);
+      }
+      return null;
+    }
+    const to = target.side;
+    switch (payload.kind) {
+      case "terms":
+        return tryMoveTerms(payload.ids, payload.from, to);
+      case "coef":
+        return tryDivideByNumber(payload.termId, payload.from, to);
+      case "factor":
+        return tryDivideByNumber(payload.termId, payload.from, to, true);
+      case "den":
+        return tryMultiplyByDenominator(payload.termId, payload.from, to);
+      case "neg":
+        return tryNegateBothSides(payload.termId, payload.from, to);
+      case "xdiv":
+        return tryDivideByX(payload.termId, payload.from, to);
+      case "xmul":
+        return tryMultiplyByX(payload.termId, payload.from, to);
+      case "exp":
+        return tryTakeSquareRoot(payload.termId, payload.from, to);
+      case "fn":
+        return tryUnwrapFunction(payload.termId, payload.from, to);
+    }
   };
 
-  const onDrop = (e: DragEvent, to: Side) => {
+  /** Live outcome preview: what would happen if the drag were released here */
+  const updatePreview = (payload: DragPayload, target: DropTarget) => {
+    const key = JSON.stringify([payload, target]);
+    if (previewKeyRef.current === key) return;
+    previewKeyRef.current = key;
+    const result = computeDrop(payload, target);
+    if (result === null) setDragPreview({ kind: "cancel", text: "" });
+    else if (typeof result === "string") setDragPreview({ kind: "reject", text: result });
+    else setDragPreview({ kind: "ok", text: equationText(result.next) });
+  };
+
+  const performDrop = (payload: DragPayload, target: DropTarget) => {
+    const result = computeDrop(payload, target);
+    if (result === null) return;
+    if (typeof result === "string") {
+      flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+      return;
+    }
+    commitMove(result.label, result.next, result.dangerous, result.note, result.pill);
+  };
+
+  const onDrop = (e: DragEvent, target: DropTarget) => {
     e.preventDefault();
     try {
       const payload = JSON.parse(e.dataTransfer.getData("text/plain")) as DragPayload;
-      performDrop(payload, to);
+      performDrop(payload, target);
     } catch {
       // not a symbol drag — ignore
     }
@@ -747,10 +745,8 @@ const EquationBuilderTool = () => {
     const termId = opts.termId ?? t.id;
     const inert = opts.inert ?? false;
     const magnitude = Math.abs(t.num);
-    const canDivide = !inert && divideSide === side && magnitude > 1;
-    const divideTitle = canDivide
-      ? `Drag across the equals sign to divide both sides by ${magnitude}`
-      : "Drag across to divide — but the x term must be alone on its side";
+    const canDivide = !inert && magnitude > 1;
+    const divideTitle = `Drag across the equals sign to divide both sides by ${magnitude}`;
     if (t.power === 1 || t.power === 2) {
       return (
         <>
@@ -859,12 +855,15 @@ const EquationBuilderTool = () => {
         e.preventDefault();
         e.stopPropagation();
         const payload = dragPayloadRef.current;
-        // Only ring the side a drop here would actually act on
-        if (payload) setDragOver(payload.from === side ? null : side);
+        if (payload) {
+          // Only ring the side a drop here would actually act on
+          setDragOver(payload.from === side ? null : side);
+          updatePreview(payload, { kind: "side", side });
+        }
       }}
       onDrop={(e) => {
         e.stopPropagation();
-        onDrop(e, side); // dropping back on the source side is a cancel
+        onDrop(e, { kind: "side", side }); // dropping back on the source side is a cancel
       }}
     >
       {terms.map((t, i) => {
@@ -972,6 +971,7 @@ const EquationBuilderTool = () => {
                     e.stopPropagation();
                     setParenHover(t.id);
                     setDragOver(null);
+                    updatePreview(payload, { kind: "parens", termId: t.id, side });
                   }
                 }}
                 onDragLeave={() => setParenHover((cur) => (cur === t.id ? null : cur))}
@@ -980,7 +980,7 @@ const EquationBuilderTool = () => {
                   if (payload?.kind === "factor" && payload.termId === t.id) {
                     e.preventDefault();
                     e.stopPropagation();
-                    distributeFactor(t.id, side);
+                    performDrop(payload, { kind: "parens", termId: t.id, side });
                     finishDrag();
                   }
                 }}
@@ -1046,7 +1046,7 @@ const EquationBuilderTool = () => {
                     highlighted={highlighted}
                     blue
                     handlers={symHandlers}
-                    title="Drag across the equals sign to divide both sides — the function must be alone on its side"
+                    title={`Drag across the equals sign to divide both sides by ${coefMag}`}
                   >
                     {coefMag}
                   </Sym>
@@ -1127,11 +1127,14 @@ const EquationBuilderTool = () => {
         // have to hit the side span exactly (the "=" gap is not a dead zone)
         e.preventDefault();
         const payload = dragPayloadRef.current;
-        if (payload) setDragOver(opposite(payload.from));
+        if (payload) {
+          setDragOver(opposite(payload.from));
+          updatePreview(payload, { kind: "side", side: opposite(payload.from) });
+        }
       }}
       onDrop={(e) => {
         const payload = dragPayloadRef.current;
-        if (payload) onDrop(e, opposite(payload.from));
+        if (payload) onDrop(e, { kind: "side", side: opposite(payload.from) });
       }}
     >
       {/* Typed equation input with live parse preview */}
@@ -1221,7 +1224,15 @@ const EquationBuilderTool = () => {
 
       {/* State line: notice, solved, or a neutral hint — plus the active assumption */}
       <div className="mt-10 flex h-6 items-center gap-3 text-sm text-muted-foreground">
-        {notice ? (
+        {dragPreview ? (
+          dragPreview.kind === "ok" ? (
+            <span className="font-serif text-base">→ {dragPreview.text}</span>
+          ) : dragPreview.kind === "reject" ? (
+            <span className="text-rose-400">{dragPreview.text}</span>
+          ) : (
+            <span className="text-muted-foreground/60">release here to cancel</span>
+          )
+        ) : notice ? (
           <span className="text-rose-500">{notice}</span>
         ) : solvedContradiction ? (
           <span className="font-medium text-rose-500">
