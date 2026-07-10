@@ -260,6 +260,7 @@ const EquationBuilderTool = () => {
   const [dragPreview, setDragPreview] = useState<{ kind: "ok" | "reject" | "cancel"; text: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [underHover, setUnderHover] = useState<string | null>(null);
+  const [expHover, setExpHover] = useState<string | null>(null);
   const [inputText, setInputText] = useState("");
   const [inputMsg, setInputMsg] = useState<{ kind: "err" | "warn"; text: string } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -452,6 +453,24 @@ const EquationBuilderTool = () => {
       dangerous: p > 0,
       note: p > 0 ? "assumes x ≠ 0 — a solution x = 0 would be lost" : undefined,
       pill: p > 0 ? "x ≠ 0" : undefined,
+    };
+  };
+
+  /** Multiply both sides by x, anchored by dropping an x onto an exponent position */
+  const tryMultiplyBothSidesByX = (): MoveResult => {
+    if (hasGroups) return "distribute the parentheses first";
+    if (hasFuncs) return "unwrap the function first";
+    if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power === 2)) {
+      return "that would raise a power beyond x² (for now)";
+    }
+    const multiply = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power + 1) as Power, t.den) : t);
+    const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
+    return {
+      next,
+      label: "multiplied both sides by x",
+      dangerous: true,
+      note: "multiplying by x can add x = 0 as a false solution",
+      pill: "x ≠ 0",
     };
   };
 
@@ -692,12 +711,15 @@ const EquationBuilderTool = () => {
     setDragPreview(null);
     setDragActive(false);
     setUnderHover(null);
+    setExpHover(null);
   };
 
   type DropTarget =
     | { kind: "side"; side: Side }
     | { kind: "parens"; termId: string; side: Side }
-    | { kind: "under"; termId: string; side: Side };
+    | { kind: "under"; termId: string; side: Side }
+    | { kind: "onexp"; termId: string; side: Side }
+    | { kind: "funcparens"; termId: string; side: Side };
 
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
@@ -707,6 +729,33 @@ const EquationBuilderTool = () => {
         return tryDistributeFactor(payload.termId, target.side);
       }
       return null;
+    }
+    if (target.kind === "funcparens") {
+      // Teaching moment: multiplication does not commute into a function
+      const fnTerm = equation[target.side].find((t) => t.id === target.termId);
+      const fn = fnTerm?.kind === "func" ? fnTerm.fn : "sin";
+      if (payload.kind === "coef" || payload.kind === "factor") {
+        return `the coefficient can't move inside the function — a·${fn}(x) ≠ ${fn}(a·x)`;
+      }
+      return null;
+    }
+    if (target.kind === "onexp") {
+      // Exponent position: an x merging into an exponent multiplies both sides by x
+      switch (payload.kind) {
+        case "xdiv":
+        case "xmul":
+          return tryMultiplyBothSidesByX();
+        case "coef":
+        case "factor":
+        case "terms":
+        case "neg":
+        case "den":
+          return "raising both sides to a power isn't a symbol move — the sides wouldn't stay equal";
+        case "exp":
+          return "the exponent takes the square root — drag it across the equals sign";
+        case "fn":
+          return "functions unwrap — drag the name across the equals sign";
+      }
     }
     if (target.kind === "under") {
       // Denominator position: the dragged thing divides both sides
@@ -848,6 +897,12 @@ const EquationBuilderTool = () => {
       if (t) text = `×${t.den}`;
     } else if (p.kind === "xmul") {
       text = "×x";
+    } else if (p.kind === "fn") {
+      const t = equation[p.from].find((t) => t.id === p.termId);
+      if (t && t.kind === "func") {
+        const INV: Record<FuncName, string> = { sin: "arcsin", cos: "arccos", tan: "arctan", ln: "e^( )", exp: "ln( )" };
+        text = INV[t.fn];
+      }
     }
     if (!text) return null;
     return (
@@ -866,6 +921,10 @@ const EquationBuilderTool = () => {
   const withZones = (t: EqTerm, side: Side, content: ReactNode) => {
     const payload = dragPayloadRef.current;
     const ghosted = dragActive && underHover === t.id && payload;
+    const expGhosted = dragActive && expHover === t.id && payload;
+    // The exponent zone only exists where an x can merge into a power
+    const hasExpZone =
+      dragActive && t.kind === "leaf" && t.power === 1 && (payload?.kind === "xdiv" || payload?.kind === "xmul");
     return (
       <span key={t.id} className="relative inline-flex items-center">
         {ghosted ? (
@@ -876,8 +935,38 @@ const EquationBuilderTool = () => {
               {payloadGlyph(payload)}
             </span>
           </span>
+        ) : expGhosted ? (
+          <span className="inline-flex items-start">
+            {content}
+            <span className="mt-[-0.25em] rounded border-2 border-dashed border-amber-400 px-[0.12em] text-[0.45em] leading-tight text-amber-500">
+              2
+            </span>
+          </span>
         ) : (
           content
+        )}
+        {hasExpZone && (
+          <span
+            data-exp-zone={t.id}
+            className="absolute -right-[0.4em] -top-[0.45em] z-20 h-[70%] w-[60%]"
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setExpHover(t.id);
+              setUnderHover(null);
+              setDragOver(null);
+              const p = dragPayloadRef.current;
+              if (p) updatePreview(p, { kind: "onexp", termId: t.id, side });
+            }}
+            onDragLeave={() => setExpHover((cur) => (cur === t.id ? null : cur))}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const p = dragPayloadRef.current;
+              if (p) performDrop(p, { kind: "onexp", termId: t.id, side });
+              finishDrag();
+            }}
+          />
         )}
         {dragActive && (
           <span
@@ -887,6 +976,7 @@ const EquationBuilderTool = () => {
               e.preventDefault();
               e.stopPropagation();
               setUnderHover(t.id);
+              setExpHover(null);
               setDragOver(null);
               const p = dragPayloadRef.current;
               if (p) updatePreview(p, { kind: "under", termId: t.id, side });
@@ -906,9 +996,15 @@ const EquationBuilderTool = () => {
   };
 
   /** The magnitude portion of a leaf term (numeral, x, fraction) */
-  const renderLeafBody = (t: LeafTerm, side: Side, highlighted: boolean, opts: { termId?: string; inert?: boolean } = {}) => {
+  const renderLeafBody = (
+    t: LeafTerm,
+    side: Side,
+    highlighted: boolean,
+    opts: { termId?: string; inert?: boolean; innerRole?: Role } = {}
+  ) => {
     const termId = opts.termId ?? t.id;
     const inert = opts.inert ?? false;
+    const innerRole: Role = opts.innerRole ?? "term";
     const magnitude = Math.abs(t.num);
     const canDivide = !inert && magnitude > 1;
     const divideTitle = `Drag across the equals sign to divide both sides by ${magnitude}`;
@@ -920,7 +1016,7 @@ const EquationBuilderTool = () => {
               <Sym
                 termId={termId}
                 side={side}
-                role={inert ? "term" : "coef"}
+                role={inert ? innerRole : "coef"}
                 highlighted={highlighted}
                 blue={canDivide}
                 handlers={symHandlers}
@@ -946,7 +1042,7 @@ const EquationBuilderTool = () => {
           <Sym
             termId={termId}
             side={side}
-            role={inert ? "term" : "xdiv"}
+            role={inert ? innerRole : "xdiv"}
             highlighted={highlighted}
             blue={!inert}
             handlers={symHandlers}
@@ -963,7 +1059,7 @@ const EquationBuilderTool = () => {
             <Sym
               termId={termId}
               side={side}
-              role={inert ? "term" : "exp"}
+              role={inert ? innerRole : "exp"}
               highlighted={highlighted}
               blue={!inert}
               handlers={symHandlers}
@@ -978,7 +1074,7 @@ const EquationBuilderTool = () => {
     }
     if (t.power === 0) {
       return t.den === 1 ? (
-        <Sym termId={termId} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+        <Sym termId={termId} side={side} role={inert ? innerRole : "term"} highlighted={highlighted} handlers={symHandlers}>
           {magnitude}
         </Sym>
       ) : (
@@ -1024,6 +1120,7 @@ const EquationBuilderTool = () => {
           // Only ring the side a drop here would actually act on
           setDragOver(payload.from === side ? null : side);
           setUnderHover(null);
+          setExpHover(null);
           updatePreview(payload, { kind: "side", side });
         }
       }}
@@ -1183,21 +1280,49 @@ const EquationBuilderTool = () => {
           const coefMag = Math.abs(t.num);
           const showCoef = !(coefMag === 1 && t.den === 1);
           const fnTitle = "Drag across the equals sign to apply the inverse function to both sides";
+          const argTitle =
+            t.fn === "exp"
+              ? "Drag the exponent down to the other side to take ln of both sides"
+              : `Drag the argument out to the other side to apply arc${t.fn === "ln" ? "" : t.fn} — same as dragging the name`;
+          const funcParensZone = {
+            onDragOver: (e: DragEvent) => {
+              const payload = dragPayloadRef.current;
+              if ((payload?.kind === "coef" || payload?.kind === "factor") && payload.termId === t.id) {
+                e.preventDefault();
+                e.stopPropagation();
+                setParenHover(t.id);
+                setDragOver(null);
+                updatePreview(payload, { kind: "funcparens", termId: t.id, side });
+              }
+            },
+            onDragLeave: () => setParenHover((cur) => (cur === t.id ? null : cur)),
+            onDrop: (e: DragEvent) => {
+              const payload = dragPayloadRef.current;
+              if ((payload?.kind === "coef" || payload?.kind === "factor") && payload.termId === t.id) {
+                e.preventDefault();
+                e.stopPropagation();
+                performDrop(payload, { kind: "funcparens", termId: t.id, side });
+                finishDrag();
+              }
+            },
+          };
           const inner = t.inner.map((l, j) => (
             <span key={l.id} className="inline-flex items-center">
               {(j > 0 || l.num < 0) && (
                 <Sym
                   termId={t.id}
                   side={side}
-                  role="term"
+                  role="fn"
                   highlighted={highlighted}
+                  blue
+                  title={argTitle}
                   handlers={symHandlers}
                   className={j > 0 ? "mx-3" : "mr-0.5"}
                 >
                   {j > 0 ? (l.num < 0 ? "−" : "+") : "−"}
                 </Sym>
               )}
-              {renderLeafBody(l, side, highlighted, { termId: t.id, inert: true })}
+              {renderLeafBody(l, side, highlighted, { termId: t.id, inert: true, innerRole: "fn" })}
             </span>
           ));
           return withZones(t, side, (
@@ -1243,7 +1368,12 @@ const EquationBuilderTool = () => {
                   >
                     e
                   </Sym>
-                  <span className="mt-[0.08em] inline-flex items-center self-start text-[0.5em] leading-none">
+                  <span
+                    className={`mt-[0.08em] inline-flex items-center self-start text-[0.5em] leading-none ${
+                      parenHover === t.id ? "rounded bg-amber-100 text-amber-600 dark:bg-amber-950/40" : ""
+                    }`}
+                    {...funcParensZone}
+                  >
                     {inner}
                   </span>
                 </>
@@ -1261,13 +1391,20 @@ const EquationBuilderTool = () => {
                   >
                     {t.fn}
                   </Sym>
-                  <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
-                    (
-                  </Sym>
-                  {inner}
-                  <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
-                    )
-                  </Sym>
+                  <span
+                    className={`inline-flex items-center rounded-lg transition-colors ${
+                      parenHover === t.id ? "bg-amber-100 text-amber-600 dark:bg-amber-950/40" : ""
+                    }`}
+                    {...funcParensZone}
+                  >
+                    <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+                      (
+                    </Sym>
+                    {inner}
+                    <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+                      )
+                    </Sym>
+                  </span>
                 </>
               )}
             </span>
@@ -1297,6 +1434,7 @@ const EquationBuilderTool = () => {
         if (payload) {
           setDragOver(opposite(payload.from));
           setUnderHover(null);
+          setExpHover(null);
           updatePreview(payload, { kind: "side", side: opposite(payload.from) });
         }
       }}
