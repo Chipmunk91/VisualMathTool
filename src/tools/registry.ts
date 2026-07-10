@@ -22,7 +22,7 @@ export const tools: ToolDefinition[] = [
     id: "linear-algebra",
     name: "Matrix Meets Vector",
     description:
-      "Interactive 3D linear algebra playground. Drag vectors, apply matrix transformations, and explore eigenvalues, SVD, and matrix properties in real time.",
+      "Watch a matrix transform space. The grid, the basis vectors, and your vector all morph from identity to A — scrub the journey in between.",
     category: "Linear Algebra",
     icon: Box,
     component: lazy(() => import("./linear-algebra")),
