@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { History, Search, TriangleAlert } from "lucide-react";
+import { ChevronDown, History, Search, TriangleAlert } from "lucide-react";
 import {
   Power,
   LeafTerm,
+  FuncTerm,
   FuncName,
   EqTerm,
   Side,
@@ -118,6 +119,49 @@ const makeStep = (label: string, state: EquationState, dangerous?: boolean, note
 });
 
 type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn";
+
+/** Toolbox operations that apply to both sides of the equation */
+type ToolKind = "ln" | "exp" | "sqrt" | "square" | "recip";
+
+interface ToolItem {
+  glyph: string;
+  tool?: ToolKind; // absent = shown as roadmap, disabled
+  title?: string;
+}
+
+const TOOLBOX: { id: string; label: string; icon: string; caption: string; items: ToolItem[] }[] = [
+  {
+    id: "functions",
+    label: "Functions",
+    icon: "ƒ",
+    caption: "applies to both sides",
+    items: [
+      { glyph: "ln", tool: "ln", title: "Take ln of both sides" },
+      { glyph: "eˣ", tool: "exp", title: "Exponentiate both sides (e to each side)" },
+      { glyph: "sin" },
+      { glyph: "cos" },
+      { glyph: "tan" },
+    ],
+  },
+  {
+    id: "powers",
+    label: "Powers",
+    icon: "x²",
+    caption: "applies to both sides",
+    items: [
+      { glyph: "√", tool: "sqrt", title: "Take the square root of both sides" },
+      { glyph: "( )²", tool: "square", title: "Square both sides" },
+      { glyph: "1⁄( )", tool: "recip", title: "Take the reciprocal of both sides" },
+    ],
+  },
+  {
+    id: "calculus",
+    label: "Calculus",
+    icon: "∫",
+    caption: "coming soon",
+    items: [{ glyph: "d⁄dx" }, { glyph: "∫" }, { glyph: "Σ" }, { glyph: "lim" }],
+  },
+];
 
 interface SymbolHandlers {
   dragStart: (e: DragEvent, termId: string, side: Side, role: Role) => void;
@@ -259,6 +303,9 @@ const EquationBuilderTool = () => {
   const [notice, setNotice] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<{ kind: "ok" | "reject" | "cancel"; text: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [devHitboxes, setDevHitboxes] = useState(false);
+  const [openToolGroup, setOpenToolGroup] = useState<string | null>(null);
+  const toolGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [underHover, setUnderHover] = useState<string | null>(null);
   const [expHover, setExpHover] = useState<string | null>(null);
   const [inputText, setInputText] = useState("");
@@ -674,11 +721,89 @@ const EquationBuilderTool = () => {
     | { kind: "factor"; termId: string; from: Side }
     | { kind: "exp"; termId: string; from: Side }
     | { kind: "fn"; termId: string; from: Side }
-    | { kind: "numer"; termId: string; from: Side };
+    | { kind: "numer"; termId: string; from: Side }
+    | { kind: "tool"; tool: ToolKind };
 
   // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
   // location can route to the opposite side and the target ring is accurate
   const dragPayloadRef = useRef<DragPayload | null>(null);
+
+  /**
+   * Toolbox operations apply to BOTH sides at once. Where a structure
+   * matches an inverse (eˣ with ln, x² with √), they delegate to the same
+   * move the in-equation gesture uses; otherwise they reject honestly.
+   */
+  const tryApplyTool = (tool: ToolKind): MoveResult => {
+    if (hasTerminal) return "± roots and inverse values are an end state — rewind from the history menu";
+    const findSide = (pred: (t: EqTerm) => boolean): Side | null =>
+      equation.left.length === 1 && pred(equation.left[0])
+        ? "left"
+        : equation.right.length === 1 && pred(equation.right[0])
+          ? "right"
+          : null;
+    const plainLeaf = (t: EqTerm): t is LeafTerm => t.kind === "leaf" && !t.pm && !t.radical && !t.fnVal;
+
+    if (tool === "ln" || tool === "exp") {
+      const wanted: FuncName = tool === "ln" ? "exp" : "ln";
+      const side = findSide((t) => t.kind === "func" && t.fn === wanted);
+      if (side) {
+        const fnTerm = equation[side][0] as FuncTerm;
+        if (!(fnTerm.num === 1 && fnTerm.den === 1)) return "divide away the coefficient first";
+        return tryUnwrapFunction(fnTerm.id, side, opposite(side));
+      }
+      return tool === "ln"
+        ? "ln here would freeze into values the playground can't compute with — use it where eˣ stands alone"
+        : "e^( ) here would freeze into values the playground can't compute with — use it where ln stands alone";
+    }
+    if (tool === "sqrt") {
+      const side = findSide((t) => plainLeaf(t) && t.power === 2);
+      if (side) return tryTakeSquareRoot(equation[side][0].id, side, opposite(side));
+      return "the square root needs a bare x² alone on one side";
+    }
+    if (tool === "square") {
+      const squareSide = (terms: EqTerm[]): LeafTerm | string => {
+        if (terms.length !== 1 || !plainLeaf(terms[0])) return "squaring needs a single simple term on each side";
+        const t = terms[0];
+        if (t.power === -1) return "that would nest x² into a denominator — beyond this playground";
+        if (t.power === 2) return "that would raise a power beyond x² (for now)";
+        return leaf(t.num * t.num, (t.power * 2) as Power, t.den * t.den);
+      };
+      const l = squareSide(equation.left);
+      if (typeof l === "string") return l;
+      const r = squareSide(equation.right);
+      if (typeof r === "string") return r;
+      return {
+        next: { left: [l], right: [r] } as EquationState,
+        label: "squared both sides",
+        dangerous: true,
+        note: "squaring can introduce extraneous solutions — check any answer in the original equation",
+        pill: "check roots",
+      };
+    }
+    if (tool === "recip") {
+      const flip = (terms: EqTerm[]): LeafTerm | string => {
+        if (terms.length !== 1 || !plainLeaf(terms[0])) return "the reciprocal needs a single simple term on each side";
+        const t = terms[0];
+        if (t.num === 0) return "can't take the reciprocal of 0";
+        if (t.power === 2) return "that would nest x² into a denominator — beyond this playground";
+        const sign = t.num < 0 ? -1 : 1;
+        return leaf(sign * t.den, (-t.power) as Power, Math.abs(t.num));
+      };
+      const l = flip(equation.left);
+      if (typeof l === "string") return l;
+      const r = flip(equation.right);
+      if (typeof r === "string") return r;
+      const involvesX = [...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power !== 0);
+      return {
+        next: { left: [l], right: [r] } as EquationState,
+        label: "took the reciprocal of both sides",
+        dangerous: involvesX,
+        note: involvesX ? "assumes x ≠ 0 — both sides must be nonzero to flip" : undefined,
+        pill: involvesX ? "x ≠ 0" : undefined,
+      };
+    }
+    return null;
+  };
 
   // If a drag dies without our handlers firing (source node removed, ESC,
   // drop outside the window), reset — otherwise the invisible drop zones
@@ -743,6 +868,8 @@ const EquationBuilderTool = () => {
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
     if (hasTerminal) return "± roots and inverse values are an end state — rewind from the history menu";
+    // Toolbox operations act on both sides — any drop position applies them
+    if (payload.kind === "tool") return tryApplyTool(payload.tool);
     if (target.kind === "parens") {
       if (payload.kind === "factor" && payload.termId === target.termId) {
         return tryDistributeFactor(payload.termId, target.side);
@@ -868,6 +995,10 @@ const EquationBuilderTool = () => {
 
   /** What the dragged thing reads as, for ghost slots */
   const payloadGlyph = (p: DragPayload): string => {
+    if (p.kind === "tool") {
+      const GLYPH: Record<ToolKind, string> = { ln: "ln", exp: "e^", sqrt: "√", square: "( )²", recip: "1/( )" };
+      return GLYPH[p.tool];
+    }
     const findTerm = (id: string) => equation[p.from].find((t) => t.id === id);
     switch (p.kind) {
       case "xdiv":
@@ -903,7 +1034,7 @@ const EquationBuilderTool = () => {
   /** Ghost chip appended to a side while it is the drop target (term moves etc.) */
   const sideGhost = (side: Side): ReactNode => {
     const p = dragPayloadRef.current;
-    if (!p || p.from === side) return null;
+    if (!p || p.kind === "tool" || p.from === side) return null;
     let text: string | null = null;
     if (p.kind === "terms") {
       const ts = equation[p.from].filter((t) => p.ids.includes(t.id));
@@ -944,8 +1075,8 @@ const EquationBuilderTool = () => {
    */
   const withZones = (t: EqTerm, side: Side, content: ReactNode) => {
     const payload = dragPayloadRef.current;
-    const ghosted = !!(dragActive && underHover === t.id && payload);
-    const expGhosted = !!(dragActive && expHover === t.id && payload);
+    const ghosted = !!(dragActive && underHover === t.id && payload && payload.kind !== "tool");
+    const expGhosted = !!(dragActive && expHover === t.id && payload && payload.kind !== "tool");
     // The exponent zone only exists where an x can merge into a power
     const hasExpZone =
       dragActive && t.kind === "leaf" && t.power === 1 && (payload?.kind === "xdiv" || payload?.kind === "xmul");
@@ -1147,7 +1278,7 @@ const EquationBuilderTool = () => {
         const payload = dragPayloadRef.current;
         if (payload) {
           // Only ring the side a drop here would actually act on
-          setDragOver(payload.from === side ? null : side);
+          setDragOver(payload.kind === "tool" ? null : payload.from === side ? null : side);
           setUnderHover(null);
           setExpHover(null);
           updatePreview(payload, { kind: "side", side });
@@ -1461,15 +1592,16 @@ const EquationBuilderTool = () => {
         e.preventDefault();
         const payload = dragPayloadRef.current;
         if (payload) {
-          setDragOver(opposite(payload.from));
+          const target: Side = payload.kind === "tool" ? "left" : opposite(payload.from);
+          setDragOver(payload.kind === "tool" ? null : target);
           setUnderHover(null);
           setExpHover(null);
-          updatePreview(payload, { kind: "side", side: opposite(payload.from) });
+          updatePreview(payload, { kind: "side", side: target });
         }
       }}
       onDrop={(e) => {
         const payload = dragPayloadRef.current;
-        if (payload) onDrop(e, { kind: "side", side: opposite(payload.from) });
+        if (payload) onDrop(e, { kind: "side", side: payload.kind === "tool" ? "left" : opposite(payload.from) });
       }}
     >
       {/* Typed equation input with live parse preview */}
@@ -1504,6 +1636,104 @@ const EquationBuilderTool = () => {
           </div>
         )}
       </div>
+
+      {/* Symbol toolbox */}
+      <div className="absolute left-4 top-4 z-30" data-ui>
+        <div className="flex items-start gap-1 rounded-xl border border-border bg-card px-2 py-1.5 shadow-sm">
+          {TOOLBOX.map((toolGroup) => (
+            <div
+              key={toolGroup.id}
+              className="relative flex flex-col items-center"
+              onMouseEnter={() => {
+                if (toolGroupTimer.current) clearTimeout(toolGroupTimer.current);
+                setOpenToolGroup(toolGroup.id);
+              }}
+              onMouseLeave={() => {
+                toolGroupTimer.current = setTimeout(
+                  () => setOpenToolGroup((cur) => (cur === toolGroup.id ? null : cur)),
+                  250
+                );
+              }}
+            >
+              <button
+                className={`flex items-center gap-1 rounded-md border px-2 py-1 font-serif text-base transition-colors ${
+                  openToolGroup === toolGroup.id
+                    ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                    : "border-transparent hover:border-border"
+                }`}
+                onClick={() => setOpenToolGroup((cur) => (cur === toolGroup.id ? null : toolGroup.id))}
+              >
+                {toolGroup.icon}
+                <ChevronDown
+                  className={`h-3 w-3 text-muted-foreground transition-transform ${
+                    openToolGroup === toolGroup.id ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+              <span className="text-[10px] text-muted-foreground">{toolGroup.label}</span>
+              {openToolGroup === toolGroup.id && (
+                <div className="absolute left-0 top-[calc(100%+4px)] z-40 w-max rounded-lg border border-border bg-card p-2 shadow-lg">
+                  <div className="grid grid-cols-3 gap-1">
+                    {toolGroup.items.map((item) => (
+                      <button
+                        key={item.glyph}
+                        draggable={!!item.tool}
+                        disabled={!item.tool}
+                        title={item.tool ? item.title : "coming soon"}
+                        onDragStart={(e) => {
+                          if (item.tool) startDrag(e, { kind: "tool", tool: item.tool });
+                        }}
+                        onDragEnd={finishDrag}
+                        onClick={() => {
+                          if (!item.tool) return;
+                          const result = tryApplyTool(item.tool);
+                          if (result === null) return;
+                          if (typeof result === "string") {
+                            flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+                          } else {
+                            commitMove(result.label, result.next, result.dangerous, result.note, result.pill);
+                          }
+                        }}
+                        className={`relative flex h-9 min-w-9 items-center justify-center whitespace-nowrap rounded-md border border-transparent px-1.5 font-serif text-sm transition-all hover:z-10 ${
+                          item.tool
+                            ? "cursor-grab hover:scale-105 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
+                            : "cursor-not-allowed opacity-35"
+                        }`}
+                      >
+                        {item.glyph}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-1.5 whitespace-nowrap border-t border-border pt-1 text-center text-[10px] text-muted-foreground">
+                    {toolGroup.caption}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Dev: visualize grab regions and drop zones */}
+      <label
+        className="absolute bottom-6 left-4 flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
+        data-ui
+      >
+        <input
+          type="checkbox"
+          checked={devHitboxes}
+          onChange={(e) => setDevHitboxes(e.target.checked)}
+          className="h-3 w-3 accent-amber-500"
+        />
+        hit areas
+      </label>
+      {devHitboxes && (
+        <style>{`
+          [data-symbol] { outline: 1.5px dashed rgba(244, 63, 94, 0.55); outline-offset: -1px; }
+          [data-under-zone] { outline: 1.5px dashed rgba(245, 158, 11, 0.85); background: rgba(245, 158, 11, 0.08); }
+          [data-exp-zone] { outline: 1.5px dashed rgba(20, 184, 166, 0.85); background: rgba(20, 184, 166, 0.08); }
+        `}</style>
+      )}
 
       {/* History menu button */}
       <div className="absolute right-4 top-4" data-ui>
