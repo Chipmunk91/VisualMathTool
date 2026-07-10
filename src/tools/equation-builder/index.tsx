@@ -298,6 +298,7 @@ const EquationBuilderTool = () => {
   const [toolboxOpen, setToolboxOpen] = useState(false);
   const toolGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [underHover, setUnderHover] = useState<string | null>(null);
+  const underHoverRef = useRef<string | null>(null);
   const [expHover, setExpHover] = useState<string | null>(null);
   const [inputText, setInputText] = useState("");
   const [inputMsg, setInputMsg] = useState<{ kind: "err" | "warn"; text: string } | null>(null);
@@ -1115,7 +1116,8 @@ const EquationBuilderTool = () => {
         if (xish && wrap.dataset.expOk === "1" && x > r.left + r.width * 0.55 && y < r.top + r.height * 0.42) {
           return { kind: "onexp", termId, side };
         }
-        if (y > r.top + r.height * 0.6) return { kind: "under", termId, side };
+        const underBand = underHoverRef.current === termId ? 0.25 : 0.6;
+        if (y > r.top + r.height * underBand) return { kind: "under", termId, side };
         return { kind: "side", side };
       }
     }
@@ -1130,7 +1132,8 @@ const EquationBuilderTool = () => {
   };
 
   const applyHoverTarget = (payload: DragPayload, target: DropTarget | null) => {
-    setUnderHover(target?.kind === "under" ? target.termId : null);
+    underHoverRef.current = target?.kind === "under" ? target.termId : null;
+    setUnderHover(underHoverRef.current);
     setExpHover(target?.kind === "onexp" ? target.termId : null);
     setParenHover(target?.kind === "parens" || target?.kind === "funcparens" ? target.termId : null);
     setDragOver(
@@ -1282,14 +1285,45 @@ const EquationBuilderTool = () => {
   };
 
   /**
+   * What lands in denominator position if the current under-drop happens —
+   * dividing both sides puts it under EVERY term, so the preview does too.
+   */
+  const spreadDivisor = ((): string | null => {
+    const p = dragPayloadRef.current;
+    if (!dragActive || !underHover || !p || p.kind === "tool") return null;
+    if (dragPreview?.kind !== "ok") return null; // only preview moves that will land
+    switch (p.kind) {
+      case "xdiv":
+        return "x";
+      case "coef":
+      case "factor":
+      case "numer": {
+        const t = equation[p.from].find((x) => x.id === p.termId);
+        return t ? String(Math.abs(t.num)) : null;
+      }
+      case "terms": {
+        const ts = equation[p.from].filter((x) => p.ids.includes(x.id));
+        return ts.map((x, i) => termText(x, i === 0)).join("").trim() || null;
+      }
+      case "neg": {
+        const t = equation[p.from].find((x) => x.id === p.termId);
+        return t ? termText(t, true).trim() : null;
+      }
+      default:
+        return null;
+    }
+  })();
+
+  /**
    * Positional drop zones around a term. The lower half of every term is a
-   * "denominator zone": hovering it morphs the term in place — it shrinks
-   * into numerator position over a bar, with a dashed slot showing where the
-   * dragged glyph will land — and dropping divides both sides.
+   * "denominator zone": hovering it morphs the equation in place — every
+   * term shrinks into numerator position over a bar (dividing both sides
+   * hits all of them), and the hovered term shows the dashed landing slot.
    */
   const withZones = (t: EqTerm, side: Side, content: ReactNode) => {
     const payload = dragPayloadRef.current;
-    const ghosted = !!(dragActive && underHover === t.id && payload && payload.kind !== "tool");
+    const hoveredHere = !!(dragActive && underHover === t.id && payload && payload.kind !== "tool");
+    const fractioned = spreadDivisor !== null;
     const expGhosted = !!(dragActive && expHover === t.id && payload && payload.kind !== "tool");
     return (
       <span
@@ -1299,20 +1333,27 @@ const EquationBuilderTool = () => {
         data-exp-ok={t.kind === "leaf" && t.power === 1 ? "1" : undefined}
         className="relative inline-flex items-center"
       >
-        <span
-          className={`inline-flex items-center transition-transform duration-150 ${
-            ghosted ? "origin-top scale-[0.62]" : ""
-          }`}
-        >
-          {content}
-        </span>
-        {ghosted && payload && (
-          <span className="pointer-events-none absolute inset-x-0 top-[52%] z-30 flex flex-col items-center">
-            <span className="h-[0.08em] w-full min-w-[1.2em] rounded bg-amber-400" aria-hidden />
-            <span className="mt-[0.06em] whitespace-nowrap rounded-md border-2 border-dashed border-amber-400 bg-background px-[0.3em] py-[0.05em] text-[0.45em] leading-tight text-amber-500">
-              {payloadGlyph(payload)}
-            </span>
+        {fractioned ? (
+          <span className="inline-flex flex-col items-center self-center text-[0.62em] leading-none">
+            <span className="inline-flex items-center">{content}</span>
+            <span
+              className={`my-[0.12em] h-[0.09em] w-full min-w-[1.2em] rounded ${
+                hoveredHere ? "bg-amber-400" : "bg-amber-400/60"
+              }`}
+              aria-hidden
+            />
+            {hoveredHere && payload ? (
+              <span className="whitespace-nowrap rounded-md border-2 border-dashed border-amber-400 bg-background px-[0.3em] py-[0.05em] text-[0.75em] leading-tight text-amber-500">
+                {payloadGlyph(payload)}
+              </span>
+            ) : (
+              <span className="whitespace-nowrap px-[0.3em] text-[0.75em] leading-tight text-amber-500/80">
+                {spreadDivisor}
+              </span>
+            )}
           </span>
+        ) : (
+          <span className="inline-flex items-center">{content}</span>
         )}
         {expGhosted && (
           <span className="pointer-events-none absolute -right-[0.5em] -top-[0.3em] z-30 rounded border-2 border-dashed border-amber-400 bg-background px-[0.12em] text-[0.45em] leading-tight text-amber-500">

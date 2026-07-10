@@ -42,6 +42,7 @@ interface LinAlgState {
   setEntry: (row: number, col: number, value: number) => void;
   setEntryB: (row: number, col: number, value: number) => void;
   setMatrix: (m: Mat3) => void;
+  setMatrixB: (m: Mat3) => void;
   setDims: (rows: Dim, cols: Dim) => void;
   transpose: () => void;
   setJourney: (journey: JourneyKind) => void;
@@ -82,6 +83,7 @@ export const useLinAlg = create<LinAlgState>((set) => ({
       return { matrixB };
     }),
   setMatrix: (matrix) => set({ matrix }),
+  setMatrixB: (matrixB) => set({ matrixB }),
   setDims: (rows, cols) =>
     set((s) => {
       const repad = (src: Mat3): Mat3 => {

@@ -1,9 +1,9 @@
 /**
  * The floating matrices and vectors — the tool's equivalent of the equation.
- * Bracketed cells accept expressions ("1/2", "sqrt(2)"). Hovering the "A"
+ * Bracketed cells accept expressions ("1/2", "sqrt(2)"). Hovering "A" or "B"
  * opens special matrices (with a θ box for arbitrary rotations). Journey
- * pills turn the scrub into chapters: compose with B, undo with A⁻¹, or
- * play the SVD's rotate → stretch → rotate.
+ * pills sit beside the cards — low, away from the orbit-drag area — and the
+ * whole panel is selection-proof so view drags never highlight text.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { evaluate } from "mathjs";
@@ -78,12 +78,12 @@ function Cell({
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
       spellCheck={false}
-      className="w-14 rounded bg-transparent text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60"
+      className="w-14 select-text rounded bg-transparent text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60"
     />
   );
 }
 
-/** One editable matrix card (shared by A and B) */
+/** One editable matrix grid (shared by A and B) */
 function MatrixCells({
   rows,
   cols,
@@ -118,47 +118,20 @@ function MatrixCells({
   );
 }
 
-export function MatrixPanel() {
-  const matrix = useLinAlg((s) => s.matrix);
-  const matrixB = useLinAlg((s) => s.matrixB);
-  const journey = useLinAlg((s) => s.journey);
-  const rows = useLinAlg((s) => s.rows);
-  const cols = useLinAlg((s) => s.cols);
-  const t = useLinAlg((s) => s.t);
-  const vectors = useLinAlg((s) => s.vectors);
-  const setEntry = useLinAlg((s) => s.setEntry);
-  const setEntryB = useLinAlg((s) => s.setEntryB);
-  const setMatrix = useLinAlg((s) => s.setMatrix);
-  const setDims = useLinAlg((s) => s.setDims);
-  const transpose = useLinAlg((s) => s.transpose);
-  const setJourney = useLinAlg((s) => s.setJourney);
-  const setT = useLinAlg((s) => s.setT);
-  const setVector = useLinAlg((s) => s.setVector);
-  const addSecondVector = useLinAlg((s) => s.addSecondVector);
-  const removeSecondVector = useLinAlg((s) => s.removeSecondVector);
-  const applyShared = useLinAlg((s) => s.applyShared);
-  const reset = useLinAlg((s) => s.reset);
-
-  // Load a shared configuration once, if the URL carries one
-  useEffect(() => {
-    const shared = sharedFromUrl();
-    if (shared) applyShared(shared);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const matrixCells = useCells([...matrix], (i, value) => setEntry(i % 3, Math.floor(i / 3), value));
-  const matrixBCells = useCells([...matrixB], (i, value) => setEntryB(i % 3, Math.floor(i / 3), value));
-
-  // Special-matrix menu on hovering "A", with a θ box for rotations
-  const [menuOpen, setMenuOpen] = useState(false);
+/**
+ * The "X =" label that opens a menu of special matrices on hover — with a
+ * θ box for arbitrary-angle rotations. Shared by A and B.
+ */
+function SpecialsMenu({ label, onPick }: { label: string; onPick: (m: Mat3) => void }) {
+  const [open, setOpen] = useState(false);
   const [angleText, setAngleText] = useState("90");
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openMenu = () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
-    setMenuOpen(true);
+    setOpen(true);
   };
   const scheduleClose = () => {
-    closeTimer.current = setTimeout(() => setMenuOpen(false), 250);
+    closeTimer.current = setTimeout(() => setOpen(false), 250);
   };
   const theta = (() => {
     try {
@@ -180,6 +153,94 @@ export function MatrixPanel() {
     { name: "Reflect x", hint: "a mirror — det is negative, orientation flips", m: [-1, 0, 0, 0, 1, 0, 0, 0, 1] },
     { name: "Project onto xy", hint: "the z direction is crushed to nothing — det = 0", m: [1, 0, 0, 0, 1, 0, 0, 0, 0] },
   ];
+  return (
+    <div className="relative flex items-center" onMouseLeave={scheduleClose}>
+      <button
+        onMouseEnter={openMenu}
+        onClick={() => setOpen((cur) => !cur)}
+        className={`whitespace-nowrap rounded px-0.5 font-serif text-xl italic transition-colors ${
+          open ? "text-amber-600" : "text-muted-foreground hover:text-amber-600"
+        }`}
+        title="Special matrices"
+      >
+        {label}
+      </button>
+      {open && (
+        <div
+          onMouseEnter={openMenu}
+          className="absolute bottom-[calc(100%+18px)] left-0 z-40 w-max rounded-lg border border-border bg-card p-1.5 shadow-lg"
+        >
+          <div className="flex items-center gap-1 px-3 pb-1 text-xs text-muted-foreground">
+            <span className="font-serif italic">θ</span> =
+            <input
+              value={angleText}
+              onChange={(e) => setAngleText(e.target.value)}
+              spellCheck={false}
+              className="w-12 select-text rounded bg-muted/50 px-1 py-0.5 text-center font-serif outline-none focus:bg-muted"
+            />
+            °
+          </div>
+          {specials.map((preset) => (
+            <button
+              key={preset.name}
+              title={preset.hint}
+              onClick={() => {
+                onPick([...preset.m] as Mat3);
+                setOpen(false);
+              }}
+              className="block w-full rounded-md px-3 py-1.5 text-left font-serif text-sm transition-colors hover:bg-amber-50 hover:text-amber-700 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
+            >
+              {preset.name}
+            </button>
+          ))}
+          <div className="mt-1 border-t border-border px-3 pb-0.5 pt-1 text-center text-[10px] text-muted-foreground">
+            special matrices
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function MatrixPanel() {
+  const matrix = useLinAlg((s) => s.matrix);
+  const matrixB = useLinAlg((s) => s.matrixB);
+  const journey = useLinAlg((s) => s.journey);
+  const rows = useLinAlg((s) => s.rows);
+  const cols = useLinAlg((s) => s.cols);
+  const t = useLinAlg((s) => s.t);
+  const vectors = useLinAlg((s) => s.vectors);
+  const setEntry = useLinAlg((s) => s.setEntry);
+  const setEntryB = useLinAlg((s) => s.setEntryB);
+  const setMatrix = useLinAlg((s) => s.setMatrix);
+  const setMatrixB = useLinAlg((s) => s.setMatrixB);
+  const setDims = useLinAlg((s) => s.setDims);
+  const transpose = useLinAlg((s) => s.transpose);
+  const setJourney = useLinAlg((s) => s.setJourney);
+  const setT = useLinAlg((s) => s.setT);
+  const setVector = useLinAlg((s) => s.setVector);
+  const addSecondVector = useLinAlg((s) => s.addSecondVector);
+  const removeSecondVector = useLinAlg((s) => s.removeSecondVector);
+  const applyShared = useLinAlg((s) => s.applyShared);
+  const reset = useLinAlg((s) => s.reset);
+
+  // Load a shared configuration once, if the URL carries one
+  useEffect(() => {
+    const shared = sharedFromUrl();
+    if (shared) applyShared(shared);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const matrixCells = useCells([...matrix], (i, value) => setEntry(i % 3, Math.floor(i / 3), value));
+  const matrixBCells = useCells([...matrixB], (i, value) => setEntryB(i % 3, Math.floor(i / 3), value));
+
+  /** Presets are written 3×3; B (and a non-3×3 A) takes the visible block */
+  const truncateToDims = (m: Mat3): Mat3 => {
+    const out: Mat3 = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++) out[entryIndex(r, c)] = m[entryIndex(r, c)];
+    return out;
+  };
 
   const square = rows === cols;
   const transformed = !matEquals(matrix, baseFor(cols)) || journey === "compose";
@@ -249,7 +310,7 @@ export function MatrixPanel() {
           : enabled
             ? "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
             : "cursor-not-allowed border-border/50 text-muted-foreground/40"
-    }`}
+      }`}
     >
       {label}
     </button>
@@ -275,7 +336,7 @@ export function MatrixPanel() {
   return (
     <>
       {/* share — the whole configuration in a link */}
-      <div className="absolute right-4 top-4" data-ui>
+      <div className="absolute right-4 top-4 select-none" data-ui>
         <button
           onClick={copyShare}
           className="rounded-full border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
@@ -285,16 +346,10 @@ export function MatrixPanel() {
         </button>
       </div>
 
-      <div className="absolute bottom-6 left-1/2 flex -translate-x-1/2 flex-col items-center gap-2.5" data-ui>
-        {/* journeys — chapters for the scrub. Square maps only */}
-        {square && transformed && (
-          <div className="flex items-center gap-2">
-            {journeyPill("compose", "× B", true, "Compose with a second matrix — B happens after A")}
-            {journeyPill("inverse", "A⁻¹", invertible, invertible ? "Watch A⁻¹ undo A" : "A isn't invertible — nothing can undo it")}
-            {journeyPill("svd", "SVD", svdReady, svdReady ? "Every matrix is rotate → stretch → rotate" : "SVD unavailable here")}
-          </div>
-        )}
-
+      <div
+        className="absolute bottom-6 left-1/2 flex -translate-x-1/2 select-none flex-col items-center gap-2.5"
+        data-ui
+      >
         {/* scrub across all stages */}
         {transformed && (
           <div className="flex w-72 flex-col gap-0.5">
@@ -325,65 +380,32 @@ export function MatrixPanel() {
         )}
 
         <div className="flex items-stretch gap-3">
+          {/* journeys — chapters for the scrub, tucked beside the cards */}
+          {square && transformed && (
+            <div className="flex flex-col justify-center gap-1.5">
+              {journeyPill("compose", "× B", true, "Compose with a second matrix — B happens after A")}
+              {journeyPill("inverse", "A⁻¹", invertible, invertible ? "Watch A⁻¹ undo A" : "A isn't invertible — nothing can undo it")}
+              {journeyPill("svd", "SVD", svdReady, svdReady ? "Every matrix is rotate → stretch → rotate" : "SVD unavailable here")}
+            </div>
+          )}
+
           {/* B card — appears for the composition journey, left of A since B·A */}
           {journey === "compose" && (
             <div className="flex items-center gap-3 rounded-2xl border border-border bg-card/85 px-4 py-3 shadow-sm backdrop-blur">
-              <span className="font-serif text-xl italic text-muted-foreground" title="Applied after A: the full map is B·A">
-                B =
-              </span>
+              <SpecialsMenu label="B =" onPick={(m) => setMatrixB(truncateToDims(m))} />
               <MatrixCells rows={rows} cols={cols} cells={matrixBCells} />
             </div>
           )}
 
           {/* A card, with the special-matrix menu on hover */}
-          <div
-            className="relative flex items-center gap-3 rounded-2xl border border-border bg-card/85 px-4 py-3 shadow-sm backdrop-blur"
-            onMouseLeave={scheduleClose}
-          >
-            <button
-              onMouseEnter={openMenu}
-              onClick={() => setMenuOpen((cur) => !cur)}
-              className={`rounded px-0.5 font-serif text-xl italic transition-colors ${
-                menuOpen ? "text-amber-600" : "text-muted-foreground hover:text-amber-600"
-              }`}
-              title="Special matrices"
-            >
-              A =
-            </button>
-            {menuOpen && (
-              <div
-                onMouseEnter={openMenu}
-                className="absolute bottom-[calc(100%+8px)] left-0 z-40 w-max rounded-lg border border-border bg-card p-1.5 shadow-lg"
-              >
-                <div className="flex items-center gap-1 px-3 pb-1 text-xs text-muted-foreground">
-                  <span className="font-serif italic">θ</span> =
-                  <input
-                    value={angleText}
-                    onChange={(e) => setAngleText(e.target.value)}
-                    spellCheck={false}
-                    className="w-12 rounded bg-muted/50 px-1 py-0.5 text-center font-serif outline-none focus:bg-muted"
-                  />
-                  °
-                </div>
-                {specials.map((preset) => (
-                  <button
-                    key={preset.name}
-                    title={preset.hint}
-                    onClick={() => {
-                      setDims(3, 3);
-                      setMatrix([...preset.m] as Mat3);
-                      setMenuOpen(false);
-                    }}
-                    className="block w-full rounded-md px-3 py-1.5 text-left font-serif text-sm transition-colors hover:bg-amber-50 hover:text-amber-700 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
-                  >
-                    {preset.name}
-                  </button>
-                ))}
-                <div className="mt-1 border-t border-border px-3 pb-0.5 pt-1 text-center text-[10px] text-muted-foreground">
-                  special matrices (3×3)
-                </div>
-              </div>
-            )}
+          <div className="flex items-center gap-3 rounded-2xl border border-border bg-card/85 px-4 py-3 shadow-sm backdrop-blur">
+            <SpecialsMenu
+              label="A ="
+              onPick={(m) => {
+                if (rows !== 3 || cols !== 3) setDims(3, 3);
+                setMatrix(m);
+              }}
+            />
             <MatrixCells rows={rows} cols={cols} cells={matrixCells} />
 
             {/* shape, transpose, reset */}
@@ -433,7 +455,7 @@ export function MatrixPanel() {
               const cells = Array.from({ length: cols }, (_, i) => i);
               return (
                 <div key={u.id} className="flex items-center gap-2">
-                  <span className="font-serif text-xl italic" style={{ color: u.color }}>
+                  <span className="whitespace-nowrap font-serif text-xl italic" style={{ color: u.color }}>
                     {u.label} =
                   </span>
                   <Bracketed>
@@ -527,7 +549,7 @@ function VectorCell({
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
       spellCheck={false}
-      className="w-14 rounded bg-transparent text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60"
+      className="w-14 select-text rounded bg-transparent text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60"
     />
   );
 }
