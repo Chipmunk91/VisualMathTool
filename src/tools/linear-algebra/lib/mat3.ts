@@ -32,6 +32,19 @@ export const isIdentity = (m: Mat3, eps = 1e-9): boolean =>
 /** Row/col (as written on screen) → column-major storage index */
 export const entryIndex = (row: number, col: number): number => col * 3 + row;
 
+/** Inverse via adjugate; null when the matrix is (numerically) singular. */
+export function invert(m: Mat3): Mat3 | null {
+  const d = det(m);
+  if (Math.abs(d) < 1e-10) return null;
+  const [a, b, c, e, f, g, h, i, j] = m; // columns: (a,b,c) (e,f,g) (h,i,j)
+  const inv: Mat3 = [
+    (f * j - g * i) / d, (c * i - b * j) / d, (b * g - c * f) / d,
+    (g * h - e * j) / d, (a * j - c * h) / d, (c * e - a * g) / d,
+    (e * i - f * h) / d, (b * h - a * i) / d, (a * f - b * e) / d,
+  ];
+  return inv;
+}
+
 /** The linear map as a THREE.Matrix4 — the entire transformed world is one matrix. */
 export const toMatrix4 = (m: Mat3): THREE.Matrix4 =>
   // Matrix4.set takes row-major arguments
