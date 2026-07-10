@@ -69,6 +69,20 @@ export function invert2(m: Mat3): Mat3 | null {
   return [d / dd, -c / dd, 0, -b / dd, a / dd, 0, 0, 0, 0];
 }
 
+/** Column-major product a·b (apply b first, then a) */
+export const matMul = (a: Mat3, b: Mat3): Mat3 => {
+  const c = [0, 0, 0, 0, 0, 0, 0, 0, 0] as Mat3;
+  for (let col = 0; col < 3; col++)
+    for (let row = 0; row < 3; row++) {
+      let sum = 0;
+      for (let k = 0; k < 3; k++) sum += a[k * 3 + row] * b[col * 3 + k];
+      c[col * 3 + row] = sum;
+    }
+  return c;
+};
+
+export const matTranspose = (m: Mat3): Mat3 => [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
+
 /** The linear map as a THREE.Matrix4 — the entire transformed world is one matrix. */
 export const toMatrix4 = (m: Mat3): THREE.Matrix4 =>
   // Matrix4.set takes row-major arguments
