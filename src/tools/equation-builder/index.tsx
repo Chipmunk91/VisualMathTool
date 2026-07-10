@@ -740,51 +740,163 @@ const EquationBuilderTool = () => {
   const dragPayloadRef = useRef<DragPayload | null>(null);
 
   /**
-   * Toolbox operations apply to BOTH sides at once. Where a structure
-   * matches an inverse (eˣ with ln, x² with √), they delegate to the same
-   * move the in-equation gesture uses; otherwise they reject honestly.
+   * Toolbox operations apply to BOTH sides at once, each side transformed
+   * independently: an inverse structure unwraps (ln over e^u), everything
+   * else wraps symbolically. The only rejections are mathematical
+   * illegality (ln of a non-positive side) or shapes the term model
+   * cannot represent (nested functions, powers beyond x²).
    */
-  const tryApplyTool = (tool: ToolKind): MoveResult => {
-    if (hasTerminal) return "± roots and inverse values are an end state — rewind from the history menu";
-    const findSide = (pred: (t: EqTerm) => boolean): Side | null =>
-      equation.left.length === 1 && pred(equation.left[0])
-        ? "left"
-        : equation.right.length === 1 && pred(equation.right[0])
-          ? "right"
-          : null;
-    const plainLeaf = (t: EqTerm): t is LeafTerm => t.kind === "leaf" && !t.pm && !t.radical && !t.fnVal;
+  type SideResult = EqTerm[] | string;
 
-    if (tool === "ln" || tool === "exp") {
-      const wanted: FuncName = tool === "ln" ? "exp" : "ln";
-      const side = findSide((t) => t.kind === "func" && t.fn === wanted);
-      if (side) {
-        const fnTerm = equation[side][0] as FuncTerm;
-        if (!(fnTerm.num === 1 && fnTerm.den === 1)) return "divide away the coefficient first";
-        return tryUnwrapFunction(fnTerm.id, side, opposite(side));
+  /** A side as plain leaves: groups distribute silently; functions and frozen values refuse */
+  const sideAsLeaves = (terms: EqTerm[]): LeafTerm[] | string => {
+    const out: LeafTerm[] = [];
+    for (const t of terms) {
+      if (t.kind === "group") {
+        for (const l of t.inner) out.push(leaf(t.num * l.num, l.power, t.den * l.den));
+      } else if (t.kind === "func") {
+        return "a function mixed into a sum can't be wrapped again — this playground can't nest that";
+      } else if (t.pm || t.radical || t.fnVal) {
+        return "a frozen value (±√, arc…, ln c) sits here — square it away or rewind first";
+      } else {
+        out.push(t);
       }
-      return tool === "ln"
-        ? "ln here would freeze into values the playground can't compute with — use it where eˣ stands alone"
-        : "e^( ) here would freeze into values the playground can't compute with — use it where ln stands alone";
     }
-    if (tool === "sqrt") {
-      const side = findSide((t) => plainLeaf(t) && t.power === 2);
-      if (side) return tryTakeSquareRoot(equation[side][0].id, side, opposite(side));
-      return "the square root needs a bare x² alone on one side";
+    return out;
+  };
+
+  /** The side's exact constant value, if it has no x at all */
+  const constantOf = (leaves: LeafTerm[]): LeafTerm | null => {
+    const c = combine(leaves);
+    return c.length === 1 && c[0].kind === "leaf" && c[0].power === 0 && !c[0].pm && !c[0].radical && !c[0].fnVal
+      ? c[0]
+      : null;
+  };
+
+  /** ln applied to one side. Unwraps a·e^u to ln a + u; wraps anything else. */
+  const lnOfSide = (terms: EqTerm[]): { result: EqTerm[]; assume?: "positive" | "xnotzero" } | string => {
+    if (terms.length === 1 && terms[0].kind === "func") {
+      const f = terms[0];
+      if (f.fn !== "exp") return `ln(${f.fn}(…)) would nest functions — beyond this playground`;
+      if (f.num <= 0) return "that side is a non-positive multiple of e^( ) — ln needs a positive side";
+      const lnCoef = f.num === 1 && f.den === 1 ? [] : [func("ln", 1, [leaf(f.num, 0, f.den)])];
+      return { result: combine([...lnCoef, ...f.inner.map((l) => leaf(l.num, l.power, l.den))]) };
     }
-    if (tool === "square") {
-      const squareSide = (terms: EqTerm[]): LeafTerm | string => {
-        if (terms.length !== 1 || !plainLeaf(terms[0])) return "squaring needs a single simple term on each side";
-        const t = terms[0];
-        if (t.power === -1) return "that would nest x² into a denominator — beyond this playground";
-        if (t.power === 2) return "that would raise a power beyond x² (for now)";
-        return leaf(t.num * t.num, (t.power * 2) as Power, t.den * t.den);
-      };
-      const l = squareSide(equation.left);
+    const leaves = sideAsLeaves(terms);
+    if (typeof leaves === "string") return leaves;
+    const c = constantOf(leaves);
+    if (c) {
+      if (c.num <= 0) return "ln is only defined for positive numbers — one side isn't positive";
+      if (c.num === 1 && c.den === 1) return { result: [leaf(0)] };
+      return { result: [func("ln", 1, [leaf(c.num, 0, c.den)])] };
+    }
+    const merged = combine(leaves) as LeafTerm[];
+    // A positive multiple of x² is positive exactly when x ≠ 0
+    const assume = merged.length === 1 && merged[0].power === 2 && merged[0].num > 0 ? "xnotzero" : "positive";
+    return { result: [func("ln", 1, merged)], assume };
+  };
+
+  /** e^( ) applied to one side. Unwraps ln u to u; wraps anything else. */
+  const expOfSide = (terms: EqTerm[]): SideResult => {
+    if (terms.length === 1 && terms[0].kind === "func") {
+      const f = terms[0];
+      if (f.fn !== "ln") return `e^(${f.fn}(…)) would nest functions — beyond this playground`;
+      if (!(f.num === 1 && f.den === 1))
+        return "divide away the coefficient first — e^(a·ln …) would need powers beyond x²";
+      return combine(f.inner.map((l) => leaf(l.num, l.power, l.den)));
+    }
+    const leaves = sideAsLeaves(terms);
+    if (typeof leaves === "string") return leaves;
+    const c = constantOf(leaves);
+    if (c && c.num === 0) return [leaf(1)];
+    return [func("exp", 1, combine(leaves) as LeafTerm[])];
+  };
+
+  /** ( )² applied to one side. Resolves ±/√ values; expands (sum)² exactly. */
+  const squareOfSide = (terms: EqTerm[]): SideResult => {
+    if (terms.length === 1 && terms[0].kind === "leaf" && (terms[0].pm || terms[0].radical) && !terms[0].fnVal) {
+      const t = terms[0];
+      // (±√v)² = v ; (±a)² = a²
+      return [t.radical ? leaf(t.num, 0, t.den) : leaf(t.num * t.num, 0, t.den * t.den)];
+    }
+    if (terms.length === 1 && terms[0].kind === "func")
+      return "squaring a function isn't representable here — unwrap it first";
+    const leaves = sideAsLeaves(terms);
+    if (typeof leaves === "string") return leaves;
+    const out: LeafTerm[] = [];
+    for (const a of leaves)
+      for (const b of leaves) {
+        const p = a.power + b.power;
+        if (p < -1 || p > 2) return "squaring this would need powers beyond x² (or below 1/x)";
+        out.push(leaf(a.num * b.num, p as Power, a.den * b.den));
+      }
+    return combine(out);
+  };
+
+  /** 1/( ) applied to one side. Needs the side to be a single simple term. */
+  const recipOfSide = (terms: EqTerm[]): SideResult => {
+    if (terms.length === 1 && terms[0].kind === "func")
+      return "1/fn( ) isn't representable here — unwrap the function first";
+    const leaves = sideAsLeaves(terms);
+    if (typeof leaves === "string") return leaves;
+    const merged = combine(leaves) as LeafTerm[];
+    if (merged.length !== 1) return "1/(a sum) isn't representable here — the side must be a single term";
+    const t = merged[0];
+    if (t.num === 0) return "can't take the reciprocal of 0";
+    if (t.power === 2) return "that would nest x² into a denominator — beyond this playground";
+    const sign = t.num < 0 ? -1 : 1;
+    return [leaf(sign * t.den, (-t.power) as Power, Math.abs(t.num))];
+  };
+
+  const tryApplyTool = (tool: ToolKind): MoveResult => {
+    if (tool === "ln") {
+      const l = lnOfSide(equation.left);
       if (typeof l === "string") return l;
-      const r = squareSide(equation.right);
+      const r = lnOfSide(equation.right);
+      if (typeof r === "string") return r;
+      const assumes = [l.assume, r.assume].filter(Boolean);
+      const xnz = assumes.length > 0 && assumes.every((a) => a === "xnotzero");
+      return {
+        next: { left: combine(l.result), right: combine(r.result) },
+        label: "took the natural log of both sides",
+        dangerous: assumes.length > 0,
+        note:
+          assumes.length > 0
+            ? xnz
+              ? "ln(x²) is only defined when x ≠ 0 — that possible solution is lost"
+              : "ln is only defined where both sides are positive — solutions elsewhere are lost"
+            : undefined,
+        pill: assumes.length > 0 ? (xnz ? "x ≠ 0" : "sides > 0") : undefined,
+      };
+    }
+    if (tool === "exp") {
+      const l = expOfSide(equation.left);
+      if (typeof l === "string") return l;
+      const r = expOfSide(equation.right);
       if (typeof r === "string") return r;
       return {
-        next: { left: [l], right: [r] } as EquationState,
+        next: { left: combine(l), right: combine(r) },
+        label: "exponentiated both sides (e to each side)",
+      };
+    }
+    if (tool === "sqrt") {
+      const findSide = (pred: (t: EqTerm) => boolean): Side | null =>
+        equation.left.length === 1 && pred(equation.left[0])
+          ? "left"
+          : equation.right.length === 1 && pred(equation.right[0])
+            ? "right"
+            : null;
+      const side = findSide((t) => t.kind === "leaf" && !t.pm && !t.radical && !t.fnVal && t.power === 2);
+      if (side) return tryTakeSquareRoot(equation[side][0].id, side, opposite(side));
+      return "√ needs an x² alone on one side — √(a sum) isn't representable in this playground";
+    }
+    if (tool === "square") {
+      const l = squareOfSide(equation.left);
+      if (typeof l === "string") return l;
+      const r = squareOfSide(equation.right);
+      if (typeof r === "string") return r;
+      return {
+        next: { left: combine(l), right: combine(r) },
         label: "squared both sides",
         dangerous: true,
         note: "squaring can introduce extraneous solutions — check any answer in the original equation",
@@ -792,21 +904,13 @@ const EquationBuilderTool = () => {
       };
     }
     if (tool === "recip") {
-      const flip = (terms: EqTerm[]): LeafTerm | string => {
-        if (terms.length !== 1 || !plainLeaf(terms[0])) return "the reciprocal needs a single simple term on each side";
-        const t = terms[0];
-        if (t.num === 0) return "can't take the reciprocal of 0";
-        if (t.power === 2) return "that would nest x² into a denominator — beyond this playground";
-        const sign = t.num < 0 ? -1 : 1;
-        return leaf(sign * t.den, (-t.power) as Power, Math.abs(t.num));
-      };
-      const l = flip(equation.left);
+      const l = recipOfSide(equation.left);
       if (typeof l === "string") return l;
-      const r = flip(equation.right);
+      const r = recipOfSide(equation.right);
       if (typeof r === "string") return r;
       const involvesX = [...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power !== 0);
       return {
-        next: { left: [l], right: [r] } as EquationState,
+        next: { left: combine(l), right: combine(r) },
         label: "took the reciprocal of both sides",
         dangerous: involvesX,
         note: involvesX ? "assumes x ≠ 0 — both sides must be nonzero to flip" : undefined,
@@ -872,9 +976,10 @@ const EquationBuilderTool = () => {
 
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
-    if (hasTerminal) return "± roots and inverse values are an end state — rewind from the history menu";
     // Toolbox operations act on both sides — any drop position applies them
+    // (and some, like squaring a ±√ value, are the way OUT of a frozen state)
     if (payload.kind === "tool") return tryApplyTool(payload.tool);
+    if (hasTerminal) return "± roots and inverse values freeze in-equation moves — square them away or rewind";
     if (target.kind === "parens") {
       if (payload.kind === "factor" && payload.termId === target.termId) {
         return tryDistributeFactor(payload.termId, target.side);
