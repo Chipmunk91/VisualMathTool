@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { ChevronDown, History, Search, TriangleAlert } from "lucide-react";
 import {
   Power,
@@ -164,8 +164,6 @@ const TOOLBOX: { id: string; label: string; icon: string; caption: string; items
 ];
 
 interface SymbolHandlers {
-  dragStart: (e: DragEvent, termId: string, side: Side, role: Role) => void;
-  dragEnd: () => void;
   hover: (termId: string | null) => void;
 }
 
@@ -193,9 +191,7 @@ const Sym = ({ termId, side, role, highlighted, blue, title, className = "", han
     data-symbol
     data-term-id={termId}
     data-side={side}
-    draggable
-    onDragStart={(e) => handlers.dragStart(e, termId, side, role)}
-    onDragEnd={handlers.dragEnd}
+    data-role={role}
     onPointerEnter={blue ? undefined : () => handlers.hover(termId)}
     onPointerLeave={blue ? undefined : () => handlers.hover(null)}
     title={title ?? "Drag across the equals sign — or sweep empty space to select a block"}
@@ -670,9 +666,24 @@ const EquationBuilderTool = () => {
   // --- Marquee (drag-to-select a block of symbols on empty space) ---
   const onBackgroundPointerDown = (e: ReactPointerEvent) => {
     setHistoryOpen(false);
-    if (dragActive) finishDrag();
+    if (dragActive) finishPointerDrag();
     if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest("[data-symbol],[data-ui]")) return;
+    const targetEl = e.target as HTMLElement;
+    // Toolbox items drag via the pointer engine (click still applies them)
+    const toolButton = targetEl.closest("[data-tool]") as HTMLElement | null;
+    if (toolButton?.dataset.tool) {
+      beginDrag({ kind: "tool", tool: toolButton.dataset.tool as ToolKind }, e);
+      return;
+    }
+    if (targetEl.closest("[data-ui]")) return;
+    // Proximity grab: the nearest symbol within reach picks up, even if the
+    // press wasn't pixel-perfect on the glyph
+    const symbol = nearestSymbol(e.clientX, e.clientY);
+    if (symbol) {
+      e.preventDefault();
+      beginDrag(payloadFromSymbol(symbol), e);
+      return;
+    }
     const x0 = e.clientX;
     const y0 = e.clientY;
     setSelection(null);
@@ -805,43 +816,38 @@ const EquationBuilderTool = () => {
     return null;
   };
 
-  // If a drag dies without our handlers firing (source node removed, ESC,
-  // drop outside the window), reset — otherwise the invisible drop zones
-  // would linger and shrink every symbol's grab area.
-  const finishDragRef = useRef<() => void>(() => {});
-  useEffect(() => {
-    const reset = () => finishDragRef.current();
-    window.addEventListener("dragend", reset);
-    window.addEventListener("drop", reset);
-    return () => {
-      window.removeEventListener("dragend", reset);
-      window.removeEventListener("drop", reset);
-    };
-  }, []);
 
-
-  const startDrag = (e: DragEvent, payload: DragPayload) => {
-    e.dataTransfer.setData("text/plain", JSON.stringify(payload));
-    dragPayloadRef.current = payload;
-    setDragActive(true);
-  };
-
-  const onSymbolDragStart = (e: DragEvent, termId: string, side: Side, role: Role) => {
+  /** Build a drag payload from a symbol's data attributes (pointer engine) */
+  const payloadFromSymbol = (el: HTMLElement): DragPayload => {
+    const termId = el.dataset.termId ?? "";
+    const side = (el.dataset.side ?? "left") as Side;
+    const role = (el.dataset.role ?? "term") as Role;
     // A selected block always moves as a whole, whatever symbol is grabbed
     if (selection && selection.side === side && selection.termIds.includes(termId)) {
-      startDrag(e, { kind: "terms", ids: selection.termIds, from: side });
-      return;
+      return { kind: "terms", ids: selection.termIds, from: side };
     }
-    if (role === "coef") startDrag(e, { kind: "coef", termId, from: side });
-    else if (role === "den") startDrag(e, { kind: "den", termId, from: side });
-    else if (role === "neg") startDrag(e, { kind: "neg", termId, from: side });
-    else if (role === "xdiv") startDrag(e, { kind: "xdiv", termId, from: side });
-    else if (role === "xmul") startDrag(e, { kind: "xmul", termId, from: side });
-    else if (role === "factor") startDrag(e, { kind: "factor", termId, from: side });
-    else if (role === "exp") startDrag(e, { kind: "exp", termId, from: side });
-    else if (role === "fn") startDrag(e, { kind: "fn", termId, from: side });
-    else if (role === "numer") startDrag(e, { kind: "numer", termId, from: side });
-    else startDrag(e, { kind: "terms", ids: [termId], from: side });
+    switch (role) {
+      case "coef":
+        return { kind: "coef", termId, from: side };
+      case "den":
+        return { kind: "den", termId, from: side };
+      case "neg":
+        return { kind: "neg", termId, from: side };
+      case "xdiv":
+        return { kind: "xdiv", termId, from: side };
+      case "xmul":
+        return { kind: "xmul", termId, from: side };
+      case "factor":
+        return { kind: "factor", termId, from: side };
+      case "exp":
+        return { kind: "exp", termId, from: side };
+      case "fn":
+        return { kind: "fn", termId, from: side };
+      case "numer":
+        return { kind: "numer", termId, from: side };
+      default:
+        return { kind: "terms", ids: [termId], from: side };
+    }
   };
 
   const previewKeyRef = useRef<string | null>(null);
@@ -856,7 +862,6 @@ const EquationBuilderTool = () => {
     setUnderHover(null);
     setExpHover(null);
   };
-  finishDragRef.current = finishDrag;
 
   type DropTarget =
     | { kind: "side"; side: Side }
@@ -965,6 +970,136 @@ const EquationBuilderTool = () => {
     else setDragPreview({ kind: "ok", text: equationText(result.next) });
   };
 
+  // ---- Pointer drag engine (Notion-style: no native HTML5 DnD) ----------
+  // Activation is by proximity: pressing within GRAB_RADIUS of a symbol's
+  // box picks it up after a small movement slop. Targets are computed from
+  // live geometry, so no invisible strip elements are needed.
+  const GRAB_RADIUS = 28;
+  const DRAG_SLOP = 5;
+  const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
+  const pointerDragRef = useRef<{ payload: DragPayload; started: boolean; x0: number; y0: number } | null>(null);
+
+  const nearestSymbol = (x: number, y: number): HTMLElement | null => {
+    let best: HTMLElement | null = null;
+    let bestDistance = GRAB_RADIUS;
+    equationRef.current?.querySelectorAll<HTMLElement>("[data-symbol]").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const dx = x - Math.max(r.left, Math.min(x, r.right));
+      const dy = y - Math.max(r.top, Math.min(y, r.bottom));
+      const d = Math.hypot(dx, dy); // 0 when inside the box
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = el;
+      }
+    });
+    return best;
+  };
+
+  /** Where would a release at (x, y) land? Pure geometry over live rects. */
+  const findTarget = (x: number, y: number, payload: DragPayload): DropTarget | null => {
+    const eq = equationRef.current;
+    if (!eq) return null;
+    // Parenthesis zones (most specific) — only for the matching factor/coef
+    if (payload.kind === "factor" || payload.kind === "coef") {
+      for (const paren of Array.from(eq.querySelectorAll<HTMLElement>("[data-parens-for]"))) {
+        const r = paren.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top - 4 && y <= r.bottom + 4) {
+          if (paren.dataset.parensFor === payload.termId) {
+            return {
+              kind: paren.dataset.parensKind === "func" ? "funcparens" : "parens",
+              termId: paren.dataset.parensFor!,
+              side: paren.dataset.side as Side,
+            };
+          }
+        }
+      }
+    }
+    // Term zones: under (bottom band) and exponent (top-right, x-ish payloads)
+    for (const wrap of Array.from(eq.querySelectorAll<HTMLElement>("[data-term-wrap]"))) {
+      const r = wrap.getBoundingClientRect();
+      const pad = 6;
+      if (x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad + 26) {
+        const termId = wrap.dataset.termWrap!;
+        const side = wrap.dataset.side as Side;
+        const xish = payload.kind === "xdiv" || payload.kind === "xmul";
+        if (xish && wrap.dataset.expOk === "1" && x > r.left + r.width * 0.55 && y < r.top + r.height * 0.42) {
+          return { kind: "onexp", termId, side };
+        }
+        if (y > r.top + r.height * 0.6) return { kind: "under", termId, side };
+        return { kind: "side", side };
+      }
+    }
+    // Side halves within a generous band around the equation
+    const band = eq.getBoundingClientRect();
+    if (y >= band.top - 60 && y <= band.bottom + 90 && x >= band.left - 200 && x <= band.right + 200) {
+      const equals = eq.querySelector<HTMLElement>("[data-equals]");
+      const mid = equals ? (equals.getBoundingClientRect().left + equals.getBoundingClientRect().right) / 2 : (band.left + band.right) / 2;
+      return { kind: "side", side: x < mid ? "left" : "right" };
+    }
+    return null;
+  };
+
+  const applyHoverTarget = (payload: DragPayload, target: DropTarget | null) => {
+    setUnderHover(target?.kind === "under" ? target.termId : null);
+    setExpHover(target?.kind === "onexp" ? target.termId : null);
+    setParenHover(target?.kind === "parens" || target?.kind === "funcparens" ? target.termId : null);
+    setDragOver(
+      target?.kind === "side" && payload.kind !== "tool" && payload.from !== target.side ? target.side : null
+    );
+    if (target) {
+      updatePreview(payload, target);
+    } else {
+      previewKeyRef.current = "off-equation";
+      setDragPreview({ kind: "cancel", text: "" });
+    }
+  };
+
+  const finishPointerDrag = () => {
+    pointerDragRef.current = null;
+    setGhostPos(null);
+    finishDrag();
+  };
+
+  const beginDrag = (payload: DragPayload, e: ReactPointerEvent) => {
+    pointerDragRef.current = { payload, started: false, x0: e.clientX, y0: e.clientY };
+    const move = (ev: PointerEvent) => {
+      const st = pointerDragRef.current;
+      if (!st) return;
+      if (!st.started) {
+        if (Math.hypot(ev.clientX - st.x0, ev.clientY - st.y0) < DRAG_SLOP) return;
+        st.started = true;
+        dragPayloadRef.current = st.payload;
+        setDragActive(true);
+        setHoveredTermId(null);
+      }
+      setGhostPos({ x: ev.clientX, y: ev.clientY });
+      applyHoverTarget(st.payload, findTarget(ev.clientX, ev.clientY, st.payload));
+    };
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("keydown", esc);
+      const st = pointerDragRef.current;
+      pointerDragRef.current = null;
+      if (st?.started) {
+        const target = findTarget(ev.clientX, ev.clientY, st.payload);
+        if (target) performDrop(st.payload, target);
+      }
+      finishPointerDrag();
+    };
+    const esc = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("keydown", esc);
+        finishPointerDrag();
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("keydown", esc);
+  };
+
   const performDrop = (payload: DragPayload, target: DropTarget) => {
     const result = computeDrop(payload, target);
     if (result === null) return;
@@ -975,22 +1110,11 @@ const EquationBuilderTool = () => {
     commitMove(result.label, result.next, result.dangerous, result.note, result.pill);
   };
 
-  const onDrop = (e: DragEvent, target: DropTarget) => {
-    e.preventDefault();
-    try {
-      const payload = JSON.parse(e.dataTransfer.getData("text/plain")) as DragPayload;
-      performDrop(payload, target);
-    } catch {
-      // not a symbol drag — ignore
-    }
-    finishDrag();
-  };
-
   // --- Rendering ---
   const symHandlers: SymbolHandlers = {
-    dragStart: onSymbolDragStart,
-    dragEnd: finishDrag,
-    hover: setHoveredTermId,
+    hover: (id) => {
+      if (!dragPayloadRef.current) setHoveredTermId(id);
+    },
   };
 
   /** What the dragged thing reads as, for ghost slots */
@@ -1077,11 +1201,14 @@ const EquationBuilderTool = () => {
     const payload = dragPayloadRef.current;
     const ghosted = !!(dragActive && underHover === t.id && payload && payload.kind !== "tool");
     const expGhosted = !!(dragActive && expHover === t.id && payload && payload.kind !== "tool");
-    // The exponent zone only exists where an x can merge into a power
-    const hasExpZone =
-      dragActive && t.kind === "leaf" && t.power === 1 && (payload?.kind === "xdiv" || payload?.kind === "xmul");
     return (
-      <span key={t.id} className="relative inline-flex items-center">
+      <span
+        key={t.id}
+        data-term-wrap={t.id}
+        data-side={side}
+        data-exp-ok={t.kind === "leaf" && t.power === 1 ? "1" : undefined}
+        className="relative inline-flex items-center"
+      >
         <span
           className={`inline-flex items-center transition-transform duration-150 ${
             ghosted ? "origin-top scale-[0.62]" : ""
@@ -1101,52 +1228,6 @@ const EquationBuilderTool = () => {
           <span className="pointer-events-none absolute -right-[0.5em] -top-[0.3em] z-30 rounded border-2 border-dashed border-amber-400 bg-background px-[0.12em] text-[0.45em] leading-tight text-amber-500">
             2
           </span>
-        )}
-        {hasExpZone && (
-          <span
-            data-exp-zone={t.id}
-            className="absolute -right-[0.4em] -top-[0.45em] z-20 h-[70%] w-[60%]"
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setExpHover(t.id);
-              setUnderHover(null);
-              setDragOver(null);
-              const p = dragPayloadRef.current;
-              if (p) updatePreview(p, { kind: "onexp", termId: t.id, side });
-            }}
-            onDragLeave={() => setExpHover((cur) => (cur === t.id ? null : cur))}
-            onDrop={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              const p = dragPayloadRef.current;
-              if (p) performDrop(p, { kind: "onexp", termId: t.id, side });
-              finishDrag();
-            }}
-          />
-        )}
-        {dragActive && (
-          <span
-            data-under-zone={t.id}
-            className="absolute inset-x-0 -bottom-[0.35em] top-[60%] z-10"
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setUnderHover(t.id);
-              setExpHover(null);
-              setDragOver(null);
-              const p = dragPayloadRef.current;
-              if (p) updatePreview(p, { kind: "under", termId: t.id, side });
-            }}
-            onDragLeave={() => setUnderHover((cur) => (cur === t.id ? null : cur))}
-            onDrop={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              const p = dragPayloadRef.current;
-              if (p) performDrop(p, { kind: "under", termId: t.id, side });
-              finishDrag();
-            }}
-          />
         )}
       </span>
     );
@@ -1272,22 +1353,6 @@ const EquationBuilderTool = () => {
       className={`inline-flex items-center rounded-xl px-2 py-1 transition-shadow ${
         dragOver === side ? "ring-2 ring-amber-300" : ""
       }`}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const payload = dragPayloadRef.current;
-        if (payload) {
-          // Only ring the side a drop here would actually act on
-          setDragOver(payload.kind === "tool" ? null : payload.from === side ? null : side);
-          setUnderHover(null);
-          setExpHover(null);
-          updatePreview(payload, { kind: "side", side });
-        }
-      }}
-      onDrop={(e) => {
-        e.stopPropagation();
-        onDrop(e, { kind: "side", side }); // dropping back on the source side is a cancel
-      }}
     >
       {terms.map((t, i) => {
         // The lone "0" placeholder is display-only
@@ -1387,26 +1452,9 @@ const EquationBuilderTool = () => {
                 className={`inline-flex items-center rounded-lg transition-colors ${
                   parenHover === t.id ? "bg-amber-100 text-amber-600 dark:bg-amber-950/40" : ""
                 }`}
-                onDragOver={(e) => {
-                  const payload = dragPayloadRef.current;
-                  if (payload?.kind === "factor" && payload.termId === t.id) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setParenHover(t.id);
-                    setDragOver(null);
-                    updatePreview(payload, { kind: "parens", termId: t.id, side });
-                  }
-                }}
-                onDragLeave={() => setParenHover((cur) => (cur === t.id ? null : cur))}
-                onDrop={(e) => {
-                  const payload = dragPayloadRef.current;
-                  if (payload?.kind === "factor" && payload.termId === t.id) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    performDrop(payload, { kind: "parens", termId: t.id, side });
-                    finishDrag();
-                  }
-                }}
+                data-parens-for={t.id}
+                data-parens-kind="group"
+                data-side={side}
               >
                 <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
                   (
@@ -1445,26 +1493,9 @@ const EquationBuilderTool = () => {
               ? "Drag the exponent down to the other side to take ln of both sides"
               : `Drag the argument out to the other side to apply arc${t.fn === "ln" ? "" : t.fn} — same as dragging the name`;
           const funcParensZone = {
-            onDragOver: (e: DragEvent) => {
-              const payload = dragPayloadRef.current;
-              if ((payload?.kind === "coef" || payload?.kind === "factor") && payload.termId === t.id) {
-                e.preventDefault();
-                e.stopPropagation();
-                setParenHover(t.id);
-                setDragOver(null);
-                updatePreview(payload, { kind: "funcparens", termId: t.id, side });
-              }
-            },
-            onDragLeave: () => setParenHover((cur) => (cur === t.id ? null : cur)),
-            onDrop: (e: DragEvent) => {
-              const payload = dragPayloadRef.current;
-              if ((payload?.kind === "coef" || payload?.kind === "factor") && payload.termId === t.id) {
-                e.preventDefault();
-                e.stopPropagation();
-                performDrop(payload, { kind: "funcparens", termId: t.id, side });
-                finishDrag();
-              }
-            },
+            "data-parens-for": t.id,
+            "data-parens-kind": "func",
+            "data-side": side,
           };
           const inner = t.inner.map((l, j) => (
             <span key={l.id} className="inline-flex items-center">
@@ -1586,23 +1617,6 @@ const EquationBuilderTool = () => {
     <div
       className="relative flex h-full w-full flex-col items-center justify-center bg-background text-foreground"
       onPointerDown={onBackgroundPointerDown}
-      onDragOver={(e) => {
-        // Any drop in the tool routes to the opposite side, so users don't
-        // have to hit the side span exactly (the "=" gap is not a dead zone)
-        e.preventDefault();
-        const payload = dragPayloadRef.current;
-        if (payload) {
-          const target: Side = payload.kind === "tool" ? "left" : opposite(payload.from);
-          setDragOver(payload.kind === "tool" ? null : target);
-          setUnderHover(null);
-          setExpHover(null);
-          updatePreview(payload, { kind: "side", side: target });
-        }
-      }}
-      onDrop={(e) => {
-        const payload = dragPayloadRef.current;
-        if (payload) onDrop(e, { kind: "side", side: payload.kind === "tool" ? "left" : opposite(payload.from) });
-      }}
     >
       {/* Typed equation input with live parse preview */}
       <div className="absolute left-1/2 top-4 w-[min(560px,75vw)] -translate-x-1/2" data-ui>
@@ -1677,13 +1691,9 @@ const EquationBuilderTool = () => {
                     {toolGroup.items.map((item) => (
                       <button
                         key={item.glyph}
-                        draggable={!!item.tool}
+                        data-tool={item.tool || undefined}
                         disabled={!item.tool}
                         title={item.tool ? item.title : "coming soon"}
-                        onDragStart={(e) => {
-                          if (item.tool) startDrag(e, { kind: "tool", tool: item.tool });
-                        }}
-                        onDragEnd={finishDrag}
                         onClick={() => {
                           if (!item.tool) return;
                           const result = tryApplyTool(item.tool);
@@ -1726,12 +1736,15 @@ const EquationBuilderTool = () => {
           className="h-3 w-3 accent-amber-500"
         />
         hit areas
+        {devHitboxes && (
+          <span className="text-muted-foreground/70">— grab activates on the nearest symbol within 28px</span>
+        )}
       </label>
       {devHitboxes && (
         <style>{`
           [data-symbol] { outline: 1.5px dashed rgba(244, 63, 94, 0.55); outline-offset: -1px; }
-          [data-under-zone] { outline: 1.5px dashed rgba(245, 158, 11, 0.85); background: rgba(245, 158, 11, 0.08); }
-          [data-exp-zone] { outline: 1.5px dashed rgba(20, 184, 166, 0.85); background: rgba(20, 184, 166, 0.08); }
+          [data-term-wrap] { outline: 1.5px dashed rgba(245, 158, 11, 0.5); outline-offset: 4px; }
+          [data-parens-for] { outline: 1.5px dashed rgba(20, 184, 166, 0.6); outline-offset: 2px; }
         `}</style>
       )}
 
@@ -1783,7 +1796,7 @@ const EquationBuilderTool = () => {
         }`}
       >
         {renderSide(left, "left")}
-        <span className="mx-5 select-none">=</span>
+        <span className="mx-5 select-none" data-equals>=</span>
         {renderSide(right, "right")}
       </div>
 
@@ -1840,6 +1853,16 @@ const EquationBuilderTool = () => {
           ↺ Reset
         </button>
       </div>
+
+      {/* Ghost chip following the pointer during a drag */}
+      {ghostPos && dragActive && dragPayloadRef.current && (
+        <div
+          className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-full rounded-md border border-amber-300 bg-amber-50/95 px-2 py-0.5 font-serif text-2xl text-amber-700 shadow-sm dark:bg-amber-950/80 dark:text-amber-400"
+          style={{ left: ghostPos.x, top: ghostPos.y - 10 }}
+        >
+          {payloadGlyph(dragPayloadRef.current)}
+        </div>
+      )}
 
       {/* Marquee rectangle while sweeping */}
       {marquee && (
