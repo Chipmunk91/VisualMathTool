@@ -117,7 +117,7 @@ const makeStep = (label: string, state: EquationState, dangerous?: boolean, note
   text: equationText(state),
 });
 
-type Role = "term" | "coef" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn";
+type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn";
 
 interface SymbolHandlers {
   dragStart: (e: DragEvent, termId: string, side: Side, role: Role) => void;
@@ -673,7 +673,8 @@ const EquationBuilderTool = () => {
     | { kind: "xmul"; termId: string; from: Side }
     | { kind: "factor"; termId: string; from: Side }
     | { kind: "exp"; termId: string; from: Side }
-    | { kind: "fn"; termId: string; from: Side };
+    | { kind: "fn"; termId: string; from: Side }
+    | { kind: "numer"; termId: string; from: Side };
 
   // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
   // location can route to the opposite side and the target ring is accurate
@@ -714,6 +715,7 @@ const EquationBuilderTool = () => {
     else if (role === "factor") startDrag(e, { kind: "factor", termId, from: side });
     else if (role === "exp") startDrag(e, { kind: "exp", termId, from: side });
     else if (role === "fn") startDrag(e, { kind: "fn", termId, from: side });
+    else if (role === "numer") startDrag(e, { kind: "numer", termId, from: side });
     else startDrag(e, { kind: "terms", ids: [termId], from: side });
   };
 
@@ -764,6 +766,7 @@ const EquationBuilderTool = () => {
           return tryMultiplyBothSidesByX();
         case "coef":
         case "factor":
+        case "numer":
         case "terms":
         case "neg":
         case "den":
@@ -782,6 +785,7 @@ const EquationBuilderTool = () => {
           return tryDivideByX(payload.termId, payload.from, across);
         case "coef":
         case "factor":
+        case "numer":
           return tryDivideByNumber(payload.termId, payload.from, across);
         case "terms":
           return tryDivideByTerm(payload.ids, payload.from);
@@ -810,7 +814,9 @@ const EquationBuilderTool = () => {
       case "neg":
         return tryNegateBothSides(payload.termId, payload.from, to);
       case "xdiv":
-        // Beside the terms, the x moves its whole term; under a term it divides
+      case "numer":
+        // Beside the terms, a term's body (its x or its numerator) moves the
+        // whole term; under a term it divides both sides
         return tryMoveTerms([payload.termId], payload.from, to);
       case "xmul":
         return tryMultiplyByX(payload.termId, payload.from, to);
@@ -868,7 +874,8 @@ const EquationBuilderTool = () => {
       case "xmul":
         return "x";
       case "coef":
-      case "factor": {
+      case "factor":
+      case "numer": {
         const t = findTerm(p.termId);
         return t ? String(Math.abs(t.num)) : "?";
       }
@@ -901,7 +908,7 @@ const EquationBuilderTool = () => {
     if (p.kind === "terms") {
       const ts = equation[p.from].filter((t) => p.ids.includes(t.id));
       text = ts.map((t, i) => termText(scaleNum(t, -1), i === 0)).join("").trim();
-    } else if (p.kind === "xdiv") {
+    } else if (p.kind === "xdiv" || p.kind === "numer") {
       const t = equation[p.from].find((t) => t.id === p.termId);
       if (t) text = termText(scaleNum(t, -1), true).trim();
     } else if (p.kind === "neg") {
@@ -1102,6 +1109,9 @@ const EquationBuilderTool = () => {
           side={side}
           highlighted={highlighted}
           numText={magnitude}
+          numRole="numer"
+          numBlue={!inert}
+          numTitle={inert ? undefined : "Drag beside the other side to move the term — or under a term to divide both sides by the numerator"}
           denNumber={t.den}
           denX={false}
           inert={inert}
@@ -1115,9 +1125,9 @@ const EquationBuilderTool = () => {
         side={side}
         highlighted={highlighted}
         numText={magnitude}
-        numRole={!inert && magnitude > 1 ? "coef" : "term"}
-        numBlue={canDivide}
-        numTitle={!inert && magnitude > 1 ? divideTitle : undefined}
+        numRole="numer"
+        numBlue={!inert}
+        numTitle={inert ? undefined : "Drag beside the other side to move the term — or under a term to divide both sides by the numerator"}
         denNumber={t.den === 1 ? null : t.den}
         denX
         inert={inert}
