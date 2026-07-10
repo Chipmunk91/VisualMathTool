@@ -576,6 +576,11 @@ const EquationBuilderTool = () => {
     if (from === to) return null;
     const source = equation[from].find((t) => t.id === termId);
     if (!source || source.kind !== "func") return null;
+    // ln and e^ delegate to the general both-sides transform: the source side
+    // unwraps, and the other side takes whatever the inverse legally does to
+    // it — so ln(u) = ln(v) cancels straight to u = v
+    if (source.fn === "ln") return tryApplyTool("exp");
+    if (source.fn === "exp") return tryApplyTool("ln");
     if (equation[from].length !== 1) return "move the other terms away first — the function must be alone on its side";
     if (!(source.num === 1 && source.den === 1)) {
       return source.num < 0
@@ -587,32 +592,15 @@ const EquationBuilderTool = () => {
       return "gather a single plain number on the other side first";
     }
     const c = other[0];
-    if (source.fn === "exp" && c.num <= 0) return "e^x is always positive — it can never equal a number ≤ 0";
     if ((source.fn === "sin" || source.fn === "cos") && Math.abs(c.num / c.den) > 1) {
       return `${source.fn} never leaves [−1, 1] — no solution here`;
     }
-    const INVERSE: Record<FuncName, string> = { sin: "arcsin", cos: "arccos", tan: "arctan", ln: "e^", exp: "ln" };
-    const LABEL: Record<FuncName, string> = {
-      sin: "applied arcsin to both sides",
-      cos: "applied arccos to both sides",
-      tan: "applied arctan to both sides",
-      ln: "exponentiated both sides (e to each side)",
-      exp: "took the natural log of both sides",
-    };
+    const INVERSE: Record<"sin" | "cos" | "tan", string> = { sin: "arcsin", cos: "arccos", tan: "arctan" };
     // Exact special values keep the result rational
-    let result: LeafTerm;
-    if (
-      (source.fn === "exp" && c.num === 1 && c.den === 1) ||
+    const isZero =
       ((source.fn === "sin" || source.fn === "tan") && c.num === 0) ||
-      (source.fn === "cos" && c.num === 1 && c.den === 1)
-    ) {
-      result = leaf(0);
-    } else if (source.fn === "ln" && c.num === 0) {
-      result = leaf(1);
-    } else {
-      result = { ...leaf(c.num, 0, c.den), fnVal: INVERSE[source.fn] };
-    }
-    const isTrig = source.fn === "sin" || source.fn === "cos" || source.fn === "tan";
+      (source.fn === "cos" && c.num === 1 && c.den === 1);
+    const result: LeafTerm = isZero ? leaf(0) : { ...leaf(c.num, 0, c.den), fnVal: INVERSE[source.fn] };
     const next = {
       ...equation,
       [from]: combine(source.inner.map((l) => leaf(l.num, l.power, l.den))),
@@ -620,10 +608,10 @@ const EquationBuilderTool = () => {
     } as EquationState;
     return {
       next,
-      label: LABEL[source.fn],
-      dangerous: isTrig,
-      note: isTrig ? "principal value only — the periodic solutions are dropped" : undefined,
-      pill: isTrig ? "principal value" : undefined,
+      label: `applied arc${source.fn} to both sides`,
+      dangerous: true,
+      note: "principal value only — the periodic solutions are dropped",
+      pill: "principal value",
     };
   };
 
@@ -665,7 +653,6 @@ const EquationBuilderTool = () => {
 
   // --- Marquee (drag-to-select a block of symbols on empty space) ---
   const onBackgroundPointerDown = (e: ReactPointerEvent) => {
-    setHistoryOpen(false);
     if (dragActive) finishPointerDrag();
     if (e.button !== 0) return;
     const targetEl = e.target as HTMLElement;
@@ -675,7 +662,10 @@ const EquationBuilderTool = () => {
       beginDrag({ kind: "tool", tool: toolButton.dataset.tool as ToolKind }, e);
       return;
     }
+    // Presses inside UI chrome (history menu, presets, input) keep their own
+    // click handling — closing the menu here would unmount the button mid-press
     if (targetEl.closest("[data-ui]")) return;
+    setHistoryOpen(false);
     // Proximity grab: the nearest symbol within reach picks up, even if the
     // press wasn't pixel-perfect on the glyph
     const symbol = nearestSymbol(e.clientX, e.clientY);

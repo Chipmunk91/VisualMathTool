@@ -36,9 +36,9 @@ More tools (calculus, probability, complex numbers, ...) coming soon.
 
 ### Test in the browser — no local setup needed
 
-- **Live site (GitHub Pages)**: every push to `main` automatically builds and deploys via [`deploy.yml`](.github/workflows/deploy.yml). One-time setup: in the repo's **Settings → Pages**, set *Source* to **GitHub Actions**. The site then lives at `https://<user>.github.io/VisualizeVector/`.
+- **Live site (GitHub Pages)**: every push to `main` automatically builds and deploys via [`deploy.yml`](.github/workflows/deploy.yml). One-time setup: in the repo's **Settings → Pages**, set *Source* to **GitHub Actions**. The site then lives at `https://chipmunk91.github.io/VisualMathTool/`.
 - **CI on every push**: [`ci.yml`](.github/workflows/ci.yml) type-checks and builds each commit, and uploads the built site as a downloadable artifact — a red ❌ / green ✓ on the commit tells you if the branch is healthy.
-- **Instant dev sandbox**: open the repo in [StackBlitz](https://stackblitz.com/github/Chipmunk91/VisualizeVector) (runs the Vite dev server entirely in your browser) or a [GitHub Codespace](https://github.com/codespaces) — edit and hot-reload without installing anything.
+- **Instant dev sandbox**: open the repo in [StackBlitz](https://stackblitz.com/github/Chipmunk91/VisualMathTool) (runs the Vite dev server entirely in your browser) or a [GitHub Codespace](https://github.com/codespaces) — edit and hot-reload without installing anything.
 
 ### Local development (optional)
 
