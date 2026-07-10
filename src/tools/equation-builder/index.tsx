@@ -196,7 +196,7 @@ const Sym = ({ termId, side, role, highlighted, blue, title, className = "", han
     onPointerLeave={blue ? undefined : () => handlers.hover(null)}
     title={title ?? "Drag across the equals sign — or sweep empty space to select a block"}
     className={`-my-[0.16em] cursor-grab select-none py-[0.16em] transition-colors duration-150 active:cursor-grabbing ${
-      blue ? "hover:text-amber-500" : highlighted ? "text-amber-500" : ""
+      highlighted ? "text-amber-500" : blue ? "hover:text-amber-500" : ""
     } ${className}`}
   >
     {children}
