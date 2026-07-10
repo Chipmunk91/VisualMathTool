@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, DragEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { History, Search, TriangleAlert } from "lucide-react";
 import {
   Power,
@@ -623,6 +623,7 @@ const EquationBuilderTool = () => {
   // --- Marquee (drag-to-select a block of symbols on empty space) ---
   const onBackgroundPointerDown = (e: ReactPointerEvent) => {
     setHistoryOpen(false);
+    if (dragActive) finishDrag();
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("[data-symbol],[data-ui]")) return;
     const x0 = e.clientX;
@@ -678,6 +679,21 @@ const EquationBuilderTool = () => {
   // location can route to the opposite side and the target ring is accurate
   const dragPayloadRef = useRef<DragPayload | null>(null);
 
+  // If a drag dies without our handlers firing (source node removed, ESC,
+  // drop outside the window), reset — otherwise the invisible drop zones
+  // would linger and shrink every symbol's grab area.
+  const finishDragRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const reset = () => finishDragRef.current();
+    window.addEventListener("dragend", reset);
+    window.addEventListener("drop", reset);
+    return () => {
+      window.removeEventListener("dragend", reset);
+      window.removeEventListener("drop", reset);
+    };
+  }, []);
+
+
   const startDrag = (e: DragEvent, payload: DragPayload) => {
     e.dataTransfer.setData("text/plain", JSON.stringify(payload));
     dragPayloadRef.current = payload;
@@ -713,6 +729,7 @@ const EquationBuilderTool = () => {
     setUnderHover(null);
     setExpHover(null);
   };
+  finishDragRef.current = finishDrag;
 
   type DropTarget =
     | { kind: "side"; side: Side }
@@ -920,30 +937,32 @@ const EquationBuilderTool = () => {
    */
   const withZones = (t: EqTerm, side: Side, content: ReactNode) => {
     const payload = dragPayloadRef.current;
-    const ghosted = dragActive && underHover === t.id && payload;
-    const expGhosted = dragActive && expHover === t.id && payload;
+    const ghosted = !!(dragActive && underHover === t.id && payload);
+    const expGhosted = !!(dragActive && expHover === t.id && payload);
     // The exponent zone only exists where an x can merge into a power
     const hasExpZone =
       dragActive && t.kind === "leaf" && t.power === 1 && (payload?.kind === "xdiv" || payload?.kind === "xmul");
     return (
       <span key={t.id} className="relative inline-flex items-center">
-        {ghosted ? (
-          <span className="inline-flex flex-col items-center self-center leading-none">
-            <span className="inline-flex origin-bottom scale-[0.62] items-center">{content}</span>
-            <span className="my-[0.1em] h-[0.08em] w-full min-w-[1.2em] rounded bg-amber-400" aria-hidden />
-            <span className="rounded-md border-2 border-dashed border-amber-400 px-[0.3em] py-[0.05em] text-[0.5em] leading-tight text-amber-500">
+        <span
+          className={`inline-flex items-center transition-transform duration-150 ${
+            ghosted ? "origin-top scale-[0.62]" : ""
+          }`}
+        >
+          {content}
+        </span>
+        {ghosted && payload && (
+          <span className="pointer-events-none absolute inset-x-0 top-[52%] z-30 flex flex-col items-center">
+            <span className="h-[0.08em] w-full min-w-[1.2em] rounded bg-amber-400" aria-hidden />
+            <span className="mt-[0.06em] whitespace-nowrap rounded-md border-2 border-dashed border-amber-400 bg-background px-[0.3em] py-[0.05em] text-[0.45em] leading-tight text-amber-500">
               {payloadGlyph(payload)}
             </span>
           </span>
-        ) : expGhosted ? (
-          <span className="inline-flex items-start">
-            {content}
-            <span className="mt-[-0.25em] rounded border-2 border-dashed border-amber-400 px-[0.12em] text-[0.45em] leading-tight text-amber-500">
-              2
-            </span>
+        )}
+        {expGhosted && (
+          <span className="pointer-events-none absolute -right-[0.5em] -top-[0.3em] z-30 rounded border-2 border-dashed border-amber-400 bg-background px-[0.12em] text-[0.45em] leading-tight text-amber-500">
+            2
           </span>
-        ) : (
-          content
         )}
         {hasExpZone && (
           <span
@@ -971,7 +990,7 @@ const EquationBuilderTool = () => {
         {dragActive && (
           <span
             data-under-zone={t.id}
-            className="absolute inset-x-0 -bottom-[0.35em] top-1/2 z-10"
+            className="absolute inset-x-0 -bottom-[0.35em] top-[60%] z-10"
             onDragOver={(e) => {
               e.preventDefault();
               e.stopPropagation();
