@@ -155,7 +155,7 @@ const Sym = ({ termId, side, role, highlighted, blue, title, className = "", han
     onPointerEnter={blue ? undefined : () => handlers.hover(termId)}
     onPointerLeave={blue ? undefined : () => handlers.hover(null)}
     title={title ?? "Drag across the equals sign — or sweep empty space to select a block"}
-    className={`cursor-grab select-none transition-colors duration-150 active:cursor-grabbing ${
+    className={`-my-[0.16em] cursor-grab select-none py-[0.16em] transition-colors duration-150 active:cursor-grabbing ${
       blue ? "hover:text-amber-500" : highlighted ? "text-amber-500" : ""
     } ${className}`}
   >
@@ -213,7 +213,7 @@ const Fraction = ({
     >
       {numText}
     </Sym>
-    <span className="my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
+    <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
     <span className="inline-flex items-center">
       {denNumber !== null && (
         <Sym
