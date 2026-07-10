@@ -4,7 +4,7 @@
  * to draw.
  */
 import { eigs } from "mathjs";
-import { isIdentity, type Mat3, type Vec3 } from "./mat3";
+import { entryIndex, isIdentity, type Mat3, type Vec3 } from "./mat3";
 
 export interface EigenAxis {
   value: number;
@@ -47,4 +47,42 @@ export function realEigenAxes(m: Mat3): EigenAxis[] {
   } catch {
     return []; // defective / non-convergent matrices simply show no axes
   }
+}
+
+/** Closed-form 2×2 eigen for the plane case — axes live in z = 0. */
+export function realEigenAxes2(m: Mat3): EigenAxis[] {
+  const a = m[entryIndex(0, 0)];
+  const b = m[entryIndex(0, 1)];
+  const c = m[entryIndex(1, 0)];
+  const d = m[entryIndex(1, 1)];
+  if (Math.abs(a - 1) < 1e-9 && Math.abs(d - 1) < 1e-9 && Math.abs(b) < 1e-9 && Math.abs(c) < 1e-9) return [];
+  const tr = a + d;
+  const det2 = a * d - b * c;
+  const disc = tr * tr - 4 * det2;
+  if (disc < -1e-12) return []; // complex pair — pure rotation-like, nothing to draw
+  const sq = Math.sqrt(Math.max(0, disc));
+  const out: EigenAxis[] = [];
+  for (const value of [(tr + sq) / 2, (tr - sq) / 2]) {
+    let dx: number;
+    let dy: number;
+    if (Math.abs(b) > 1e-9) {
+      dx = b;
+      dy = value - a;
+    } else if (Math.abs(c) > 1e-9) {
+      dx = value - d;
+      dy = c;
+    } else {
+      // diagonal matrix: eigenvectors are the axes themselves
+      if (Math.abs(a - value) < 1e-9) [dx, dy] = [1, 0];
+      else [dx, dy] = [0, 1];
+    }
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-9) continue;
+    let dir: Vec3 = [dx / len, dy / len, 0];
+    if ((Math.abs(dir[0]) >= Math.abs(dir[1]) ? dir[0] : dir[1]) < 0) dir = [-dir[0], -dir[1], 0];
+    const dot = (p: Vec3, q: Vec3) => p[0] * q[0] + p[1] * q[1];
+    if (out.some((e) => Math.abs(dot(e.dir, dir)) > 0.9999)) continue;
+    out.push({ value, dir });
+  }
+  return out;
 }

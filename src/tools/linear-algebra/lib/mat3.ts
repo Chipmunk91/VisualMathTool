@@ -32,6 +32,21 @@ export const isIdentity = (m: Mat3, eps = 1e-9): boolean =>
 /** Row/col (as written on screen) → column-major storage index */
 export const entryIndex = (row: number, col: number): number => col * 3 + row;
 
+export type Dim = 2 | 3;
+
+export const matEquals = (a: Mat3, b: Mat3, eps = 1e-9): boolean =>
+  a.every((v, i) => Math.abs(v - b[i]) < eps);
+
+/** The untransformed view of the domain: all of R^3, or the xy-plane sitting in place */
+export const baseFor = (cols: Dim): Mat3 => (cols === 3 ? [...IDENTITY] as Mat3 : [1, 0, 0, 0, 1, 0, 0, 0, 0]);
+
+/** Identity pattern inside the visible rows×cols block, zeros outside */
+export const blockIdentity = (rows: Dim, cols: Dim): Mat3 => {
+  const m: Mat3 = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) m[entryIndex(r, c)] = r === c ? 1 : 0;
+  return m;
+};
+
 /** Inverse via adjugate; null when the matrix is (numerically) singular. */
 export function invert(m: Mat3): Mat3 | null {
   const d = det(m);
@@ -43,6 +58,15 @@ export function invert(m: Mat3): Mat3 | null {
     (e * i - f * h) / d, (b * h - a * i) / d, (a * f - b * e) / d,
   ];
   return inv;
+}
+
+/** Inverse of the top-left 2×2 block, acting in the plane; null when singular. */
+export function invert2(m: Mat3): Mat3 | null {
+  const [a, c] = [m[0], m[1]]; // column 0
+  const [b, d] = [m[3], m[4]]; // column 1
+  const dd = a * d - b * c;
+  if (Math.abs(dd) < 1e-10) return null;
+  return [d / dd, -c / dd, 0, -b / dd, a / dd, 0, 0, 0, 0];
 }
 
 /** The linear map as a THREE.Matrix4 — the entire transformed world is one matrix. */

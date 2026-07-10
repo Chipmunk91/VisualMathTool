@@ -32,6 +32,25 @@ export function UnitCube({ matrix }: { matrix: THREE.Matrix4 }) {
   );
 }
 
+/** The unit square spanned by î and ĵ — the 2D domain's area witness */
+export function UnitSquare({ matrix }: { matrix: THREE.Matrix4 }) {
+  const { face, edges } = useMemo(() => {
+    const g = new THREE.PlaneGeometry(1, 1);
+    g.translate(0.5, 0.5, 0);
+    return { face: g, edges: new THREE.EdgesGeometry(g) };
+  }, []);
+  return (
+    <group matrixAutoUpdate={false} matrix={matrix}>
+      <mesh geometry={face}>
+        <meshBasicMaterial color={CUBE} transparent opacity={0.08} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      <lineSegments geometry={edges}>
+        <lineBasicMaterial color={CUBE} transparent opacity={0.45} depthWrite={false} />
+      </lineSegments>
+    </group>
+  );
+}
+
 const fmtVal = (v: number): string => {
   const r = Math.round(v * 100) / 100;
   return String(Number.isInteger(r) ? r : r).replace("-", "−");
@@ -60,7 +79,16 @@ export function EigenAxisLine({ axis }: { axis: EigenAxis }) {
  * facing the camera; the caller converts the displayed tip back to the
  * model-space vector.
  */
-export function TipHandle({ tip, onDrag }: { tip: Vec3; onDrag: (p: Vec3) => void }) {
+export function TipHandle({
+  tip,
+  onDrag,
+  planeNormal,
+}: {
+  tip: Vec3;
+  onDrag: (p: Vec3) => void;
+  /** fixed drag plane normal (e.g. z for a 2D domain); camera-facing when omitted */
+  planeNormal?: Vec3;
+}) {
   const [hovered, setHovered] = useState(false);
   const [dragging, setDragging] = useState(false);
   const plane = useRef(new THREE.Plane());
@@ -74,7 +102,9 @@ export function TipHandle({ tip, onDrag }: { tip: Vec3; onDrag: (p: Vec3) => voi
     (e.target as Element).setPointerCapture(e.pointerId);
     setDragging(true);
     if (controls) controls.enabled = false;
-    const normal = camera.getWorldDirection(new THREE.Vector3()).negate();
+    const normal = planeNormal
+      ? new THREE.Vector3(...planeNormal)
+      : camera.getWorldDirection(new THREE.Vector3()).negate();
     plane.current.setFromNormalAndCoplanarPoint(normal, new THREE.Vector3(...tip));
   };
   const move = (e: ThreeEvent<PointerEvent>) => {
@@ -99,7 +129,7 @@ export function TipHandle({ tip, onDrag }: { tip: Vec3; onDrag: (p: Vec3) => voi
       onPointerMove={move}
       onPointerUp={up}
     >
-      <sphereGeometry args={[0.14, 16, 16]} />
+      <sphereGeometry args={[0.17, 16, 16]} />
       <meshBasicMaterial
         color={COLOR.vector}
         transparent
