@@ -258,6 +258,8 @@ const EquationBuilderTool = () => {
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<{ kind: "ok" | "reject" | "cancel"; text: string } | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [underHover, setUnderHover] = useState<string | null>(null);
   const [inputText, setInputText] = useState("");
   const [inputMsg, setInputMsg] = useState<{ kind: "err" | "warn"; text: string } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -284,15 +286,6 @@ const EquationBuilderTool = () => {
     setSelection(null);
     setNotice(null);
   };
-
-  // The x of a lone x-leaf (x or x²) is draggable to divide both sides by x
-  const xDivideSide: Side | null = useMemo(() => {
-    const alone = (side: EqTerm[]) =>
-      side.length === 1 && side[0].kind === "leaf" && (side[0].power === 1 || side[0].power === 2) && side[0].num !== 0;
-    if (alone(left)) return "left";
-    if (alone(right)) return "right";
-    return null;
-  }, [left, right]);
 
   // A lone negative term (leaf or group) whose leading − negates both sides
   const negSide: Side | null = useMemo(() => {
@@ -428,6 +421,37 @@ const EquationBuilderTool = () => {
       dangerous: true,
       note: "assumes x ≠ 0 — a solution x = 0 would be lost",
       pill: "x ≠ 0",
+    };
+  };
+
+  /** Divide both sides by a whole term's value (dragged under another term) */
+  const tryDivideByTerm = (ids: string[], from: Side): MoveResult => {
+    if (ids.length !== 1) return "divide by a single term at a time";
+    const source = equation[from].find((t) => t.id === ids[0]);
+    if (!source) return null;
+    if (source.kind !== "leaf") return "dividing by parentheses or functions isn't playable yet";
+    if (source.pm || source.radical || source.fnVal || source.num === 0) return "can't divide by that";
+    const p = source.power;
+    if (p !== 0) {
+      if (hasGroups) return "distribute the parentheses first";
+      if (hasFuncs) return "unwrap the function first";
+      const outOfRange = [...equation.left, ...equation.right].some(
+        (t) => t.kind === "leaf" && (t.power - p < -1 || t.power - p > 2)
+      );
+      if (outOfRange) return "that would push a power beyond this playground";
+    }
+    const apply = (t: EqTerm): EqTerm => {
+      const scaled = scaleDen(scaleNum(t, source.den), source.num);
+      if (p === 0 || scaled.kind !== "leaf") return scaled;
+      return leaf(scaled.num, (scaled.power - p) as Power, scaled.den);
+    };
+    const next = { left: combine(equation.left.map(apply)), right: combine(equation.right.map(apply)) };
+    return {
+      next,
+      label: `divided both sides by ${termText(source, true).trim()}`,
+      dangerous: p > 0,
+      note: p > 0 ? "assumes x ≠ 0 — a solution x = 0 would be lost" : undefined,
+      pill: p > 0 ? "x ≠ 0" : undefined,
     };
   };
 
@@ -638,6 +662,7 @@ const EquationBuilderTool = () => {
   const startDrag = (e: DragEvent, payload: DragPayload) => {
     e.dataTransfer.setData("text/plain", JSON.stringify(payload));
     dragPayloadRef.current = payload;
+    setDragActive(true);
   };
 
   const onSymbolDragStart = (e: DragEvent, termId: string, side: Side, role: Role) => {
@@ -665,9 +690,14 @@ const EquationBuilderTool = () => {
     setDragOver(null);
     setParenHover(null);
     setDragPreview(null);
+    setDragActive(false);
+    setUnderHover(null);
   };
 
-  type DropTarget = { kind: "side"; side: Side } | { kind: "parens"; termId: string; side: Side };
+  type DropTarget =
+    | { kind: "side"; side: Side }
+    | { kind: "parens"; termId: string; side: Side }
+    | { kind: "under"; termId: string; side: Side };
 
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
@@ -677,6 +707,29 @@ const EquationBuilderTool = () => {
         return tryDistributeFactor(payload.termId, target.side);
       }
       return null;
+    }
+    if (target.kind === "under") {
+      // Denominator position: the dragged thing divides both sides
+      const across = opposite(payload.from);
+      switch (payload.kind) {
+        case "xdiv":
+          return tryDivideByX(payload.termId, payload.from, across);
+        case "coef":
+        case "factor":
+          return tryDivideByNumber(payload.termId, payload.from, across);
+        case "terms":
+          return tryDivideByTerm(payload.ids, payload.from);
+        case "neg":
+          return tryDivideByTerm([payload.termId], payload.from);
+        case "den":
+          return "a denominator multiplies — drop it beside the other side";
+        case "xmul":
+          return "that x multiplies — drop it beside the other side";
+        case "exp":
+          return "the exponent takes the square root — drag it across the equals sign";
+        case "fn":
+          return "functions unwrap — drag the name across the equals sign";
+      }
     }
     const to = target.side;
     switch (payload.kind) {
@@ -691,7 +744,8 @@ const EquationBuilderTool = () => {
       case "neg":
         return tryNegateBothSides(payload.termId, payload.from, to);
       case "xdiv":
-        return tryDivideByX(payload.termId, payload.from, to);
+        // Beside the terms, the x moves its whole term; under a term it divides
+        return tryMoveTerms([payload.termId], payload.from, to);
       case "xmul":
         return tryMultiplyByX(payload.termId, payload.from, to);
       case "exp":
@@ -740,6 +794,117 @@ const EquationBuilderTool = () => {
     hover: setHoveredTermId,
   };
 
+  /** What the dragged thing reads as, for ghost slots */
+  const payloadGlyph = (p: DragPayload): string => {
+    const findTerm = (id: string) => equation[p.from].find((t) => t.id === id);
+    switch (p.kind) {
+      case "xdiv":
+      case "xmul":
+        return "x";
+      case "coef":
+      case "factor": {
+        const t = findTerm(p.termId);
+        return t ? String(Math.abs(t.num)) : "?";
+      }
+      case "den": {
+        const t = findTerm(p.termId);
+        return t ? String(t.den) : "?";
+      }
+      case "neg": {
+        const t = findTerm(p.termId);
+        return t ? termText(t, true).trim() : "−";
+      }
+      case "terms": {
+        const ts = equation[p.from].filter((t) => p.ids.includes(t.id));
+        return ts.map((t, i) => termText(t, i === 0)).join("").trim() || "?";
+      }
+      case "exp":
+        return "√";
+      case "fn": {
+        const t = findTerm(p.termId);
+        return t && t.kind === "func" ? t.fn : "fn";
+      }
+    }
+  };
+
+  /** Ghost chip appended to a side while it is the drop target (term moves etc.) */
+  const sideGhost = (side: Side): ReactNode => {
+    const p = dragPayloadRef.current;
+    if (!p || p.from === side) return null;
+    let text: string | null = null;
+    if (p.kind === "terms") {
+      const ts = equation[p.from].filter((t) => p.ids.includes(t.id));
+      text = ts.map((t, i) => termText(scaleNum(t, -1), i === 0)).join("").trim();
+    } else if (p.kind === "xdiv") {
+      const t = equation[p.from].find((t) => t.id === p.termId);
+      if (t) text = termText(scaleNum(t, -1), true).trim();
+    } else if (p.kind === "neg") {
+      text = "× −1";
+    } else if (p.kind === "coef" || p.kind === "factor") {
+      const t = equation[p.from].find((t) => t.id === p.termId);
+      if (t) text = `÷${Math.abs(t.num)}`;
+    } else if (p.kind === "den") {
+      const t = equation[p.from].find((t) => t.id === p.termId);
+      if (t) text = `×${t.den}`;
+    } else if (p.kind === "xmul") {
+      text = "×x";
+    }
+    if (!text) return null;
+    return (
+      <span className="ml-4 self-center rounded-md border-2 border-dashed border-amber-400 px-2 py-1 text-[0.45em] leading-none text-amber-500">
+        {text}
+      </span>
+    );
+  };
+
+  /**
+   * Positional drop zones around a term. The lower half of every term is a
+   * "denominator zone": hovering it morphs the term in place — it shrinks
+   * into numerator position over a bar, with a dashed slot showing where the
+   * dragged glyph will land — and dropping divides both sides.
+   */
+  const withZones = (t: EqTerm, side: Side, content: ReactNode) => {
+    const payload = dragPayloadRef.current;
+    const ghosted = dragActive && underHover === t.id && payload;
+    return (
+      <span key={t.id} className="relative inline-flex items-center">
+        {ghosted ? (
+          <span className="inline-flex flex-col items-center self-center leading-none">
+            <span className="inline-flex origin-bottom scale-[0.62] items-center">{content}</span>
+            <span className="my-[0.1em] h-[0.08em] w-full min-w-[1.2em] rounded bg-amber-400" aria-hidden />
+            <span className="rounded-md border-2 border-dashed border-amber-400 px-[0.3em] py-[0.05em] text-[0.5em] leading-tight text-amber-500">
+              {payloadGlyph(payload)}
+            </span>
+          </span>
+        ) : (
+          content
+        )}
+        {dragActive && (
+          <span
+            data-under-zone={t.id}
+            className="absolute inset-x-0 -bottom-[0.35em] top-1/2 z-10"
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setUnderHover(t.id);
+              setDragOver(null);
+              const p = dragPayloadRef.current;
+              if (p) updatePreview(p, { kind: "under", termId: t.id, side });
+            }}
+            onDragLeave={() => setUnderHover((cur) => (cur === t.id ? null : cur))}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const p = dragPayloadRef.current;
+              if (p) performDrop(p, { kind: "under", termId: t.id, side });
+              finishDrag();
+            }}
+          />
+        )}
+      </span>
+    );
+  };
+
   /** The magnitude portion of a leaf term (numeral, x, fraction) */
   const renderLeafBody = (t: LeafTerm, side: Side, highlighted: boolean, opts: { termId?: string; inert?: boolean } = {}) => {
     const termId = opts.termId ?? t.id;
@@ -781,14 +946,14 @@ const EquationBuilderTool = () => {
           <Sym
             termId={termId}
             side={side}
-            role={!inert && xDivideSide === side ? "xdiv" : "term"}
+            role={inert ? "term" : "xdiv"}
             highlighted={highlighted}
-            blue={!inert && xDivideSide === side}
+            blue={!inert}
             handlers={symHandlers}
             title={
-              !inert && xDivideSide === side
-                ? "Drag across the equals sign to divide both sides by x (assumes x ≠ 0)"
-                : undefined
+              inert
+                ? undefined
+                : "Drag beside the other side to move the term — or under a term to divide both sides by x"
             }
             className="italic"
           >
@@ -858,6 +1023,7 @@ const EquationBuilderTool = () => {
         if (payload) {
           // Only ring the side a drop here would actually act on
           setDragOver(payload.from === side ? null : side);
+          setUnderHover(null);
           updatePreview(payload, { kind: "side", side });
         }
       }}
@@ -930,8 +1096,8 @@ const EquationBuilderTool = () => {
           const factorMag = Math.abs(t.num);
           const showFactor = !(factorMag === 1 && t.den === 1);
           const factorTitle = `Drop onto the parenthesis to distribute — or drag across the equals sign to divide both sides by ${factorMag}`;
-          return (
-            <span key={t.id} className="inline-flex items-center">
+          return withZones(t, side, (
+            <span className="inline-flex items-center">
               {(i > 0 || t.num < 0) && sign}
               {showFactor &&
                 (t.den === 1 ? (
@@ -1010,7 +1176,7 @@ const EquationBuilderTool = () => {
                 </Sym>
               </span>
             </span>
-          );
+          ));
         }
 
         if (t.kind === "func") {
@@ -1034,8 +1200,8 @@ const EquationBuilderTool = () => {
               {renderLeafBody(l, side, highlighted, { termId: t.id, inert: true })}
             </span>
           ));
-          return (
-            <span key={t.id} className="inline-flex items-center">
+          return withZones(t, side, (
+            <span className="inline-flex items-center">
               {(i > 0 || t.num < 0) && sign}
               {showCoef &&
                 (t.den === 1 ? (
@@ -1105,16 +1271,17 @@ const EquationBuilderTool = () => {
                 </>
               )}
             </span>
-          );
+          ));
         }
 
-        return (
-          <span key={t.id} className="inline-flex items-center">
+        return withZones(t, side, (
+          <span className="inline-flex items-center">
             {(i > 0 || t.num < 0) && sign}
             {renderLeafBody(t, side, highlighted)}
           </span>
-        );
+        ));
       })}
+      {dragActive && dragOver === side && !underHover && sideGhost(side)}
     </span>
   );
 
@@ -1129,6 +1296,7 @@ const EquationBuilderTool = () => {
         const payload = dragPayloadRef.current;
         if (payload) {
           setDragOver(opposite(payload.from));
+          setUnderHover(null);
           updatePreview(payload, { kind: "side", side: opposite(payload.from) });
         }
       }}
