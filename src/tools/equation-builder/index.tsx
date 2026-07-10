@@ -129,12 +129,10 @@ interface ToolItem {
   title?: string;
 }
 
-const TOOLBOX: { id: string; label: string; icon: string; caption: string; items: ToolItem[] }[] = [
+const TOOLBOX: { id: string; label: string; items: ToolItem[] }[] = [
   {
     id: "functions",
     label: "Functions",
-    icon: "ƒ",
-    caption: "applies to both sides",
     items: [
       { glyph: "ln", tool: "ln", title: "Take ln of both sides" },
       { glyph: "eˣ", tool: "exp", title: "Exponentiate both sides (e to each side)" },
@@ -146,8 +144,6 @@ const TOOLBOX: { id: string; label: string; icon: string; caption: string; items
   {
     id: "powers",
     label: "Powers",
-    icon: "x²",
-    caption: "applies to both sides",
     items: [
       { glyph: "√", tool: "sqrt", title: "Take the square root of both sides" },
       { glyph: "( )²", tool: "square", title: "Square both sides" },
@@ -157,8 +153,6 @@ const TOOLBOX: { id: string; label: string; icon: string; caption: string; items
   {
     id: "calculus",
     label: "Calculus",
-    icon: "∫",
-    caption: "coming soon",
     items: [{ glyph: "d⁄dx" }, { glyph: "∫" }, { glyph: "Σ" }, { glyph: "lim" }],
   },
 ];
@@ -300,7 +294,7 @@ const EquationBuilderTool = () => {
   const [dragPreview, setDragPreview] = useState<{ kind: "ok" | "reject" | "cancel"; text: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [devHitboxes, setDevHitboxes] = useState(false);
-  const [openToolGroup, setOpenToolGroup] = useState<string | null>(null);
+  const [toolboxOpen, setToolboxOpen] = useState(false);
   const toolGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [underHover, setUnderHover] = useState<string | null>(null);
   const [expHover, setExpHover] = useState<string | null>(null);
@@ -1748,41 +1742,38 @@ const EquationBuilderTool = () => {
 
       {/* Symbol toolbox */}
       <div className="absolute left-4 top-4 z-30" data-ui>
-        <div className="flex items-start gap-1 rounded-xl border border-border bg-card px-2 py-1.5 shadow-sm">
-          {TOOLBOX.map((toolGroup) => (
-            <div
-              key={toolGroup.id}
-              className="relative flex flex-col items-center"
-              onMouseEnter={() => {
-                if (toolGroupTimer.current) clearTimeout(toolGroupTimer.current);
-                setOpenToolGroup(toolGroup.id);
-              }}
-              onMouseLeave={() => {
-                toolGroupTimer.current = setTimeout(
-                  () => setOpenToolGroup((cur) => (cur === toolGroup.id ? null : cur)),
-                  250
-                );
-              }}
-            >
-              <button
-                className={`flex items-center gap-1 rounded-md border px-2 py-1 font-serif text-base transition-colors ${
-                  openToolGroup === toolGroup.id
-                    ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
-                    : "border-transparent hover:border-border"
-                }`}
-                onClick={() => setOpenToolGroup((cur) => (cur === toolGroup.id ? null : toolGroup.id))}
-              >
-                {toolGroup.icon}
-                <ChevronDown
-                  className={`h-3 w-3 text-muted-foreground transition-transform ${
-                    openToolGroup === toolGroup.id ? "rotate-180" : ""
-                  }`}
-                />
-              </button>
-              <span className="text-[10px] text-muted-foreground">{toolGroup.label}</span>
-              {openToolGroup === toolGroup.id && (
-                <div className="absolute left-0 top-[calc(100%+4px)] z-40 w-max rounded-lg border border-border bg-card p-2 shadow-lg">
-                  <div className="grid grid-cols-3 gap-1">
+        <div
+          className="relative"
+          onMouseEnter={() => {
+            if (toolGroupTimer.current) clearTimeout(toolGroupTimer.current);
+            setToolboxOpen(true);
+          }}
+          onMouseLeave={() => {
+            toolGroupTimer.current = setTimeout(() => setToolboxOpen(false), 250);
+          }}
+        >
+          <button
+            className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 font-serif text-base shadow-sm transition-colors ${
+              toolboxOpen
+                ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                : "border-border bg-card hover:border-foreground/40"
+            }`}
+            onClick={() => setToolboxOpen((cur) => !cur)}
+          >
+            ƒ
+            <span className="font-sans text-xs text-muted-foreground">Symbols</span>
+            <ChevronDown
+              className={`h-3 w-3 text-muted-foreground transition-transform ${toolboxOpen ? "rotate-180" : ""}`}
+            />
+          </button>
+          {toolboxOpen && (
+            <div className="absolute left-0 top-[calc(100%+4px)] z-40 w-max rounded-lg border border-border bg-card p-2 shadow-lg">
+              {TOOLBOX.map((toolGroup) => (
+                <div key={toolGroup.id} className="mb-2 last:mb-0">
+                  <div className="mb-0.5 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {toolGroup.label}
+                  </div>
+                  <div className="grid grid-cols-5 gap-1">
                     {toolGroup.items.map((item) => (
                       <button
                         key={item.glyph}
@@ -1809,13 +1800,13 @@ const EquationBuilderTool = () => {
                       </button>
                     ))}
                   </div>
-                  <div className="mt-1.5 whitespace-nowrap border-t border-border pt-1 text-center text-[10px] text-muted-foreground">
-                    {toolGroup.caption}
-                  </div>
                 </div>
-              )}
+              ))}
+              <div className="mt-1.5 whitespace-nowrap border-t border-border pt-1 text-center text-[10px] text-muted-foreground">
+                click or drag onto the equation — applies to both sides
+              </div>
             </div>
-          ))}
+          )}
         </div>
       </div>
 
