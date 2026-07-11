@@ -71,7 +71,27 @@ const fmt = (v: number): string => {
   return text.replace("-", "−");
 };
 
+/** Flat-model wrapper: plot both sides of an EquationState */
 export function GraphPane({ left, right }: EquationState) {
+  return (
+    <GraphView
+      fl={(x) => evalSide(left, x)}
+      fr={(x) => evalSide(right, x)}
+      depKey={JSON.stringify([left, right])}
+    />
+  );
+}
+
+/** The pane itself, over two plain evaluators — tree equations plot here too */
+export function GraphView({
+  fl,
+  fr,
+  depKey,
+}: {
+  fl: (x: number) => number;
+  fr: (x: number) => number;
+  depKey: string;
+}) {
   // Fade in on first mount — the "something new appeared" moment
   const [shown, setShown] = useState(false);
   useEffect(() => {
@@ -82,8 +102,8 @@ export function GraphPane({ left, right }: EquationState) {
   const plot = useMemo(() => {
     const xs: number[] = [];
     for (let i = 0; i < SAMPLES; i++) xs.push(X_MIN + ((X_MAX - X_MIN) * i) / (SAMPLES - 1));
-    const ls = xs.map((x) => evalSide(left, x));
-    const rs = xs.map((x) => evalSide(right, x));
+    const ls = xs.map(fl);
+    const rs = xs.map(fr);
 
     // Intersections: sign changes of (L − R), refined by bisection
     const roots: { x: number; y: number }[] = [];
@@ -101,7 +121,7 @@ export function GraphPane({ left, right }: EquationState) {
         let fa = d0;
         for (let k = 0; k < 40; k++) {
           const m = (a + b) / 2;
-          const fm = evalSide(left, m) - evalSide(right, m);
+          const fm = fl(m) - fr(m);
           if (!isFinite(fm)) break;
           if (fa * fm <= 0) b = m;
           else {
@@ -111,8 +131,8 @@ export function GraphPane({ left, right }: EquationState) {
         }
         const rx = (a + b) / 2;
         // A genuine crossing stays small at the midpoint; a tan-style pole does not
-        if (Math.abs(evalSide(left, rx) - evalSide(right, rx)) < 0.5) {
-          roots.push({ x: rx, y: evalSide(left, rx) });
+        if (Math.abs(fl(rx) - fr(rx)) < 0.5) {
+          roots.push({ x: rx, y: fl(rx) });
         }
       }
     }
@@ -166,7 +186,8 @@ export function GraphPane({ left, right }: EquationState) {
     }
 
     return { curveL: toCurve(ls), curveR: toCurve(rs), roots: dedup, lo, hi, px, py, yTicks };
-  }, [left, right]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [depKey]);
 
   const { curveL, curveR, roots, lo, hi, px, py, yTicks } = plot;
   const y0 = py(0);

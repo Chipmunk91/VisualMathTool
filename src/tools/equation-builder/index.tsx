@@ -22,8 +22,26 @@ import {
   type Variable,
 } from "./model";
 import { parseEquation, renderMathPreview } from "./parse";
-import { GraphPane, isFunctionEquation } from "./graph";
+import { GraphPane, GraphView, evalSide, isFunctionEquation } from "./graph";
 import { MappingPane } from "./mapping";
+import {
+  TNode,
+  TreeEq,
+  addendsOf,
+  cloneTreeEq,
+  constValue,
+  evalNode,
+  printNode,
+  printTreeEq,
+  simplify as simplifyTree,
+  splitCoef,
+  tc,
+  tmul,
+  tv,
+  varsIn,
+} from "./tree";
+import { applyToolT, divideBothT, moveTermsT, type TreeMoveResult, type TreeOutcome } from "./treemoves";
+import { TreeSideView } from "./treeview";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -123,6 +141,8 @@ interface Step {
   /** A standing assumption this step introduced (e.g. "x ≠ 0", "principal value") */
   pill?: string;
   state: EquationState;
+  /** Present when this step lives in the expression tree (frontier mode) */
+  tree?: TreeEq;
   text: string;
 }
 
@@ -135,6 +155,20 @@ const makeStep = (label: string, state: EquationState, dangerous?: boolean, note
   pill,
   state: cloneState(state),
   text: equationText(state),
+});
+
+/** A harmless flat placeholder while the equation lives in the tree */
+const TREE_DUMMY = (): EquationState => ({ left: [leaf(0)], right: [leaf(0)] });
+
+const makeTreeStep = (label: string, tree: TreeEq, dangerous?: boolean, note?: string, pill?: string): Step => ({
+  id: stepCounter++,
+  label,
+  note,
+  dangerous,
+  pill,
+  state: TREE_DUMMY(),
+  tree: cloneTreeEq(tree),
+  text: printTreeEq(tree),
 });
 
 type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn";
@@ -311,6 +345,8 @@ const Fraction = ({
 const EquationBuilderTool = () => {
   const [presetIndex, setPresetIndex] = useState(0);
   const [equation, setEquation] = useState<EquationState>(() => PRESETS[0].make());
+  /** Non-null when the equation lives in the expression tree (frontier mode) */
+  const [treeEq, setTreeEq] = useState<TreeEq | null>(null);
   const [history, setHistory] = useState<Step[]>(() => [makeStep("start", PRESETS[0].make())]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dragOver, setDragOver] = useState<Side | null>(null);
@@ -467,6 +503,40 @@ const EquationBuilderTool = () => {
   }, [left, right]);
 
   const mentionsY = sideMentions(left, "y") || sideMentions(right, "y");
+
+  // --- Tree (frontier) mode: solved detection + which pane the equation earns
+  const treeSolved = useMemo(() => {
+    if (!treeEq) return null;
+    const detect = (a: TNode, b: TNode) =>
+      a.kind === "var" && varsIn(b).size === 0 ? { v: a.name, value: b } : null;
+    const hit = detect(treeEq.left, treeEq.right) ?? detect(treeEq.right, treeEq.left);
+    if (!hit) return null;
+    const approx = constValue(hit.value);
+    const exact = hit.value.kind === "const";
+    return {
+      v: hit.v,
+      text: printNode(hit.value),
+      approx: !exact && approx !== null ? Math.round(approx * 1000) / 1000 : null,
+    };
+  }, [treeEq]);
+
+  const treePane = useMemo(() => {
+    if (!treeEq) return null;
+    const vars = new Set([...Array.from(varsIn(treeEq.left)), ...Array.from(varsIn(treeEq.right))]);
+    // mapping pane when one side is a bare variable of the other: y = 2^x
+    const detect = (a: TNode, b: TNode) => {
+      if (a.kind !== "var") return null;
+      const out = a.name;
+      const input: Variable = out === "y" ? "x" : "y";
+      const bv = varsIn(b);
+      if (bv.has(out) || !bv.has(input)) return null;
+      return { out, input, rhs: b };
+    };
+    const m = detect(treeEq.left, treeEq.right) ?? detect(treeEq.right, treeEq.left);
+    if (m) return { kind: "mapping" as const, ...m };
+    if (!vars.has("y") && vars.has("x")) return { kind: "graph" as const };
+    return null;
+  }, [treeEq]);
 
   // ± / radical / inverse results are an end state: no further arithmetic is defined on them
   const hasTerminal = [...left, ...right].some((t) => t.kind === "leaf" && (t.pm || t.radical || t.fnVal));
@@ -768,6 +838,7 @@ const EquationBuilderTool = () => {
   const loadPreset = (index: number) => {
     const state = PRESETS[index].make();
     setPresetIndex(index);
+    setTreeEq(null);
     setEquation(state);
     setHistory([makeStep("start", state)]);
     setSelection(null);
@@ -784,8 +855,16 @@ const EquationBuilderTool = () => {
     const result = parseEquation(inputText);
     if (result.ok) {
       setPresetIndex(-1);
-      setEquation(result.state);
-      setHistory([makeStep("start", result.state)]);
+      if (result.tree) {
+        // frontier mode: the flat model can't hold this — the tree can
+        setTreeEq(result.tree);
+        setEquation(TREE_DUMMY());
+        setHistory([makeTreeStep("start", result.tree)]);
+      } else {
+        setTreeEq(null);
+        setEquation(result.state);
+        setHistory([makeStep("start", result.state)]);
+      }
       setSelection(null);
       setNotice(null);
       setInputMsg(null);
@@ -795,7 +874,9 @@ const EquationBuilderTool = () => {
   };
 
   const restoreStep = (index: number) => {
-    setEquation(cloneState(history[index].state));
+    const step = history[index];
+    setTreeEq(step.tree ? cloneTreeEq(step.tree) : null);
+    setEquation(cloneState(step.state));
     setHistory((h) => h.slice(0, index + 1));
     setSelection(null);
     setNotice(null);
@@ -1383,15 +1464,96 @@ const EquationBuilderTool = () => {
     }
   };
 
+  // --- Tree (frontier) moves: the same engine, dispatched to tree rewrites --
+
+  /** The addend a tree symbol id (L0, R1, L0@x, …) points at */
+  const treeAddend = (id: string): TNode | null => {
+    if (!treeEq) return null;
+    const side: Side = id.startsWith("L") ? "left" : "right";
+    const list = addendsOf(treeEq[side]);
+    const i = parseInt(id.slice(1), 10);
+    return list[i] ?? null;
+  };
+
+  /** The constant part of an addend — what its coefficient handle divides by */
+  const coefExprOf = (id: string): TNode | null => {
+    const a = treeAddend(id);
+    if (!a) return null;
+    const { num, den, core } = splitCoef(a);
+    const constParts = core.filter((f) => varsIn(f).size === 0);
+    const parts: TNode[] = [
+      ...(Math.abs(num) === 1 && den === 1 ? [] : [tc(Math.abs(num), den)]),
+      ...constParts,
+    ];
+    if (parts.length === 0) return null;
+    return simplifyTree(parts.length === 1 ? parts[0] : tmul(...parts));
+  };
+
+  const computeTreeDrop = (payload: DragPayload, target: DropTarget): TreeMoveResult => {
+    if (!treeEq) return null;
+    if (payload.kind === "tool") {
+      if (target.kind === "onterm")
+        return "rebuilding single terms arrives with the full tree grammar — click the symbol to apply it to both sides";
+      return applyToolT(payload.tool, treeEq);
+    }
+    if (payload.kind === "coef") {
+      const expr = coefExprOf(payload.termId);
+      if (!expr) return null;
+      return divideBothT(treeEq, expr, printNode(expr));
+    }
+    if (payload.kind === "xdiv") {
+      // a bare variable handle: under → divide both sides by it; beside → the term moves
+      const v = payload.termId.split("@")[1] as Variable | undefined;
+      if (!v) return null;
+      if (target.kind === "under") return divideBothT(treeEq, tv(v), v);
+      if (target.kind === "side") return moveTermsT(treeEq, [payload.termId], payload.from, target.side);
+      return null;
+    }
+    if (payload.kind === "terms") {
+      if (target.kind === "under") {
+        const a = treeAddend(payload.ids[0]);
+        if (!a) return null;
+        return divideBothT(treeEq, a, printNode(a));
+      }
+      if (target.kind === "side") return moveTermsT(treeEq, payload.ids, payload.from, target.side);
+      return null;
+    }
+    return null;
+  };
+
+  const commitTreeOutcome = (o: TreeOutcome) => {
+    if (o.flatNext) {
+      // the escape hatch: the equation fits the flat model again — the full
+      // move grammar takes over from here
+      setTreeEq(null);
+      setEquation(o.flatNext);
+      setHistory((h) => [...h, makeStep(o.label, o.flatNext!, o.dangerous, o.note, o.pill)]);
+    } else if (o.treeNext) {
+      setTreeEq(o.treeNext);
+      setEquation(TREE_DUMMY());
+      setHistory((h) => [...h, makeTreeStep(o.label, o.treeNext!, o.dangerous, o.note, o.pill)]);
+    }
+    setSelection(null);
+    setNotice(null);
+  };
+
   /** Live outcome preview: what would happen if the drag were released here */
   const updatePreview = (payload: DragPayload, target: DropTarget) => {
     const key = JSON.stringify([payload, target]);
     if (previewKeyRef.current === key) return;
     previewKeyRef.current = key;
-    const result = computeDrop(payload, target);
+    const result = treeEq ? computeTreeDrop(payload, target) : computeDrop(payload, target);
     if (result === null) setDragPreview({ kind: "cancel", text: "" });
     else if (typeof result === "string") setDragPreview({ kind: "reject", text: result });
-    else setDragPreview({ kind: "ok", text: equationText(result.next) });
+    else {
+      const text =
+        "next" in result
+          ? equationText(result.next)
+          : result.flatNext
+            ? equationText(result.flatNext)
+            : printTreeEq(result.treeNext!);
+      setDragPreview({ kind: "ok", text });
+    }
   };
 
   // ---- Pointer drag engine (Notion-style: no native HTML5 DnD) ----------
@@ -1561,6 +1723,16 @@ const EquationBuilderTool = () => {
   };
 
   const performDrop = (payload: DragPayload, target: DropTarget) => {
+    if (treeEq) {
+      const result = computeTreeDrop(payload, target);
+      if (result === null) return;
+      if (typeof result === "string") {
+        flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+        return;
+      }
+      commitTreeOutcome(result);
+      return;
+    }
     const result = computeDrop(payload, target);
     if (result === null) return;
     if (typeof result === "string") {
@@ -1591,6 +1763,22 @@ const EquationBuilderTool = () => {
         recip: "1/( )",
       };
       return GLYPH[p.tool];
+    }
+    if (treeEq) {
+      if (p.kind === "terms") {
+        return p.ids
+          .map((id) => {
+            const a = treeAddend(id);
+            return a ? printNode(a) : "?";
+          })
+          .join(", ");
+      }
+      if (p.kind === "coef") {
+        const expr = coefExprOf(p.termId);
+        return expr ? printNode(expr) : "?";
+      }
+      if (p.kind === "xdiv") return p.termId.split("@")[1] ?? "x";
+      return "?";
     }
     const findTerm = (id: string) => equation[p.from].find((t) => t.id === id);
     switch (p.kind) {
@@ -2461,6 +2649,17 @@ const EquationBuilderTool = () => {
                         title={item.tool ? item.title : "coming soon"}
                         onClick={() => {
                           if (!item.tool) return;
+                          if (treeEq) {
+                            const result = applyToolT(item.tool, treeEq);
+                            if (result === null) return;
+                            setToolboxOpen(false);
+                            if (typeof result === "string") {
+                              flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+                            } else {
+                              commitTreeOutcome(result);
+                            }
+                            return;
+                          }
                           const result = tryApplyTool(item.tool);
                           if (result === null) return;
                           // choosing dismisses the menu — it must not linger
@@ -2560,12 +2759,34 @@ const EquationBuilderTool = () => {
       <div
         ref={equationRef}
         className={`flex items-center leading-none font-serif text-6xl tracking-wide transition-colors duration-300 sm:text-7xl ${
-          solvedContradiction ? "text-rose-500" : solved ? "text-emerald-600" : ""
+          solvedContradiction ? "text-rose-500" : solved || treeSolved ? "text-emerald-600" : ""
         }`}
       >
-        {renderSide(left, "left")}
-        <span className="mx-5 select-none" data-equals>=</span>
-        {renderSide(right, "right")}
+        {treeEq ? (
+          <>
+            <TreeSideView
+              node={treeEq.left}
+              side="left"
+              hoveredTermId={hoveredTermId}
+              selectedIds={selection?.side === "left" ? selection.termIds : null}
+              onHover={symHandlers.hover}
+            />
+            <span className="mx-5 select-none" data-equals>=</span>
+            <TreeSideView
+              node={treeEq.right}
+              side="right"
+              hoveredTermId={hoveredTermId}
+              selectedIds={selection?.side === "right" ? selection.termIds : null}
+              onHover={symHandlers.hover}
+            />
+          </>
+        ) : (
+          <>
+            {renderSide(left, "left")}
+            <span className="mx-5 select-none" data-equals>=</span>
+            {renderSide(right, "right")}
+          </>
+        )}
       </div>
 
       {/* State line: notice, solved, or a neutral hint — plus the active assumption */}
@@ -2586,6 +2807,11 @@ const EquationBuilderTool = () => {
           </span>
         ) : solved ? (
           <span className="font-medium text-emerald-600">Solved — {solvedVar} = {solvedValue}</span>
+        ) : treeSolved ? (
+          <span className="font-medium text-emerald-600">
+            Solved — {treeSolved.v} = {treeSolved.text}
+            {treeSolved.approx !== null && <span className="text-emerald-600/70"> ≈ {treeSolved.approx}</span>}
+          </span>
         ) : null}
         {!solvedContradiction &&
           assumptions.map((assumption) => (
@@ -2599,11 +2825,32 @@ const EquationBuilderTool = () => {
       </div>
 
       {/* Open-world reveals: isolate y and the input→output machine appears;
-          otherwise the curve view shows for nonlinear x-only equations */}
-      {functionMode ? (
-        <MappingPane rhs={functionMode.rhs} inputVar={functionMode.input} outputVar={functionMode.output} />
+          otherwise the curve view shows for nonlinear x-only equations.
+          Tree equations earn the same panes through their own evaluator. */}
+      {treeEq && treePane ? (
+        treePane.kind === "mapping" ? (
+          <MappingPane
+            f={(t) => evalNode(treePane.rhs, { [treePane.input]: t })}
+            depKey={printNode(treePane.rhs)}
+            inputVar={treePane.input}
+            outputVar={treePane.out}
+          />
+        ) : (
+          <GraphView
+            fl={(x) => evalNode(treeEq.left, { x })}
+            fr={(x) => evalNode(treeEq.right, { x })}
+            depKey={printTreeEq(treeEq)}
+          />
+        )
+      ) : !treeEq && functionMode ? (
+        <MappingPane
+          f={(x) => evalSide(functionMode.rhs, x)}
+          depKey={sideTextOf(functionMode.rhs)}
+          inputVar={functionMode.input}
+          outputVar={functionMode.output}
+        />
       ) : (
-        !mentionsY && isFunctionEquation(equation) && <GraphPane left={left} right={right} />
+        !treeEq && !mentionsY && isFunctionEquation(equation) && <GraphPane left={left} right={right} />
       )}
 
       {/* Presets + reset, kept out of the way */}

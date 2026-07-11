@@ -1,6 +1,7 @@
 import { ReactNode } from "react";
 import { parse as mathParse, MathNode } from "mathjs";
 import { EquationState, EqTerm, LeafTerm, FuncName, leaf, group, func, scaleNum, scaleDen, combine } from "./model";
+import { TNode, TreeEq, simplify, tadd, tc, tfn, tmul, tpow, tv, treeSideToFlat } from "./tree";
 
 /**
  * Typed-equation support: mathjs parses the text into an AST (the standard
@@ -186,8 +187,56 @@ function convertTerm(node: Node): EqTerm {
   throw new Unsupported("that expression isn't playable yet");
 }
 
+/* --- mathjs AST → expression tree (the frontier fallback) ----------------- */
+
+const TREE_FN: Record<string, "sin" | "cos" | "tan" | "ln" | "exp" | "sqrt"> = {
+  sin: "sin",
+  cos: "cos",
+  tan: "tan",
+  ln: "ln",
+  log: "ln",
+  exp: "exp",
+  sqrt: "sqrt",
+};
+
+function mathToTree(node: Node): TNode {
+  const constant = tryConst(node);
+  if (constant) return tc(constant.num, constant.den);
+  switch (node.type) {
+    case "SymbolNode":
+      if (node.name === "x" || node.name === "y") return tv(node.name);
+      throw new Unsupported(`the constant "${node.name}" isn't playable yet`);
+    case "ParenthesisNode":
+      return mathToTree(node.content);
+    case "FunctionNode": {
+      const fn = TREE_FN[node.fn?.name];
+      if (!fn || node.args.length !== 1) {
+        throw new Unsupported(`${node.fn?.name ?? "that function"}( ) isn't playable yet — try sin, cos, tan, ln, exp, or sqrt`);
+      }
+      return tfn(fn, mathToTree(node.args[0]));
+    }
+    case "OperatorNode": {
+      if (node.op === "-" && node.args.length === 1) return tmul(tc(-1), mathToTree(node.args[0]));
+      const [a, b] = node.args;
+      if (node.op === "+") return tadd(mathToTree(a), mathToTree(b));
+      if (node.op === "-") return tadd(mathToTree(a), tmul(tc(-1), mathToTree(b)));
+      if (node.op === "*") return tmul(mathToTree(a), mathToTree(b));
+      if (node.op === "/") return tmul(mathToTree(a), tpow(mathToTree(b), -1));
+      if (node.op === "^") {
+        const base = unwrapParens(a);
+        if (base.type === "SymbolNode" && base.name === "e") return tfn("exp", mathToTree(b));
+        return tpow(mathToTree(a), mathToTree(b));
+      }
+      throw new Unsupported("that expression isn't playable yet");
+    }
+    default:
+      throw new Unsupported("that expression isn't playable yet");
+  }
+}
+
 export type ParseResult =
-  | { ok: true; state: EquationState }
+  | { ok: true; state: EquationState; tree?: undefined }
+  | { ok: true; state?: undefined; tree: TreeEq }
   | { ok: false; stage: "parse" | "convert"; message: string };
 
 export function parseEquation(text: string): ParseResult {
@@ -209,12 +258,26 @@ export function parseEquation(text: string): ParseResult {
       right: combine(addTerms(rightAst, false)),
     };
     return { ok: true, state };
-  } catch (e) {
-    return {
-      ok: false,
-      stage: "convert",
-      message: e instanceof Unsupported ? e.message : "that equation isn't playable yet",
-    };
+  } catch (flatError) {
+    // The flat model refused — try the expression tree (frontier mode)
+    try {
+      const left = simplify(mathToTree(leftAst));
+      const right = simplify(mathToTree(rightAst));
+      // simplification may reveal a flat-representable equation after all
+      const fl = treeSideToFlat(left);
+      const fr = treeSideToFlat(right);
+      if (fl && fr && fl.length && fr.length) {
+        return { ok: true, state: { left: combine(fl), right: combine(fr) } };
+      }
+      return { ok: true, tree: { left, right } };
+    } catch (treeError) {
+      const e = treeError instanceof Unsupported ? treeError : flatError;
+      return {
+        ok: false,
+        stage: "convert",
+        message: e instanceof Unsupported ? e.message : "that equation isn't playable yet",
+      };
+    }
   }
 }
 

@@ -5,8 +5,6 @@
  * line is transported — stretching, folding, and gaps all become visible.
  */
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { EqTerm } from "./model";
-import { evalSide } from "./graph";
 
 const W = 680;
 const H = 240;
@@ -22,11 +20,15 @@ const fmt = (v: number): string => {
 };
 
 export function MappingPane({
-  rhs,
+  f,
+  depKey,
   inputVar,
   outputVar,
 }: {
-  rhs: EqTerm[];
+  /** the function being visualized — output = f(input) */
+  f: (x: number) => number;
+  /** recompute key: change it when the function changes */
+  depKey: string;
   inputVar: string;
   outputVar: string;
 }) {
@@ -39,8 +41,6 @@ export function MappingPane({
   const [probe, setProbe] = useState(1);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef(false);
-
-  const f = (x: number) => evalSide(rhs, x);
 
   // Output window: robust range over the input interval
   const { outLo, outHi, samples } = useMemo(() => {
@@ -66,7 +66,7 @@ export function MappingPane({
     }
     return { outLo: lo, outHi: hi, samples: fan };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rhs]);
+  }, [depKey]);
 
   const pxIn = (x: number) => PAD + ((x - X_MIN) / (X_MAX - X_MIN)) * (W - 2 * PAD);
   const pxOut = (y: number) => PAD + ((y - outLo) / (outHi - outLo)) * (W - 2 * PAD);

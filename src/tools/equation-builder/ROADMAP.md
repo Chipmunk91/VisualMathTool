@@ -47,39 +47,48 @@ draggable probe, and a fan of sample arrows.
   sides, history step); dragging it onto one term is a *building move* that
   rewrites the equation itself — the trail restarts from the new equation.
 
-## Still honestly gated (needs the expression-tree model)
+### The expression tree (phase 2) ✅ shipped in three layers
 
-Each of these is refused with a message that says why:
+The formerly gated forms — `1/(x+1)`, `2^x`, `√(x+1)`, `x·y` — now live in
+a real expression tree (`tree.ts`):
 
-- **`x·y` cross-terms** — a leaf carries one variable and one power;
-  squaring `x + y` or multiplying across variables needs multi-variable
-  monomials.
-- **`2^x` / `e^(a·ln …)`** — needs irrational coefficients (`ln 2`) kept
-  symbolic through arithmetic.
-- **Fractions of sums** `1/(x+1)` — needs groups with power −1.
-- **√ of sums** `√(x²+1)` — needs a radical over a tree, not a leaf flag.
+```
+TNode = Const(num/den) | Var("x" | "y") | Add(TNode[]) | Mul(TNode[])
+      | Pow(TNode, TNode) | Fn(name, TNode)
+```
+
+- **Layer 1 — parse, render, evaluate.** When the flat model refuses, the
+  parser falls back to the tree: the equation typesets (real fractions,
+  arbitrary exponents, √ overlines) and earns the same open-world reveals —
+  `2^x = 8` plots with its crossing at 3, `y = 2^x` opens the mapping pane.
+- **Layer 2 — one engine, two worlds.** The tree renderer (`treeview.tsx`)
+  emits the same DOM contracts as the flat renderer (`data-symbol`,
+  `data-term-wrap`, `data-equals`), so the single pointer engine — proximity
+  grab, marquee, drop targets, live previews, history — drives both. Flat
+  behavior is untouched (all flat suites pass unchanged).
+- **Layer 3 — typed rewrites.** Tree moves (`treemoves.ts`) return
+  `{ next, pills }`; the pill is the license. The simplifier is a strict
+  whitelist of identities true everywhere: `x/x` does NOT silently become 1
+  (there is no code path for it) — but the divide-both-sides move, having
+  declared its `≠ 0` pill, may cancel exactly that base and nothing else.
+  Nonzero constants (`ln 2`) cancel freely. And the escape hatch: the moment
+  a tree equation becomes flat-representable, it drops back into the full
+  flat game — `√(x+1) = 3` --square--> `x + 1 = 9` and every flat move works.
+
+Shipped tree moves: addend across `=`, coefficient handles divide both sides
+(`ln 2` included), bare-variable handles divide (`x·y = 6` → `y = 6/x`), and
+all eight toolbox symbols (ln thaws `2^x` to `ln(2)·x` exactly; recip flips
+`1/(x+1) = 2` straight to `x + 1 = ½`; squaring resolves √ with its
+check-roots pill).
+
+## Still honestly gated
+
+- **Symbolic constants** `π`, bare `e` outside `e^( )` — the constant
+  algebra stays capped at rationals and fn-of-rational values.
+- **Per-term rebuilding in tree mode** (drag a toolbox symbol onto one tree
+  term) — clicks apply to both sides; term-level tree rebuilds arrive with
+  path-addressed payloads.
+- **Distribution/factoring at depth** (expand `(x+1)(x−2)`, factor a tree
+  sum) — the next move-grammar chapter.
 - **d/dx, ∫, Σ, lim** — deliberately not equation moves at all; each is its
-  own move-grammar project.
-
-## Phase 2 — Expression-tree model (the real rewrite)
-
-Replace the flat `EqTerm[]` sides with a proper expression tree:
-
-```
-Node = Const(num/den) | Var("x" | "y") | Add(Node[]) | Mul(Node[])
-     | Pow(Node, Node) | Fn(name, Node)
-```
-
-- **What survives unchanged**: the pointer drag engine, proximity grab,
-  geometric drop targets, live previews, history + assumption pills, the
-  toolbox, the typed-input parser (mathjs already produces this tree — the
-  current code *flattens* it; phase 2 stops flattening).
-- **What is rewritten**: the move grammar becomes tree rewrites (move an
-  addend across `=`, divide by a factor, apply/unwrap a function at any
-  depth), the renderer becomes recursive (the flat model's `renderInertTerm`
-  and the pretty-printer in `parse.tsx` are already most of it), and
-  payload/target identify *node paths* instead of term ids + roles.
-- **What it unlocks**: everything in the gated list above, exactly.
-- Normalization (today's `combine`) becomes a tree simplifier: fold
-  constants, merge like addends, cancel `fn ∘ fn⁻¹`. Keep it conservative —
-  the player makes the interesting moves, not the simplifier.
+  own project.
