@@ -34,6 +34,7 @@ import {
   printNode,
   printTreeEq,
   simplify as simplifyTree,
+  keyOf,
   splitCoef,
   tc,
   tmul,
@@ -437,44 +438,82 @@ const EquationBuilderTool = () => {
     return null;
   }, [left, right]);
 
-  const solved = useMemo(() => {
-    const check = (a: EqTerm[], b: EqTerm[]) =>
-      a.length === 1 &&
-      a[0].kind === "leaf" &&
-      a[0].power === 1 &&
-      a[0].num === 1 &&
-      a[0].den === 1 &&
-      b.length === 1 &&
-      b[0].kind === "leaf" &&
-      b[0].power === 0;
-    return check(left, right) || check(right, left);
-  }, [left, right]);
-
-  const solvedVarTerm = solved ? ((left[0].kind === "leaf" && left[0].power === 1 ? left : right)[0] as LeafTerm) : null;
-  const solvedVar: Variable = solvedVarTerm ? varOf(solvedVarTerm) : "x";
-  const solvedTerm = solved ? ((left[0].kind === "leaf" && left[0].power === 1 ? right : left)[0] as LeafTerm) : null;
-  const solvedArg = solvedTerm ? (solvedTerm.den === 1 ? String(solvedTerm.num) : `${solvedTerm.num}/${solvedTerm.den}`) : "";
-  const solvedValue = solvedTerm
-    ? `${solvedTerm.pm ? "±" : solvedTerm.neg ? "−" : ""}${
-        solvedTerm.fnVal
-          ? solvedTerm.fnVal === "e^"
-            ? `e^${solvedArg}`
-            : solvedTerm.fnVal === "ln"
-              ? `ln ${solvedArg}`
-              : `${solvedTerm.fnVal}(${solvedArg})`
-          : solvedTerm.radical
-            ? `√${solvedTerm.den === 1 ? solvedTerm.num : `(${solvedTerm.num}/${solvedTerm.den})`}`
-            : solvedArg
-      }`
-    : null;
-  const solvedContradiction = solved && solvedTerm?.num === 0 && nonZeroAssumed(solvedVar);
-
   /** Does a side mention a variable (in leaves, groups, or function args)? */
   const sideMentions = (terms: EqTerm[], v: Variable): boolean => {
     const mentions = (t: EqTerm): boolean =>
       t.kind === "leaf" ? t.power !== 0 && varOf(t) === v : t.inner.some(mentions);
     return terms.some(mentions);
   };
+
+  /**
+   * Solved: one side is the bare variable, the other holds no variable at
+   * all — a rational (x = 3), a frozen value (x = ±√2), or a function of a
+   * constant (x = ln 8, the shape tree endgames flatten into).
+   */
+  const solvedInfo = useMemo(() => {
+    const bare = (a: EqTerm[]): LeafTerm | null =>
+      a.length === 1 &&
+      a[0].kind === "leaf" &&
+      a[0].power === 1 &&
+      a[0].num === 1 &&
+      a[0].den === 1 &&
+      !a[0].pm &&
+      !a[0].radical &&
+      !a[0].fnVal
+        ? a[0]
+        : null;
+    const constSide = (b: EqTerm[]): EqTerm | null =>
+      b.length === 1 && !sideMentions(b, "x") && !sideMentions(b, "y") ? b[0] : null;
+    const detect = (a: EqTerm[], b: EqTerm[]) => {
+      const v = bare(a);
+      const c = constSide(b);
+      return v && c ? { variable: varOf(v), term: c } : null;
+    };
+    return detect(left, right) ?? detect(right, left);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [left, right]);
+  const solved = !!solvedInfo;
+  const solvedVar: Variable = solvedInfo?.variable ?? "x";
+  const solvedTerm = solvedInfo?.term ?? null;
+  const solvedArg =
+    solvedTerm?.kind === "leaf" ? (solvedTerm.den === 1 ? String(solvedTerm.num) : `${solvedTerm.num}/${solvedTerm.den}`) : "";
+  const solvedValue = solvedTerm
+    ? solvedTerm.kind === "leaf"
+      ? `${solvedTerm.pm ? "±" : solvedTerm.neg ? "−" : ""}${
+          solvedTerm.fnVal
+            ? solvedTerm.fnVal === "e^"
+              ? `e^${solvedArg}`
+              : solvedTerm.fnVal === "ln"
+                ? `ln ${solvedArg}`
+                : `${solvedTerm.fnVal}(${solvedArg})`
+            : solvedTerm.radical
+              ? `√${solvedTerm.den === 1 ? solvedTerm.num : `(${solvedTerm.num}/${solvedTerm.den})`}`
+              : solvedArg
+        }`
+      : termText(solvedTerm, true).trim()
+    : null;
+  // a numeric hint whenever the value isn't a plain rational
+  const solvedApprox = useMemo(() => {
+    if (!solvedTerm) return null;
+    if (solvedTerm.kind === "leaf" && !solvedTerm.radical && !solvedTerm.fnVal) return null;
+    if (solvedTerm.kind === "leaf" && solvedTerm.pm) return null; // two values — no single ≈
+    const v = evalSide([solvedTerm], 0);
+    return Number.isFinite(v) ? Math.round(v * 1000) / 1000 : null;
+  }, [solvedTerm]);
+  const solvedContradiction =
+    solved && solvedTerm?.kind === "leaf" && solvedTerm.num === 0 && nonZeroAssumed(solvedVar);
+
+  /** Variable-free equations are a verdict: always true, or no solution */
+  const flatStatus = useMemo(() => {
+    if (treeEq || solvedInfo) return null;
+    const constSide = (b: EqTerm[]) => b.length > 0 && !sideMentions(b, "x") && !sideMentions(b, "y");
+    if (!constSide(left) || !constSide(right)) return null;
+    const va = evalSide(left, 0);
+    const vb = evalSide(right, 0);
+    if (!Number.isFinite(va) || !Number.isFinite(vb)) return null;
+    return Math.abs(va - vb) < 1e-9 ? ("identity" as const) : ("contradiction" as const);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [treeEq, solvedInfo, left, right]);
 
   /**
    * Function mode: one side is a bare variable, the other side is an
@@ -519,6 +558,16 @@ const EquationBuilderTool = () => {
       approx: !exact && approx !== null ? Math.round(approx * 1000) / 1000 : null,
     };
   }, [treeEq]);
+
+  /** Tree equations get the same verdicts: identical sides, or two constants */
+  const treeStatus = useMemo(() => {
+    if (!treeEq || treeSolved) return null;
+    if (keyOf(treeEq.left) === keyOf(treeEq.right)) return "identity" as const;
+    const lv = constValue(treeEq.left);
+    const rv = constValue(treeEq.right);
+    if (lv === null || rv === null) return null;
+    return Math.abs(lv - rv) < 1e-9 ? ("identity" as const) : ("contradiction" as const);
+  }, [treeEq, treeSolved]);
 
   const treePane = useMemo(() => {
     if (!treeEq) return null;
@@ -2759,7 +2808,11 @@ const EquationBuilderTool = () => {
       <div
         ref={equationRef}
         className={`flex items-center leading-none font-serif text-6xl tracking-wide transition-colors duration-300 sm:text-7xl ${
-          solvedContradiction ? "text-rose-500" : solved || treeSolved ? "text-emerald-600" : ""
+          solvedContradiction || (flatStatus ?? treeStatus) === "contradiction"
+            ? "text-rose-500"
+            : solved || treeSolved || (flatStatus ?? treeStatus) === "identity"
+              ? "text-emerald-600"
+              : ""
         }`}
       >
         {treeEq ? (
@@ -2806,12 +2859,19 @@ const EquationBuilderTool = () => {
             {solvedVar} = 0 — but a step assumed {solvedVar} ≠ 0 (see history). No valid solution survives.
           </span>
         ) : solved ? (
-          <span className="font-medium text-emerald-600">Solved — {solvedVar} = {solvedValue}</span>
+          <span className="font-medium text-emerald-600">
+            Solved — {solvedVar} = {solvedValue}
+            {solvedApprox !== null && <span className="text-emerald-600/70"> ≈ {solvedApprox}</span>}
+          </span>
         ) : treeSolved ? (
           <span className="font-medium text-emerald-600">
             Solved — {treeSolved.v} = {treeSolved.text}
             {treeSolved.approx !== null && <span className="text-emerald-600/70"> ≈ {treeSolved.approx}</span>}
           </span>
+        ) : (flatStatus ?? treeStatus) === "identity" ? (
+          <span className="font-medium text-emerald-600">Always true — the two sides are equal for every value</span>
+        ) : (flatStatus ?? treeStatus) === "contradiction" ? (
+          <span className="font-medium text-rose-500">No solution — the two sides can never be equal</span>
         ) : null}
         {!solvedContradiction &&
           assumptions.map((assumption) => (
