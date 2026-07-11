@@ -415,6 +415,75 @@ export function signSplit(n: TNode): { neg: boolean; body: TNode } {
   return { neg: false, body: n };
 }
 
+/* --- differentiation ------------------------------------------------------ */
+
+/**
+ * d/dv of a tree, or null when a rule is beyond the playground (u^v with
+ * both parts variable). Only ever applied to identities y = f(x) — the move
+ * layer enforces that; differentiating a conditional equation is invalid.
+ */
+export function derivative(n: TNode, v: Variable): TNode | null {
+  switch (n.kind) {
+    case "const":
+      return tc(0);
+    case "var":
+      return tc(n.name === v ? 1 : 0);
+    case "add": {
+      const parts = n.terms.map((t) => derivative(t, v));
+      if (parts.some((p) => p === null)) return null;
+      return tadd(...(parts as TNode[]));
+    }
+    case "mul": {
+      // product rule over all factors: Σᵢ fᵢ'·Πⱼ≠ᵢ fⱼ
+      const terms: TNode[] = [];
+      for (let i = 0; i < n.factors.length; i++) {
+        const d = derivative(n.factors[i], v);
+        if (d === null) return null;
+        terms.push(tmul(d, ...n.factors.filter((_, j) => j !== i)));
+      }
+      return tadd(...terms);
+    }
+    case "pow": {
+      const expConst = varsIn(n.exp).size === 0;
+      const baseConst = varsIn(n.base).size === 0;
+      if (expConst) {
+        // (u^c)' = c·u^(c−1)·u'
+        const du = derivative(n.base, v);
+        if (du === null) return null;
+        return tmul(n.exp, tpow(n.base, simplify(tadd(n.exp, tc(-1)))), du);
+      }
+      if (baseConst) {
+        // (a^u)' = a^u·ln a·u' — a^u exists only for a > 0, where ln a does too
+        const du = derivative(n.exp, v);
+        if (du === null) return null;
+        return tmul(n, tfn("ln", n.base), du);
+      }
+      return null; // u^v with both variable — beyond the playground, honestly
+    }
+    case "fn": {
+      const du = derivative(n.arg, v);
+      if (du === null) return null;
+      const u = n.arg;
+      const outer: TNode | null =
+        n.fn === "sin"
+          ? tfn("cos", u)
+          : n.fn === "cos"
+            ? tmul(tc(-1), tfn("sin", u))
+            : n.fn === "tan"
+              ? tpow(tfn("cos", u), -2)
+              : n.fn === "ln"
+                ? tpow(u, -1)
+                : n.fn === "exp"
+                  ? tfn("exp", u)
+                  : n.fn === "sqrt"
+                    ? tmul(tc(1, 2), tpow(tfn("sqrt", u), -1))
+                    : null;
+      if (!outer) return null;
+      return tmul(outer, du);
+    }
+  }
+}
+
 /* --- the escape hatch: tree → flat model when representable --------------- */
 
 const FLAT_FN: TFnName[] = ["sin", "cos", "tan", "ln", "exp"];

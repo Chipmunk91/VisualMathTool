@@ -34,13 +34,17 @@ import {
   printNode,
   printTreeEq,
   simplify as simplifyTree,
+  derivative,
+  flatToTree,
   keyOf,
   splitCoef,
   tc,
   tmul,
+  treeSideToFlat,
   tv,
   varsIn,
 } from "./tree";
+import { TangentPane } from "./tangent";
 import { applyToolT, divideBothT, moveTermsT, type TreeMoveResult, type TreeOutcome } from "./treemoves";
 import { TreeSideView } from "./treeview";
 
@@ -180,6 +184,8 @@ type ToolKind = "ln" | "exp" | "sin" | "cos" | "tan" | "sqrt" | "square" | "reci
 interface ToolItem {
   glyph: string;
   tool?: ToolKind; // absent = shown as roadmap, disabled
+  /** click-only operators with their own gate (d/dx needs function mode) */
+  action?: "ddx";
   title?: string;
 }
 
@@ -207,7 +213,7 @@ const TOOLBOX: { id: string; label: string; items: ToolItem[] }[] = [
   {
     id: "calculus",
     label: "Calculus",
-    items: [{ glyph: "d⁄dx" }, { glyph: "∫" }, { glyph: "Σ" }, { glyph: "lim" }],
+    items: [{ glyph: "d⁄dx", action: "ddx" }, { glyph: "∫" }, { glyph: "Σ" }, { glyph: "lim" }],
   },
 ];
 
@@ -586,6 +592,55 @@ const EquationBuilderTool = () => {
     if (!vars.has("y") && vars.has("x")) return { kind: "graph" as const };
     return null;
   }, [treeEq]);
+
+  /** Which view function mode shows: the mapping machine, or the curve & slope */
+  const [fnView, setFnView] = useState<"mapping" | "slope">("mapping");
+
+  /** d/dx is only meaningful on an identity — exactly what function mode is */
+  const ddxReady = treeEq ? treePane?.kind === "mapping" : !!functionMode;
+
+  /**
+   * Differentiate the function. Valid ONLY for y = f(x) (an identity in x);
+   * the result is a NEW equation about the same function — not an equivalent
+   * step — so the trail restarts, like a building move.
+   */
+  const applyDdx = () => {
+    const fm = treeEq
+      ? treePane?.kind === "mapping"
+        ? { input: treePane.input, output: treePane.out, rhsTree: treePane.rhs }
+        : null
+      : functionMode
+        ? { input: functionMode.input, output: functionMode.output, rhsTree: flatToTree(functionMode.rhs) }
+        : null;
+    if (!fm) {
+      flashNotice("d/dx needs an identity — isolate y = f(x) first.");
+      return;
+    }
+    const d = derivative(fm.rhsTree, fm.input);
+    if (d === null) {
+      flashNotice("That derivative needs a rule beyond this playground (a power with variable base AND exponent).");
+      return;
+    }
+    const simplified = simplifyTree(d);
+    const label = `differentiated — ${fm.output} now shows d${fm.output}/d${fm.input}`;
+    const note = "a new equation about the same function, not an equivalent step";
+    const lhs = leaf(1, 1, 1, fm.output);
+    const fl = treeSideToFlat(simplified);
+    if (fl) {
+      const next: EquationState = { left: [lhs], right: combine(fl.length ? fl : [leaf(0)]) };
+      setTreeEq(null);
+      setEquation(next);
+      setHistory([makeStep(label, next, false, note)]);
+    } else {
+      const nextTree: TreeEq = { left: tv(fm.output), right: simplified };
+      setTreeEq(nextTree);
+      setEquation(TREE_DUMMY());
+      setHistory([makeTreeStep(label, nextTree, false, note)]);
+    }
+    setPresetIndex(-1);
+    setSelection(null);
+    setNotice(null);
+  };
 
   // ± / radical / inverse results are an end state: no further arithmetic is defined on them
   const hasTerminal = [...left, ...right].some((t) => t.kind === "leaf" && (t.pm || t.radical || t.fnVal));
@@ -2694,9 +2749,24 @@ const EquationBuilderTool = () => {
                       <button
                         key={item.glyph}
                         data-tool={item.tool || undefined}
-                        disabled={!item.tool}
-                        title={item.tool ? item.title : "coming soon"}
+                        data-action={item.action || undefined}
+                        disabled={!item.tool && !(item.action === "ddx" && ddxReady)}
+                        title={
+                          item.tool
+                            ? item.title
+                            : item.action === "ddx"
+                              ? ddxReady
+                                ? "Differentiate the function — a new equation about the same function"
+                                : "d/dx needs y = f(x) — isolate the function first"
+                              : "coming soon"
+                        }
                         onClick={() => {
+                          if (item.action === "ddx") {
+                            if (!ddxReady) return;
+                            setToolboxOpen(false);
+                            applyDdx();
+                            return;
+                          }
                           if (!item.tool) return;
                           if (treeEq) {
                             const result = applyToolT(item.tool, treeEq);
@@ -2721,7 +2791,7 @@ const EquationBuilderTool = () => {
                           }
                         }}
                         className={`relative flex h-9 min-w-9 items-center justify-center whitespace-nowrap rounded-md border border-transparent px-1.5 font-serif text-sm transition-all hover:z-10 ${
-                          item.tool
+                          item.tool || (item.action === "ddx" && ddxReady)
                             ? "cursor-grab hover:scale-105 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
                             : "cursor-not-allowed opacity-35"
                         }`}
@@ -2884,34 +2954,68 @@ const EquationBuilderTool = () => {
           ))}
       </div>
 
-      {/* Open-world reveals: isolate y and the input→output machine appears;
-          otherwise the curve view shows for nonlinear x-only equations.
-          Tree equations earn the same panes through their own evaluator. */}
-      {treeEq && treePane ? (
-        treePane.kind === "mapping" ? (
-          <MappingPane
-            f={(t) => evalNode(treePane.rhs, { [treePane.input]: t })}
-            depKey={printNode(treePane.rhs)}
-            inputVar={treePane.input}
-            outputVar={treePane.out}
-          />
-        ) : (
-          <GraphView
-            fl={(x) => evalNode(treeEq.left, { x })}
-            fr={(x) => evalNode(treeEq.right, { x })}
-            depKey={printTreeEq(treeEq)}
-          />
-        )
-      ) : !treeEq && functionMode ? (
-        <MappingPane
-          f={(x) => evalSide(functionMode.rhs, x)}
-          depKey={sideTextOf(functionMode.rhs)}
-          inputVar={functionMode.input}
-          outputVar={functionMode.output}
-        />
-      ) : (
-        !treeEq && !mentionsY && isFunctionEquation(equation) && <GraphPane left={left} right={right} />
-      )}
+      {/* Open-world reveals: isolate y and the input→output machine appears
+          (with a curve & slope view — the home of d/dx); otherwise the curve
+          view shows for nonlinear x-only equations. Tree equations earn the
+          same panes through their own evaluator. */}
+      {(() => {
+        const fn = treeEq
+          ? treePane?.kind === "mapping"
+            ? {
+                f: (t: number) => evalNode(treePane.rhs, { [treePane.input]: t }),
+                depKey: printNode(treePane.rhs),
+                input: treePane.input,
+                output: treePane.out,
+              }
+            : null
+          : functionMode
+            ? {
+                f: (x: number) => evalSide(functionMode.rhs, x),
+                depKey: sideTextOf(functionMode.rhs),
+                input: functionMode.input,
+                output: functionMode.output,
+              }
+            : null;
+        if (fn) {
+          return (
+            <>
+              {fnView === "mapping" ? (
+                <MappingPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} />
+              ) : (
+                <TangentPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} />
+              )}
+              <div className="mt-2 flex items-center gap-1.5 text-[11px]" data-ui>
+                {(["mapping", "slope"] as const).map((view) => (
+                  <button
+                    key={view}
+                    onClick={() => setFnView(view)}
+                    className={`rounded-full border px-2.5 py-0.5 transition-colors ${
+                      fnView === view
+                        ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                        : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+                    }`}
+                  >
+                    {view === "mapping" ? "input → output" : "curve & slope"}
+                  </button>
+                ))}
+              </div>
+            </>
+          );
+        }
+        if (treeEq && treePane?.kind === "graph") {
+          return (
+            <GraphView
+              fl={(x) => evalNode(treeEq.left, { x })}
+              fr={(x) => evalNode(treeEq.right, { x })}
+              depKey={printTreeEq(treeEq)}
+            />
+          );
+        }
+        if (!treeEq && !mentionsY && isFunctionEquation(equation)) {
+          return <GraphPane left={left} right={right} />;
+        }
+        return null;
+      })()}
 
       {/* Presets + reset, kept out of the way */}
       <div className="absolute bottom-6 flex flex-wrap items-center justify-center gap-2 px-4" data-ui>
