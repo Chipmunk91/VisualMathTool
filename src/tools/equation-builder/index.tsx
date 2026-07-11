@@ -73,30 +73,8 @@ import { TreeSideView } from "./treeview";
  * side cancels. Every move lands in the step history behind the menu.
  */
 
-interface Preset {
-  name: string;
-  make: () => EquationState;
-}
-
-const PRESETS: Preset[] = [
-  { name: "2x − 3 = −7", make: () => ({ left: [leaf(2, 1), leaf(-3)], right: [leaf(-7)] }) },
-  { name: "5x + 4 = 3x", make: () => ({ left: [leaf(5, 1), leaf(4)], right: [leaf(3, 1)] }) },
-  { name: "6/x = 2", make: () => ({ left: [leaf(6, -1)], right: [leaf(2)] }) },
-
-  { name: "2(x + 3) = 8", make: () => ({ left: [group(2, [leaf(1, 1), leaf(3)])], right: [leaf(8)] }) },
-  {
-    name: "3(x − 2) = 2x + 1",
-    make: () => ({ left: [group(3, [leaf(1, 1), leaf(-2)])], right: [leaf(2, 1), leaf(1)] }),
-  },
-  { name: "x² = 9", make: () => ({ left: [leaf(1, 2)], right: [leaf(9)] }) },
-  { name: "x² + 1 = 6", make: () => ({ left: [leaf(1, 2), leaf(1)], right: [leaf(6)] }) },
-  { name: "2x² − 6 = 12", make: () => ({ left: [leaf(2, 2), leaf(-6)], right: [leaf(12)] }) },
-  { name: "2sin(x) = 1", make: () => ({ left: [func("sin", 2, [leaf(1, 1)])], right: [leaf(1)] }) },
-  { name: "ln(x) = 2", make: () => ({ left: [func("ln", 1, [leaf(1, 1)])], right: [leaf(2)] }) },
-  { name: "eˣ + 1 = 4", make: () => ({ left: [func("exp", 1, [leaf(1, 1)]), leaf(1)], right: [leaf(4)] }) },
-  { name: "2y − 3 = x", make: () => ({ left: [leaf(2, 1, 1, "y"), leaf(-3)], right: [leaf(1, 1)] }) },
-  { name: "y + 2 = x²", make: () => ({ left: [leaf(1, 1, 1, "y"), leaf(2)], right: [leaf(1, 2)] }) },
-];
+/** The equation on first load — everything else arrives via typing or search */
+const INITIAL = (): EquationState => ({ left: [leaf(2, 1), leaf(-3)], right: [leaf(-7)] });
 
 const SUP = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 /** x³ etc. in plain text */
@@ -359,11 +337,10 @@ const Fraction = ({
 );
 
 const EquationBuilderTool = () => {
-  const [presetIndex, setPresetIndex] = useState(0);
-  const [equation, setEquation] = useState<EquationState>(() => PRESETS[0].make());
+  const [equation, setEquation] = useState<EquationState>(() => INITIAL());
   /** Non-null when the equation lives in the expression tree (frontier mode) */
   const [treeEq, setTreeEq] = useState<TreeEq | null>(null);
-  const [history, setHistory] = useState<Step[]>(() => [makeStep("start", PRESETS[0].make())]);
+  const [history, setHistory] = useState<Step[]>(() => [makeStep("start", INITIAL())]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dragOver, setDragOver] = useState<Side | null>(null);
   const [parenHover, setParenHover] = useState<string | null>(null);
@@ -439,7 +416,6 @@ const EquationBuilderTool = () => {
     if (rebuild) {
       // a building move rewrites the equation itself — new problem, new trail
       setHistory([makeStep(label, next, false, note)]);
-      setPresetIndex(-1);
     } else {
       setHistory((h) => [...h, makeStep(label, next, dangerous, note, pill)]);
     }
@@ -648,7 +624,6 @@ const EquationBuilderTool = () => {
       setEquation(TREE_DUMMY());
       setHistory([makeTreeStep(label, nextTree, false, note)]);
     }
-    setPresetIndex(-1);
     setSelection(null);
     setNotice(null);
   };
@@ -978,16 +953,6 @@ const EquationBuilderTool = () => {
     };
   };
 
-  const loadPreset = (index: number) => {
-    const state = PRESETS[index].make();
-    setPresetIndex(index);
-    setTreeEq(null);
-    setEquation(state);
-    setHistory([makeStep("start", state)]);
-    setSelection(null);
-    setNotice(null);
-  };
-
   // Typed equation: live pretty-math preview and Enter-to-load
   const inputPreview = useMemo(
     () => (!searchMode && inputText.trim() ? renderMathPreview(inputText) : null),
@@ -1002,7 +967,6 @@ const EquationBuilderTool = () => {
   );
 
   const applyParse = (result: ParseResult & { ok: true }) => {
-    setPresetIndex(-1);
     if (result.tree) {
       // frontier mode: the flat model can't hold this — the tree can
       setTreeEq(result.tree);
@@ -1023,6 +987,7 @@ const EquationBuilderTool = () => {
     if (!result.ok) return; // catalog rows are pre-vetted — this can't happen
     applyParse(result);
     setInputText("");
+    setSearchMode(false); // choosing is the end of the search
   };
 
   const submitInput = () => {
@@ -3170,21 +3135,8 @@ const EquationBuilderTool = () => {
         return null;
       })()}
 
-      {/* Presets + reset, kept out of the way */}
+      {/* Reset, kept out of the way — equations arrive via typing or search */}
       <div className="absolute bottom-6 flex flex-wrap items-center justify-center gap-2 px-4" data-ui>
-        <select
-          value={presetIndex}
-          onChange={(e) => loadPreset(Number(e.target.value))}
-          className="rounded-full border border-border bg-background px-3 py-1 font-serif text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
-          title="Choose an equation"
-        >
-          {presetIndex === -1 && <option value={-1}>custom</option>}
-          {PRESETS.map((preset, i) => (
-            <option key={preset.name} value={i}>
-              {preset.name}
-            </option>
-          ))}
-        </select>
         <button
           onClick={() => restoreStep(0)}
           className="rounded-full border border-border px-3 py-1 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
