@@ -16,9 +16,12 @@ import {
   scaleDen,
   cloneState,
   combine,
+  varOf,
+  type Variable,
 } from "./model";
 import { parseEquation, renderMathPreview } from "./parse";
 import { GraphPane, isFunctionEquation } from "./graph";
+import { MappingPane } from "./mapping";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -57,6 +60,8 @@ const PRESETS: Preset[] = [
   { name: "2sin(x) = 1", make: () => ({ left: [func("sin", 2, [leaf(1, 1)])], right: [leaf(1)] }) },
   { name: "ln(x) = 2", make: () => ({ left: [func("ln", 1, [leaf(1, 1)])], right: [leaf(2)] }) },
   { name: "eˣ + 1 = 4", make: () => ({ left: [func("exp", 1, [leaf(1, 1)]), leaf(1)], right: [leaf(4)] }) },
+  { name: "2y − 3 = x", make: () => ({ left: [leaf(2, 1, 1, "y"), leaf(-3)], right: [leaf(1, 1)] }) },
+  { name: "y + 2 = x²", make: () => ({ left: [leaf(1, 1, 1, "y"), leaf(2)], right: [leaf(1, 2)] }) },
 ];
 
 /** Plain-text rendering of a term, for history rows and labels */
@@ -84,11 +89,11 @@ function termText(t: EqTerm, leading: boolean): string {
   } else if (t.kind === "func") {
     body = t.fn === "exp" ? `${coefStr}e^(${innerText(t.inner)})` : `${coefStr}${t.fn}(${innerText(t.inner)})`;
   } else if (t.power === 1 || t.power === 2) {
-    body = `${coefStr}x${t.power === 2 ? "²" : ""}`;
+    body = `${coefStr}${varOf(t)}${t.power === 2 ? "²" : ""}`;
   } else if (t.power === 0) {
     body = t.den === 1 ? String(mag) : `${mag}/${t.den}`;
   } else {
-    body = `${mag}/${t.den === 1 ? "x" : `${t.den}x`}`;
+    body = `${mag}/${t.den === 1 ? varOf(t) : `${t.den}${varOf(t)}`}`;
   }
   return prefix + body;
 }
@@ -208,6 +213,8 @@ interface FractionProps {
   numTitle?: string;
   denNumber: number | null;
   denX: boolean;
+  /** which variable the denominator shows (default x) */
+  denVarText?: string;
   /** Inert fractions (inside parentheses) have no blue action glyphs */
   inert?: boolean;
   handlers: SymbolHandlers;
@@ -228,6 +235,7 @@ const Fraction = ({
   numTitle,
   denNumber,
   denX,
+  denVarText = "x",
   inert,
   handlers,
 }: FractionProps) => (
@@ -271,10 +279,10 @@ const Fraction = ({
           highlighted={false}
           blue={!inert}
           handlers={handlers}
-          title={inert ? undefined : "Drag across to multiply both sides by x"}
+          title={inert ? undefined : `Drag across to multiply both sides by ${denVarText}`}
           className="italic"
         >
-          x
+          {denVarText}
         </Sym>
       )}
     </span>
@@ -313,6 +321,7 @@ const EquationBuilderTool = () => {
     [history]
   );
   const xNonZeroAssumed = assumptions.includes("x ≠ 0");
+  const nonZeroAssumed = (v: Variable) => assumptions.includes(`${v} ≠ 0`);
 
   const flashNotice = (message: string) => {
     setNotice(message);
@@ -348,6 +357,8 @@ const EquationBuilderTool = () => {
     return check(left, right) || check(right, left);
   }, [left, right]);
 
+  const solvedVarTerm = solved ? ((left[0].kind === "leaf" && left[0].power === 1 ? left : right)[0] as LeafTerm) : null;
+  const solvedVar: Variable = solvedVarTerm ? varOf(solvedVarTerm) : "x";
   const solvedTerm = solved ? ((left[0].kind === "leaf" && left[0].power === 1 ? right : left)[0] as LeafTerm) : null;
   const solvedArg = solvedTerm ? (solvedTerm.den === 1 ? String(solvedTerm.num) : `${solvedTerm.num}/${solvedTerm.den}`) : "";
   const solvedValue = solvedTerm
@@ -363,12 +374,54 @@ const EquationBuilderTool = () => {
             : solvedArg
       }`
     : null;
-  const solvedContradiction = solved && solvedTerm?.num === 0 && xNonZeroAssumed;
+  const solvedContradiction = solved && solvedTerm?.num === 0 && nonZeroAssumed(solvedVar);
+
+  /** Does a side mention a variable (in leaves, groups, or function args)? */
+  const sideMentions = (terms: EqTerm[], v: Variable): boolean =>
+    terms.some((t) =>
+      t.kind === "leaf"
+        ? t.power !== 0 && varOf(t) === v
+        : t.inner.some((l) => l.power !== 0 && varOf(l) === v)
+    );
+
+  /**
+   * Function mode: one side is a bare variable, the other side is an
+   * expression purely in the OTHER variable — y = f(x) (or x = g(y)).
+   */
+  const functionMode = useMemo(() => {
+    const bare = (terms: EqTerm[]): Variable | null =>
+      terms.length === 1 &&
+      terms[0].kind === "leaf" &&
+      terms[0].power === 1 &&
+      terms[0].num === 1 &&
+      terms[0].den === 1 &&
+      !terms[0].pm &&
+      !terms[0].radical &&
+      !terms[0].fnVal
+        ? varOf(terms[0])
+        : null;
+    const detect = (a: EqTerm[], b: EqTerm[]) => {
+      const out = bare(a);
+      if (!out) return null;
+      const input: Variable = out === "y" ? "x" : "y";
+      if (sideMentions(b, out) || !sideMentions(b, input)) return null;
+      return { output: out, input, rhs: b };
+    };
+    return detect(left, right) ?? detect(right, left);
+  }, [left, right]);
+
+  const mentionsY = sideMentions(left, "y") || sideMentions(right, "y");
 
   // ± / radical / inverse results are an end state: no further arithmetic is defined on them
   const hasTerminal = [...left, ...right].some((t) => t.kind === "leaf" && (t.pm || t.radical || t.fnVal));
   const hasGroups = [...left, ...right].some((t) => t.kind === "group");
   const hasFuncs = [...left, ...right].some((t) => t.kind === "func");
+
+  /** True when a powered leaf of the OTHER variable exists anywhere */
+  const mixedWith = (v: Variable): boolean =>
+    [...equation.left, ...equation.right].some(
+      (t) => t.kind === "leaf" && t.power !== 0 && varOf(t) !== v
+    );
 
   // --- Algebra moves ---------------------------------------------------
   // Every move is a pure computation returning the would-be outcome, a
@@ -448,19 +501,22 @@ const EquationBuilderTool = () => {
     if (from === to) return null;
     const xTerm = equation[from].find((t) => t.id === termId);
     if (!xTerm || xTerm.kind !== "leaf" || !(xTerm.power === 1 || xTerm.power === 2)) return null;
+    const v = varOf(xTerm);
     if (hasGroups) return "distribute the parentheses first";
     if (hasFuncs) return "unwrap the function first";
+    if (mixedWith(v)) return "x and y can't share a fraction — beyond this playground";
     if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power === -1)) {
-      return "that would nest x deeper than this playground supports";
+      return `that would nest ${v} deeper than this playground supports`;
     }
-    const divide = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power - 1) as Power, t.den) : t);
+    const divide = (t: EqTerm) =>
+      t.kind === "leaf" ? leaf(t.num, (t.power - 1) as Power, t.den, t.power === 0 ? v : varOf(t)) : t;
     const next = { left: combine(equation.left.map(divide)), right: combine(equation.right.map(divide)) };
     return {
       next,
-      label: "divided both sides by x",
+      label: `divided both sides by ${v}`,
       dangerous: true,
-      note: "assumes x ≠ 0 — a solution x = 0 would be lost",
-      pill: "x ≠ 0",
+      note: `assumes ${v} ≠ 0 — a solution ${v} = 0 would be lost`,
+      pill: `${v} ≠ 0`,
     };
   };
 
@@ -472,9 +528,11 @@ const EquationBuilderTool = () => {
     if (source.kind !== "leaf") return "dividing by parentheses or functions isn't playable yet";
     if (source.pm || source.radical || source.fnVal || source.num === 0) return "can't divide by that";
     const p = source.power;
+    const v = varOf(source);
     if (p !== 0) {
       if (hasGroups) return "distribute the parentheses first";
       if (hasFuncs) return "unwrap the function first";
+      if (mixedWith(v)) return "x and y can't share a fraction — beyond this playground";
       const outOfRange = [...equation.left, ...equation.right].some(
         (t) => t.kind === "leaf" && (t.power - p < -1 || t.power - p > 2)
       );
@@ -483,54 +541,59 @@ const EquationBuilderTool = () => {
     const apply = (t: EqTerm): EqTerm => {
       const scaled = scaleDen(scaleNum(t, source.den), source.num);
       if (p === 0 || scaled.kind !== "leaf") return scaled;
-      return leaf(scaled.num, (scaled.power - p) as Power, scaled.den);
+      return leaf(scaled.num, (scaled.power - p) as Power, scaled.den, scaled.power === 0 ? v : varOf(scaled));
     };
     const next = { left: combine(equation.left.map(apply)), right: combine(equation.right.map(apply)) };
     return {
       next,
       label: `divided both sides by ${termText(source, true).trim()}`,
       dangerous: p > 0,
-      note: p > 0 ? "assumes x ≠ 0 — a solution x = 0 would be lost" : undefined,
-      pill: p > 0 ? "x ≠ 0" : undefined,
+      note: p > 0 ? `assumes ${v} ≠ 0 — a solution ${v} = 0 would be lost` : undefined,
+      pill: p > 0 ? `${v} ≠ 0` : undefined,
     };
   };
 
-  /** Multiply both sides by x, anchored by dropping an x onto an exponent position */
-  const tryMultiplyBothSidesByX = (): MoveResult => {
+  /** Multiply both sides by the variable, anchored by dropping it onto an exponent position */
+  const tryMultiplyBothSidesByX = (v: Variable = "x"): MoveResult => {
     if (hasGroups) return "distribute the parentheses first";
     if (hasFuncs) return "unwrap the function first";
+    if (mixedWith(v)) return "x and y can't share a fraction — beyond this playground";
     if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power === 2)) {
-      return "that would raise a power beyond x² (for now)";
+      return `that would raise a power beyond ${v}² (for now)`;
     }
-    const multiply = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power + 1) as Power, t.den) : t);
+    const multiply = (t: EqTerm) =>
+      t.kind === "leaf" ? leaf(t.num, (t.power + 1) as Power, t.den, t.power === 0 ? v : varOf(t)) : t;
     const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
     return {
       next,
-      label: "multiplied both sides by x",
+      label: `multiplied both sides by ${v}`,
       dangerous: true,
-      note: "multiplying by x can add x = 0 as a false solution",
-      pill: "x ≠ 0",
+      note: `multiplying by ${v} can add ${v} = 0 as a false solution`,
+      pill: `${v} ≠ 0`,
     };
   };
 
-  /** Multiply both sides by x: every power rises by one. Hides the original x ≠ 0 domain. */
+  /** Multiply both sides by the variable: every power rises by one. Hides the original ≠ 0 domain. */
   const tryMultiplyByX = (termId: string, from: Side, to: Side): MoveResult => {
     if (from === to) return null;
     const source = equation[from].find((t) => t.id === termId);
     if (!source || source.kind !== "leaf" || source.power !== -1) return null;
+    const v = varOf(source);
     if (hasGroups) return "distribute the parentheses first";
     if (hasFuncs) return "unwrap the function first";
+    if (mixedWith(v)) return "x and y can't share a fraction — beyond this playground";
     if ([...equation.left, ...equation.right].some((t) => t.kind === "leaf" && t.power >= 1)) {
       return "that would raise a power beyond this playground (for now)";
     }
-    const multiply = (t: EqTerm) => (t.kind === "leaf" ? leaf(t.num, (t.power + 1) as Power, t.den) : t);
+    const multiply = (t: EqTerm) =>
+      t.kind === "leaf" ? leaf(t.num, (t.power + 1) as Power, t.den, t.power === 0 ? v : varOf(t)) : t;
     const next = { left: combine(equation.left.map(multiply)), right: combine(equation.right.map(multiply)) };
     return {
       next,
-      label: "multiplied both sides by x",
+      label: `multiplied both sides by ${v}`,
       dangerous: true,
-      note: "the original equation required x ≠ 0 — that rule is now invisible",
-      pill: "x ≠ 0",
+      note: `the original equation required ${v} ≠ 0 — that rule is now invisible`,
+      pill: `${v} ≠ 0`,
     };
   };
 
@@ -563,7 +626,7 @@ const EquationBuilderTool = () => {
     } else {
       result = { ...leaf(c.num, 0, c.den), radical: true, pm: true };
     }
-    const next = { ...equation, [from]: [leaf(1, 1)], [to]: [result] } as EquationState;
+    const next = { ...equation, [from]: [leaf(1, 1, 1, varOf(source))], [to]: [result] } as EquationState;
     return { next, label: "took the square root of both sides", note: "keeping ± — both roots survive" };
   };
 
@@ -599,7 +662,7 @@ const EquationBuilderTool = () => {
     const result: LeafTerm = isZero ? leaf(0) : { ...leaf(c.num, 0, c.den), fnVal: INVERSE[source.fn] };
     const next = {
       ...equation,
-      [from]: combine(source.inner.map((l) => leaf(l.num, l.power, l.den))),
+      [from]: combine(source.inner.map((l) => leaf(l.num, l.power, l.den, varOf(l)))),
       [to]: [result],
     } as EquationState;
     return {
@@ -739,7 +802,7 @@ const EquationBuilderTool = () => {
     const out: LeafTerm[] = [];
     for (const t of terms) {
       if (t.kind === "group") {
-        for (const l of t.inner) out.push(leaf(t.num * l.num, l.power, t.den * l.den));
+        for (const l of t.inner) out.push(leaf(t.num * l.num, l.power, t.den * l.den, varOf(l)));
       } else if (t.kind === "func") {
         return "a function mixed into a sum can't be wrapped again — this playground can't nest that";
       } else if (t.pm || t.radical || t.fnVal) {
@@ -760,13 +823,15 @@ const EquationBuilderTool = () => {
   };
 
   /** ln applied to one side. Unwraps a·e^u to ln a + u; wraps anything else. */
-  const lnOfSide = (terms: EqTerm[]): { result: EqTerm[]; assume?: "positive" | "xnotzero" } | string => {
+  const lnOfSide = (
+    terms: EqTerm[]
+  ): { result: EqTerm[]; assume?: "positive" | "xnotzero"; assumeVar?: Variable } | string => {
     if (terms.length === 1 && terms[0].kind === "func") {
       const f = terms[0];
       if (f.fn !== "exp") return `ln(${f.fn}(…)) would nest functions — beyond this playground`;
       if (f.num <= 0) return "that side is a non-positive multiple of e^( ) — ln needs a positive side";
       const lnCoef = f.num === 1 && f.den === 1 ? [] : [func("ln", 1, [leaf(f.num, 0, f.den)])];
-      return { result: combine([...lnCoef, ...f.inner.map((l) => leaf(l.num, l.power, l.den))]) };
+      return { result: combine([...lnCoef, ...f.inner.map((l) => leaf(l.num, l.power, l.den, varOf(l)))]) };
     }
     const leaves = sideAsLeaves(terms);
     if (typeof leaves === "string") return leaves;
@@ -777,9 +842,9 @@ const EquationBuilderTool = () => {
       return { result: [func("ln", 1, [leaf(c.num, 0, c.den)])] };
     }
     const merged = combine(leaves) as LeafTerm[];
-    // A positive multiple of x² is positive exactly when x ≠ 0
+    // A positive multiple of a squared variable is positive exactly when it's ≠ 0
     const assume = merged.length === 1 && merged[0].power === 2 && merged[0].num > 0 ? "xnotzero" : "positive";
-    return { result: [func("ln", 1, merged)], assume };
+    return { result: [func("ln", 1, merged)], assume, assumeVar: merged.length === 1 ? varOf(merged[0]) : "x" };
   };
 
   /** e^( ) applied to one side. Unwraps ln u to u; wraps anything else. */
@@ -789,7 +854,7 @@ const EquationBuilderTool = () => {
       if (f.fn !== "ln") return `e^(${f.fn}(…)) would nest functions — beyond this playground`;
       if (!(f.num === 1 && f.den === 1))
         return "divide away the coefficient first — e^(a·ln …) would need powers beyond x²";
-      return combine(f.inner.map((l) => leaf(l.num, l.power, l.den)));
+      return combine(f.inner.map((l) => leaf(l.num, l.power, l.den, varOf(l))));
     }
     const leaves = sideAsLeaves(terms);
     if (typeof leaves === "string") return leaves;
@@ -812,9 +877,11 @@ const EquationBuilderTool = () => {
     const out: LeafTerm[] = [];
     for (const a of leaves)
       for (const b of leaves) {
+        if (a.power !== 0 && b.power !== 0 && varOf(a) !== varOf(b))
+          return "squaring this would create x·y cross-terms — beyond this playground";
         const p = a.power + b.power;
         if (p < -1 || p > 2) return "squaring this would need powers beyond x² (or below 1/x)";
-        out.push(leaf(a.num * b.num, p as Power, a.den * b.den));
+        out.push(leaf(a.num * b.num, p as Power, a.den * b.den, a.power !== 0 ? varOf(a) : varOf(b)));
       }
     return combine(out);
   };
@@ -831,7 +898,7 @@ const EquationBuilderTool = () => {
     if (t.num === 0) return "can't take the reciprocal of 0";
     if (t.power === 2) return "that would nest x² into a denominator — beyond this playground";
     const sign = t.num < 0 ? -1 : 1;
-    return [leaf(sign * t.den, (-t.power) as Power, Math.abs(t.num))];
+    return [leaf(sign * t.den, (-t.power) as Power, Math.abs(t.num), varOf(t))];
   };
 
   const tryApplyTool = (tool: ToolKind): MoveResult => {
@@ -842,6 +909,7 @@ const EquationBuilderTool = () => {
       if (typeof r === "string") return r;
       const assumes = [l.assume, r.assume].filter(Boolean);
       const xnz = assumes.length > 0 && assumes.every((a) => a === "xnotzero");
+      const nzVar = (l.assume === "xnotzero" ? l.assumeVar : r.assume === "xnotzero" ? r.assumeVar : "x") ?? "x";
       return {
         next: { left: combine(l.result), right: combine(r.result) },
         label: "took the natural log of both sides",
@@ -849,10 +917,10 @@ const EquationBuilderTool = () => {
         note:
           assumes.length > 0
             ? xnz
-              ? "ln(x²) is only defined when x ≠ 0 — that possible solution is lost"
+              ? `ln(${nzVar}²) is only defined when ${nzVar} ≠ 0 — that possible solution is lost`
               : "ln is only defined where both sides are positive — solutions elsewhere are lost"
             : undefined,
-        pill: assumes.length > 0 ? (xnz ? "x ≠ 0" : "sides > 0") : undefined,
+        pill: assumes.length > 0 ? (xnz ? `${nzVar} ≠ 0` : "sides > 0") : undefined,
       };
     }
     if (tool === "exp") {
@@ -986,7 +1054,10 @@ const EquationBuilderTool = () => {
       switch (payload.kind) {
         case "xdiv":
         case "xmul":
-          return tryMultiplyBothSidesByX();
+          {
+            const src = equation[payload.from].find((t) => t.id === payload.termId);
+            return tryMultiplyBothSidesByX(src && src.kind === "leaf" ? varOf(src) : "x");
+          }
         case "coef":
         case "factor":
         case "numer":
@@ -1105,6 +1176,19 @@ const EquationBuilderTool = () => {
         }
       }
     }
+    // Sticky under-acquisition: hover targets change the layout (the morph,
+    // the side ghost chip), which can move the zone out from under a still
+    // pointer. Once a term is acquired, a generous live box holds it — only
+    // clearly leaving releases.
+    if (underHoverRef.current) {
+      const held = eq.querySelector<HTMLElement>(`[data-term-wrap="${underHoverRef.current}"]`);
+      if (held) {
+        const r = held.getBoundingClientRect();
+        if (x >= r.left - 40 && x <= r.right + 40 && y >= r.top + r.height * 0.25 && y <= r.bottom + 44) {
+          return { kind: "under", termId: underHoverRef.current, side: held.dataset.side as Side };
+        }
+      }
+    }
     // Term zones: under (bottom band) and exponent (top-right, x-ish payloads)
     for (const wrap of Array.from(eq.querySelectorAll<HTMLElement>("[data-term-wrap]"))) {
       const r = wrap.getBoundingClientRect();
@@ -1116,8 +1200,7 @@ const EquationBuilderTool = () => {
         if (xish && wrap.dataset.expOk === "1" && x > r.left + r.width * 0.55 && y < r.top + r.height * 0.42) {
           return { kind: "onexp", termId, side };
         }
-        const underBand = underHoverRef.current === termId ? 0.25 : 0.6;
-        if (y > r.top + r.height * underBand) return { kind: "under", termId, side };
+        if (y > r.top + r.height * 0.6) return { kind: "under", termId, side };
         return { kind: "side", side };
       }
     }
@@ -1219,8 +1302,10 @@ const EquationBuilderTool = () => {
     const findTerm = (id: string) => equation[p.from].find((t) => t.id === id);
     switch (p.kind) {
       case "xdiv":
-      case "xmul":
-        return "x";
+      case "xmul": {
+        const t = findTerm(p.termId);
+        return t && t.kind === "leaf" ? varOf(t) : "x";
+      }
       case "coef":
       case "factor":
       case "numer": {
@@ -1293,8 +1378,10 @@ const EquationBuilderTool = () => {
     if (!dragActive || !underHover || !p || p.kind === "tool") return null;
     if (dragPreview?.kind !== "ok") return null; // only preview moves that will land
     switch (p.kind) {
-      case "xdiv":
-        return "x";
+      case "xdiv": {
+        const t = equation[p.from].find((x) => x.id === p.termId);
+        return t && t.kind === "leaf" ? varOf(t) : "x";
+      }
       case "coef":
       case "factor":
       case "numer": {
@@ -1347,7 +1434,7 @@ const EquationBuilderTool = () => {
                 {payloadGlyph(payload)}
               </span>
             ) : (
-              <span className="whitespace-nowrap px-[0.3em] text-[0.75em] leading-tight text-amber-500/80">
+              <span className="whitespace-nowrap rounded-md border-2 border-transparent px-[0.3em] py-[0.05em] text-[0.75em] leading-tight text-amber-500/80">
                 {spreadDivisor}
               </span>
             )}
@@ -1418,11 +1505,11 @@ const EquationBuilderTool = () => {
             title={
               inert
                 ? undefined
-                : "Drag beside the other side to move the term — or under a term to divide both sides by x"
+                : `Drag beside the other side to move the term — or under a term to divide both sides by ${varOf(t)}`
             }
             className="italic"
           >
-            x
+            {varOf(t)}
           </Sym>
           {t.power === 2 && (
             <Sym
@@ -1473,6 +1560,7 @@ const EquationBuilderTool = () => {
         numTitle={inert ? undefined : "Drag beside the other side to move the term — or under a term to divide both sides by the numerator"}
         denNumber={t.den === 1 ? null : t.den}
         denX
+        denVarText={varOf(t)}
         inert={inert}
         handlers={symHandlers}
       />
@@ -1942,10 +2030,10 @@ const EquationBuilderTool = () => {
           <span className="text-rose-500">{notice}</span>
         ) : solvedContradiction ? (
           <span className="font-medium text-rose-500">
-            x = 0 — but a step assumed x ≠ 0 (see history). No valid solution survives.
+            {solvedVar} = 0 — but a step assumed {solvedVar} ≠ 0 (see history). No valid solution survives.
           </span>
         ) : solved ? (
-          <span className="font-medium text-emerald-600">Solved — x = {solvedValue}</span>
+          <span className="font-medium text-emerald-600">Solved — {solvedVar} = {solvedValue}</span>
         ) : null}
         {!solvedContradiction &&
           assumptions.map((assumption) => (
@@ -1953,13 +2041,18 @@ const EquationBuilderTool = () => {
               key={assumption}
               className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
             >
-              {assumption === "x ≠ 0" ? "assuming x ≠ 0" : assumption}
+              {/^[xy] ≠ 0$/.test(assumption) ? `assuming ${assumption}` : assumption}
             </span>
           ))}
       </div>
 
-      {/* Open-world reveal: the graph pane appears once a function enters the equation */}
-      {isFunctionEquation(equation) && <GraphPane left={left} right={right} />}
+      {/* Open-world reveals: isolate y and the input→output machine appears;
+          otherwise the curve view shows for nonlinear x-only equations */}
+      {functionMode ? (
+        <MappingPane rhs={functionMode.rhs} inputVar={functionMode.input} outputVar={functionMode.output} />
+      ) : (
+        !mentionsY && isFunctionEquation(equation) && <GraphPane left={left} right={right} />
+      )}
 
       {/* Presets + reset, kept out of the way */}
       <div className="absolute bottom-6 flex flex-wrap items-center justify-center gap-2 px-4" data-ui>

@@ -86,6 +86,7 @@ function convertTerm(node: Node): EqTerm {
   switch (node.type) {
     case "SymbolNode":
       if (node.name === "x") return leaf(1, 1);
+      if (node.name === "y") return leaf(1, 1, 1, "y");
       throw new Unsupported(`the constant "${node.name}" isn't playable yet`);
     case "ParenthesisNode":
       return group(1, innerLeaves(node.content));
@@ -112,11 +113,12 @@ function convertTerm(node: Node): EqTerm {
     if (base.type === "SymbolNode" && base.name === "e") {
       return func("exp", 1, innerLeaves(node.args[1]));
     }
-    if (base.type === "SymbolNode" && base.name === "x") {
-      if (exponent && exponent.den === 1 && exponent.num === 2) return leaf(1, 2);
-      if (exponent && exponent.den === 1 && exponent.num === 1) return leaf(1, 1);
-      if (exponent && exponent.den === 1 && exponent.num === -1) return leaf(1, -1);
-      throw new Unsupported("only x, x² and 1/x powers are playable so far");
+    if (base.type === "SymbolNode" && (base.name === "x" || base.name === "y")) {
+      const v = base.name as "x" | "y";
+      if (exponent && exponent.den === 1 && exponent.num === 2) return leaf(1, 2, 1, v);
+      if (exponent && exponent.den === 1 && exponent.num === 1) return leaf(1, 1, 1, v);
+      if (exponent && exponent.den === 1 && exponent.num === -1) return leaf(1, -1, 1, v);
+      throw new Unsupported(`only ${v}, ${v}² and 1/${v} powers are playable so far`);
     }
     throw new Unsupported("that exponent isn't playable yet");
   }
@@ -156,27 +158,29 @@ function convertTerm(node: Node): EqTerm {
     // denominators containing x: c / (b·x)
     const b = unwrapParens(bottom);
     let denCoef = { num: 1, den: 1 };
-    let denIsX = false;
-    if (b.type === "SymbolNode" && b.name === "x") {
-      denIsX = true;
+    let denVar: "x" | "y" | null = null;
+    const symVar = (n: Node): "x" | "y" | null =>
+      n.type === "SymbolNode" && (n.name === "x" || n.name === "y") ? (n.name as "x" | "y") : null;
+    if (symVar(b)) {
+      denVar = symVar(b);
     } else if (b.type === "OperatorNode" && b.op === "*" && b.args.length === 2) {
       const [f1, f2] = b.args.map(unwrapParens);
       const c1 = tryConst(f1);
       const c2 = tryConst(f2);
-      if (c1 && f2.type === "SymbolNode" && f2.name === "x") {
+      if (c1 && symVar(f2)) {
         denCoef = c1;
-        denIsX = true;
-      } else if (c2 && f1.type === "SymbolNode" && f1.name === "x") {
+        denVar = symVar(f2);
+      } else if (c2 && symVar(f1)) {
         denCoef = c2;
-        denIsX = true;
+        denVar = symVar(f1);
       }
     }
-    if (denIsX) {
+    if (denVar) {
       const topTerm = convertTerm(top);
       if (topTerm.kind !== "leaf" || topTerm.power !== 0 || topTerm.pm || topTerm.radical || topTerm.fnVal) {
-        throw new Unsupported("only plain numbers over x are playable yet");
+        throw new Unsupported(`only plain numbers over ${denVar} are playable yet`);
       }
-      return leaf(topTerm.num * denCoef.den, -1, topTerm.den * denCoef.num);
+      return leaf(topTerm.num * denCoef.den, -1, topTerm.den * denCoef.num, denVar);
     }
     throw new Unsupported("that denominator isn't playable yet");
   }

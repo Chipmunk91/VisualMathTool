@@ -47,7 +47,17 @@ Node = Const(num/den) | Var("x" | "y") | Add(Node[]) | Mul(Node[])
   merge like addends, cancel `fn ∘ fn⁻¹`. Keep it conservative — the player
   makes the interesting moves, not the simplifier.
 
-## Phase 3 — Two variables + linked visualization
+## Phase 3 — Two variables + linked visualization ✅ shipped early (flat model)
+
+`y` became a first-class variable inside the flat model (a `variable` tag on
+leaves): typed `y = x² − 2`, manipulated with the same move grammar, with
+per-variable assumption pills (`y ≠ 0`). Isolating a variable on one side is
+detected as **function mode** and reveals the input → output mapping pane —
+two number lines, a draggable probe, and a fan of sample arrows that makes
+stretching, folding, and domain gaps visible. Cross-terms (`x·y`) remain the
+tree model's job and are rejected honestly.
+
+## Phase 3 (original sketch)
 
 With the tree model, allow `y` as a first-class citizen:
 

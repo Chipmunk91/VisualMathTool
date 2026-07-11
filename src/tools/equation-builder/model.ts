@@ -7,12 +7,19 @@
 
 export type Power = -1 | 0 | 1 | 2;
 
+export type Variable = "x" | "y";
+
+/** The variable a powered leaf refers to; constants default to x (irrelevant) */
+export const varOf = (l: { variable?: Variable }): Variable => l.variable ?? "x";
+
 export interface LeafTerm {
   id: string;
   kind: "leaf";
   num: number;
   den: number;
   power: Power;
+  /** which symbol the power applies to; omitted means x */
+  variable?: Variable;
   /** Result of a square root: shown with a ± prefix (both roots kept) */
   pm?: boolean;
   /** num/den is a radicand: the value is √(num/den), display-only */
@@ -64,36 +71,37 @@ export function reduce(num: number, den: number): { num: number; den: number } {
 }
 
 let termCounter = 0;
-export const leaf = (num: number, power: Power = 0, den = 1): LeafTerm => ({
+export const leaf = (num: number, power: Power = 0, den = 1, variable?: Variable): LeafTerm => ({
   id: `t${termCounter++}`,
   kind: "leaf",
   ...reduce(num, den),
   power,
+  ...(variable && variable !== "x" ? { variable } : {}),
 });
 export const group = (num: number, inner: LeafTerm[], den = 1): GroupTerm => ({
   id: `t${termCounter++}`,
   kind: "group",
   ...reduce(num, den),
-  inner: inner.map((l) => leaf(l.num, l.power, l.den)),
+  inner: inner.map((l) => leaf(l.num, l.power, l.den, varOf(l))),
 });
 export const func = (fn: FuncName, num: number, inner: LeafTerm[], den = 1): FuncTerm => ({
   id: `t${termCounter++}`,
   kind: "func",
   ...reduce(num, den),
   fn,
-  inner: inner.map((l) => leaf(l.num, l.power, l.den)),
+  inner: inner.map((l) => leaf(l.num, l.power, l.den, varOf(l))),
 });
 
 // Scale a term's value: identical on leaves and group/function coefficients
 export const scaleNum = (t: EqTerm, k: number): EqTerm =>
   t.kind === "leaf"
-    ? leaf(t.num * k, t.power, t.den)
+    ? leaf(t.num * k, t.power, t.den, varOf(t))
     : t.kind === "group"
       ? group(t.num * k, t.inner, t.den)
       : func(t.fn, t.num * k, t.inner, t.den);
 export const scaleDen = (t: EqTerm, k: number): EqTerm =>
   t.kind === "leaf"
-    ? leaf(t.num, t.power, t.den * k)
+    ? leaf(t.num, t.power, t.den * k, varOf(t))
     : t.kind === "group"
       ? group(t.num, t.inner, t.den * k)
       : func(t.fn, t.num, t.inner, t.den * k);
@@ -130,9 +138,16 @@ export function combine(terms: EqTerm[]): EqTerm[] {
   const sum = (list: LeafTerm[]) =>
     list.reduce((acc, t) => reduce(acc.num * t.den + t.num * acc.den, acc.den * t.den), { num: 0, den: 1 });
   const merged: LeafTerm[] = [];
-  for (const power of [2, 1, 0, -1] as Power[]) {
-    const s = sum(leaves.filter((t) => t.power === power));
-    if (s.num !== 0) merged.push(leaf(s.num, power, s.den));
+  // like terms merge per variable and power; constants merge regardless of variable
+  for (const variable of ["y", "x"] as Variable[]) {
+    for (const power of [2, 1, -1] as Power[]) {
+      const s = sum(leaves.filter((t) => t.power === power && varOf(t) === variable));
+      if (s.num !== 0) merged.push(leaf(s.num, power, s.den, variable));
+    }
+  }
+  {
+    const s = sum(leaves.filter((t) => t.power === 0));
+    if (s.num !== 0) merged.push(leaf(s.num, 0, s.den));
   }
   const result: EqTerm[] = [...passthrough, ...merged];
   if (result.length === 0) result.push(leaf(0));
