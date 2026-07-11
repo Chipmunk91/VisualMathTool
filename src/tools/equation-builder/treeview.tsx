@@ -55,7 +55,7 @@ const TSym = ({
 );
 
 const constText = (num: number, den: number): string =>
-  den === 1 ? String(Math.abs(num)) : `${Math.abs(num)}/${den}`;
+  den === 1 ? String(num).replace("-", "−") : `${String(num).replace("-", "−")}/${den}`;
 
 const SUP = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 const supInt = (p: number): string =>
@@ -69,7 +69,7 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
       if (node.den !== 1) {
         return (
           <span className="mx-0.5 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
-            <TSym ctx={ctx} role={role} className="px-[0.15em]">{Math.abs(node.num)}</TSym>
+            <TSym ctx={ctx} role={role} className="px-[0.15em]">{String(node.num).replace("-", "−")}</TSym>
             <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
             <TSym ctx={ctx} role={role}>{node.den}</TSym>
           </span>
@@ -100,6 +100,17 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
         </span>
       );
     case "mul": {
+      // a leading negative coefficient reads as a sign, not "−1·"
+      // (top-level addends already strip it; nested muls — fn args — don't)
+      const split = signSplit(node);
+      if (split.neg) {
+        return (
+          <span className="inline-flex items-center">
+            <TSym ctx={ctx} className="mr-0.5">−</TSym>
+            <TN node={split.body} ctx={ctx} coefZone={coefZone} />
+          </span>
+        );
+      }
       // factors with negative constant exponents form the denominator
       const numer: TNode[] = [];
       const denom: TNode[] = [];

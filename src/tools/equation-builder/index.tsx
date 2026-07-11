@@ -21,7 +21,8 @@ import {
   reTerm,
   type Variable,
 } from "./model";
-import { parseEquation, renderMathPreview } from "./parse";
+import { parseEquation, renderMathPreview, type ParseResult } from "./parse";
+import { CATALOG, searchCatalog, type CatalogEntry } from "./catalog";
 import { GraphPane, GraphView, evalSide, isFunctionEquation } from "./graph";
 import { MappingPane } from "./mapping";
 import {
@@ -375,6 +376,8 @@ const EquationBuilderTool = () => {
   const [expHover, setExpHover] = useState<string | null>(null);
   const [inputText, setInputText] = useState("");
   const [inputMsg, setInputMsg] = useState<{ kind: "err" | "warn"; text: string } | null>(null);
+  /** magnifier toggled: words find famous functions instead of parsing math */
+  const [searchMode, setSearchMode] = useState(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const equationRef = useRef<HTMLDivElement>(null);
 
@@ -951,27 +954,50 @@ const EquationBuilderTool = () => {
 
   // Typed equation: live pretty-math preview and Enter-to-load
   const inputPreview = useMemo(
-    () => (inputText.trim() ? renderMathPreview(inputText) : null),
-    [inputText]
+    () => (!searchMode && inputText.trim() ? renderMathPreview(inputText) : null),
+    [inputText, searchMode]
   );
 
+  // Word search: the catalog rows matching what's typed
+  const searchMatches = useMemo(
+    () => (searchMode ? searchCatalog(inputText) : []),
+    [searchMode, inputText]
+  );
+
+  const applyParse = (result: ParseResult & { ok: true }) => {
+    setPresetIndex(-1);
+    if (result.tree) {
+      // frontier mode: the flat model can't hold this — the tree can
+      setTreeEq(result.tree);
+      setEquation(TREE_DUMMY());
+      setHistory([makeTreeStep("start", result.tree)]);
+    } else {
+      setTreeEq(null);
+      setEquation(result.state);
+      setHistory([makeStep("start", result.state)]);
+    }
+    setSelection(null);
+    setNotice(null);
+    setInputMsg(null);
+  };
+
+  const selectCatalogEntry = (entry: CatalogEntry) => {
+    const result = parseEquation(entry.text);
+    if (!result.ok) return; // catalog rows are pre-vetted — this can't happen
+    applyParse(result);
+    setInputText("");
+  };
+
   const submitInput = () => {
+    if (searchMode) {
+      if (searchMatches.length > 0) selectCatalogEntry(searchMatches[0]);
+      else if (inputText.trim())
+        setInputMsg({ kind: "warn", text: 'no function matches — try "bell curve" or "sigmoid"' });
+      return;
+    }
     const result = parseEquation(inputText);
     if (result.ok) {
-      setPresetIndex(-1);
-      if (result.tree) {
-        // frontier mode: the flat model can't hold this — the tree can
-        setTreeEq(result.tree);
-        setEquation(TREE_DUMMY());
-        setHistory([makeTreeStep("start", result.tree)]);
-      } else {
-        setTreeEq(null);
-        setEquation(result.state);
-        setHistory([makeStep("start", result.state)]);
-      }
-      setSelection(null);
-      setNotice(null);
-      setInputMsg(null);
+      applyParse(result);
     } else {
       setInputMsg({ kind: result.stage === "parse" ? "err" : "warn", text: result.message });
     }
@@ -2678,10 +2704,26 @@ const EquationBuilderTool = () => {
       className="relative flex h-full w-full flex-col items-center justify-center bg-background text-foreground"
       onPointerDown={onBackgroundPointerDown}
     >
-      {/* Typed equation input with live parse preview */}
+      {/* Typed equation input with live parse preview; the magnifier toggles
+          word search over the function catalog */}
       <div className="absolute left-1/2 top-4 w-[min(560px,75vw)] -translate-x-1/2" data-ui>
-        <div className="flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 shadow-sm transition-colors focus-within:border-foreground/40">
-          <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div
+          className={`flex items-center gap-2 rounded-full border bg-background px-4 py-2 shadow-sm transition-colors focus-within:border-foreground/40 ${
+            searchMode ? "border-amber-300" : "border-border"
+          }`}
+        >
+          <button
+            onClick={() => {
+              setSearchMode((on) => !on);
+              setInputMsg(null);
+            }}
+            title={searchMode ? "Back to typing equations" : "Search famous functions by name"}
+            className={`shrink-0 transition-colors ${
+              searchMode ? "text-amber-500" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Search className="h-4 w-4" />
+          </button>
           <input
             value={inputText}
             onChange={(e) => {
@@ -2690,12 +2732,49 @@ const EquationBuilderTool = () => {
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") submitInput();
+              if (e.key === "Escape" && searchMode) setSearchMode(false);
             }}
-            placeholder="type an equation… e.g. 2(x + 3) = 8"
+            placeholder={
+              searchMode ? 'search a function… try "bell curve" or "sigmoid"' : "type an equation… e.g. 2(x + 3) = 8"
+            }
             spellCheck={false}
             className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
           />
         </div>
+        {/* suggestions — words resolving to famous functions */}
+        {searchMode && searchMatches.length > 0 && (
+          <div className="absolute left-0 right-0 z-40 mt-2 overflow-hidden rounded-2xl border border-border bg-card py-1 shadow-lg">
+            {searchMatches.map((entry) => {
+              const q = inputText.trim().toLowerCase();
+              const bold = entry.name.toLowerCase().startsWith(q) ? entry.name.slice(q.length) : null;
+              return (
+                <button
+                  key={entry.name}
+                  onClick={() => selectCatalogEntry(entry)}
+                  className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-sm transition-colors hover:bg-muted"
+                >
+                  <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                  <span className="flex-none">
+                    {bold !== null ? (
+                      <>
+                        {entry.name.slice(0, q.length)}
+                        <span className="font-semibold">{bold}</span>
+                      </>
+                    ) : (
+                      entry.name
+                    )}
+                  </span>
+                  <span className="ml-auto truncate font-serif text-xs text-muted-foreground/70">{entry.text}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {searchMode && !inputText.trim() && (
+          <div className="mt-2 text-center text-xs text-muted-foreground/70">
+            search mode — words load famous functions ({CATALOG.length} known)
+          </div>
+        )}
         {(inputPreview || inputMsg) && (
           <div className="mt-2 flex flex-col items-center gap-1">
             {inputPreview && <div className="font-serif text-2xl">{inputPreview}</div>}
