@@ -915,6 +915,34 @@ const EquationBuilderTool = () => {
         : "divide away the coefficient first — the inverse needs a bare function";
     }
     const other = equation[to];
+    // the same bare function on both sides cancels: fn(u) = fn(v) → u = v.
+    // For trig that's the PRINCIPAL choice — these functions aren't
+    // one-to-one, so whole solution families are deliberately dropped
+    if (
+      other.length === 1 &&
+      other[0].kind === "func" &&
+      other[0].fn === source.fn &&
+      other[0].num === 1 &&
+      other[0].den === 1
+    ) {
+      const PERIODIC: Record<"sin" | "cos" | "tan", string> = {
+        sin: "sin(u) = sin(v) also holds for u = π − v + 2πk — those solutions are dropped",
+        cos: "cos(u) = cos(v) also holds for u = −v + 2πk — those solutions are dropped",
+        tan: "tan(u) = tan(v) also holds for u = v + πk — those solutions are dropped",
+      };
+      const next = {
+        ...equation,
+        [from]: combine(source.inner.map(reTerm)),
+        [to]: combine(other[0].inner.map(reTerm)),
+      } as EquationState;
+      return {
+        next,
+        label: `cancelled ${source.fn} on both sides`,
+        dangerous: true,
+        note: PERIODIC[source.fn as "sin" | "cos" | "tan"],
+        pill: "principal value",
+      };
+    }
     if (other.length !== 1 || other[0].kind !== "leaf" || other[0].power !== 0 || other[0].pm || other[0].radical || other[0].fnVal) {
       return "gather a single plain number on the other side first";
     }
