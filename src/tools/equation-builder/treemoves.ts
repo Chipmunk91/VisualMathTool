@@ -84,6 +84,18 @@ export function moveTermsT(te: TreeEq, ids: string[], from: Side, to: Side): Tre
   return finalize(next.left, next.right, `moved ${text} across`);
 }
 
+/**
+ * "expr ≠ 0" as simplifier licenses: a nonzero product means every factor is
+ * nonzero, so each factor's base may cancel — not just the whole expression.
+ */
+const nonzeroKeys = (expr: TNode): Set<string> => {
+  const s = simplify(expr);
+  const keys = new Set([keyOf(s)]);
+  const factors = s.kind === "mul" ? s.factors : [s];
+  for (const f of factors) keys.add(keyOf(f.kind === "pow" ? f.base : f));
+  return keys;
+};
+
 /** Divide both sides by an expression — term by term, with the ≠ 0 pill. */
 export function divideBothT(te: TreeEq, expr: TNode, exprText: string): TreeMoveResult {
   const value = constValue(expr);
@@ -91,8 +103,8 @@ export function divideBothT(te: TreeEq, expr: TNode, exprText: string): TreeMove
   if (value === 1) return null;
   const hasVars = varsIn(expr).size > 0;
   // the pill below DECLARES expr ≠ 0 — which licenses the simplifier to
-  // cancel opposite powers of exactly this expression, and nothing else
-  const assume = hasVars ? new Set([keyOf(simplify(expr))]) : undefined;
+  // cancel opposite powers of exactly its factors, and nothing else
+  const assume = hasVars ? nonzeroKeys(expr) : undefined;
   const divide = (side: TNode): TNode =>
     sideFromAddends(addendsOf(side).map((a) => simplify(tmul(a, tpow(expr, -1)), assume)));
   const dividedZero = (side: TNode): TNode => (addendsOf(side).length === 0 ? tc(0) : divide(side));
@@ -101,6 +113,22 @@ export function divideBothT(te: TreeEq, expr: TNode, exprText: string): TreeMove
     note: hasVars ? `only valid where ${exprText} ≠ 0 — a solution could hide there` : undefined,
     pill: hasVars ? `${exprText} ≠ 0` : undefined,
   });
+}
+
+/**
+ * Multiply both sides by an expression. Reached from a DENOMINATOR handle,
+ * so expr's nonzero-ness is already part of the equation's own domain —
+ * this is the flat model's "the denominator multiplies both sides", and
+ * like there it is a clean move, not a pilled one.
+ */
+export function multiplyBothT(te: TreeEq, expr: TNode, exprText: string): TreeMoveResult {
+  if (constValue(expr) === 1) return null;
+  const assume = nonzeroKeys(expr);
+  const times = (side: TNode): TNode =>
+    addendsOf(side).length === 0
+      ? tc(0)
+      : sideFromAddends(addendsOf(side).map((a) => simplify(tmul(a, expr), assume)));
+  return finalize(times(te.left), times(te.right), `multiplied both sides by ${exprText}`);
 }
 
 /* --- toolbox operations on tree equations -------------------------------- */

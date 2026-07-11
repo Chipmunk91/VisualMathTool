@@ -67,6 +67,18 @@ function normRat(n: { kind: "const"; num: number; den: number }): TNode {
 /** Is this node exactly the integer `num`? (plain boolean — no narrowing) */
 const isNum = (n: TNode, num: number): boolean => n.kind === "const" && n.num === num && n.den === 1;
 
+/**
+ * Can this expression provably never be zero? True for nonzero constants,
+ * e^(anything) — always positive — and anything a move has declared ≠ 0.
+ */
+const nonzeroNode = (n: TNode, assume?: Set<string>): boolean => {
+  if (assume?.has(keyOf(n))) return true;
+  if (n.kind === "fn" && n.fn === "exp") return true;
+  if (varsIn(n).size > 0) return false;
+  const v = constValue(n);
+  return v !== null && Math.abs(v) > 1e-12;
+};
+
 /* --- structure helpers --------------------------------------------------- */
 
 export function varsIn(n: TNode): Set<Variable> {
@@ -170,18 +182,28 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
           if (Number.isFinite(nn) && Number.isFinite(dd) && dd !== 0) return tc(nn, dd);
         }
       }
-      // (x^a)^b for positive integers a, b is unconditional; anything else
-      // ((x²)^½ = |x|!) is a move's business, not ours
+      // (b^m)^n = b^(mn) for integers m, n. Unconditional when m, n > 0, and
+      // when mn < 0 (both sides then require b ≠ 0 — same domain). Both
+      // negative would ENLARGE the domain ((b⁻²)⁻¹ = b² claims b = 0 works),
+      // so that case needs b provably or declaredly nonzero. Fractional
+      // exponents ((x²)^½ = |x|!) stay a move's business.
       if (
         base.kind === "pow" &&
         base.exp.kind === "const" &&
         exp.kind === "const" &&
         base.exp.den === 1 &&
-        exp.den === 1 &&
-        base.exp.num > 0 &&
-        exp.num > 0
+        exp.den === 1
       ) {
-        return simplify(tpow(base.base, base.exp.num * exp.num));
+        const m = base.exp.num;
+        const p = exp.num;
+        if ((m > 0 && p > 0) || m * p < 0 || nonzeroNode(base.base, assume)) {
+          return simplify(tpow(base.base, m * p), assume);
+        }
+      }
+      // (a·b)^n = a^n·b^n for integer n — equal wherever either side is
+      // defined; without this, dividing by a product can never cancel it
+      if (base.kind === "mul" && exp.kind === "const" && exp.den === 1) {
+        return simplify({ kind: "mul", factors: base.factors.map((f) => tpow(f, exp)) }, assume);
       }
       return { kind: "pow", base, exp };
     }
@@ -222,17 +244,11 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
       }
       const out: TNode[] = [];
       // a base may cancel across sign classes only when it cannot be zero:
-      // a provably nonzero constant, or an expression a move has declared ≠ 0
-      const knownNonzero = (base: TNode): boolean => {
-        if (assume?.has(keyOf(base))) return true;
-        if (varsIn(base).size > 0) return false;
-        const v = constValue(base);
-        return v !== null && Math.abs(v) > 1e-12;
-      };
+      // a provably nonzero constant, e^(anything), or a declared ≠ 0
       for (const k of order) {
         const { base, pos, neg, other } = byBase.get(k)!;
         let accs = [pos, neg].filter((a) => a.n !== 0);
-        if (accs.length === 2 && knownNonzero(base)) {
+        if (accs.length === 2 && nonzeroNode(base, assume)) {
           const merged = { n: pos.n * neg.d + neg.n * pos.d, d: pos.d * neg.d };
           accs = merged.n === 0 ? [] : [merged];
         }
@@ -351,6 +367,8 @@ export function printNode(n: TNode): string {
         })
         .join("");
     case "mul": {
+      const split = signSplit(n);
+      if (split.neg) return `−${printNode(split.body)}`;
       const numer: TNode[] = [];
       const denom: TNode[] = [];
       for (const f of n.factors) {

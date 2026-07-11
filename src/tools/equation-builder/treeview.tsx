@@ -15,6 +15,8 @@ interface Ctx {
   id: string;
   side: Side;
   onHover: (id: string | null) => void;
+  /** inside a factor handle: the handle is the one grab box, glyphs go quiet */
+  inert?: boolean;
 }
 
 const TSym = ({
@@ -32,23 +34,58 @@ const TSym = ({
   className?: string;
   title?: string;
   children: ReactNode;
+}) => {
+  if (ctx.inert) {
+    return <span className={`select-none ${className}`}>{children}</span>;
+  }
+  return (
+    <span
+      data-symbol
+      data-term-id={id ?? ctx.id}
+      data-side={ctx.side}
+      data-role={role}
+      onPointerEnter={() => ctx.onHover(ctx.id)}
+      onPointerLeave={() => ctx.onHover(null)}
+      title={
+        title ??
+        (role === "coef"
+          ? "Drag across the equals sign to divide both sides by this"
+          : role === "xdiv"
+            ? "Drag under the other side to divide both sides by this variable"
+            : "Drag across the equals sign — the whole term moves")
+      }
+      className={`-my-[0.16em] cursor-grab select-none py-[0.16em] active:cursor-grabbing ${className}`}
+    >
+      {children}
+    </span>
+  );
+};
+
+/** A fraction part as one grab box: numerators divide, denominators multiply */
+const FactorHandle = ({
+  ctx,
+  id,
+  role,
+  children,
+}: {
+  ctx: Ctx;
+  id: string;
+  role: "numer" | "den";
+  children: ReactNode;
 }) => (
   <span
     data-symbol
-    data-term-id={id ?? ctx.id}
+    data-term-id={id}
     data-side={ctx.side}
     data-role={role}
     onPointerEnter={() => ctx.onHover(ctx.id)}
     onPointerLeave={() => ctx.onHover(null)}
     title={
-      title ??
-      (role === "coef"
-        ? "Drag across the equals sign to divide both sides by this"
-        : role === "xdiv"
-          ? "Drag under the other side to divide both sides by this variable"
-          : "Drag across the equals sign — the whole term moves")
+      role === "numer"
+        ? "Drag under the other side to divide both sides by this"
+        : "Drag beside the other side to multiply both sides by this"
     }
-    className={`-my-[0.16em] cursor-grab select-none py-[0.16em] active:cursor-grabbing ${className}`}
+    className="-my-[0.16em] inline-flex cursor-grab select-none items-center py-[0.16em] active:cursor-grabbing"
   >
     {children}
   </span>
@@ -119,35 +156,52 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
           denom.push(simplify(tpow(f.base, tc(-f.exp.num, f.exp.den))));
         } else numer.push(f);
       }
-      const row = (fs: TNode[], markCoefs: boolean): ReactNode =>
+      const row = (fs: TNode[], zone: "top" | "bottom"): ReactNode =>
         fs.length === 0 ? (
           <TSym ctx={ctx}>1</TSym>
         ) : (
           <span className="inline-flex items-center">
             {fs.map((f, i) => {
               const dot = i > 0 && !(fs[i - 1].kind === "const" && f.kind !== "const");
+              // denominator factors multiply both sides; compound numerator
+              // factors divide; bare variables keep their flat-style handle;
+              // constants stay coefficient handles
+              const body =
+                ctx.inert ? (
+                  <TN node={f} ctx={ctx} />
+                ) : zone === "bottom" ? (
+                  <FactorHandle ctx={ctx} id={`${ctx.id}@d${i}`} role="den">
+                    <TN node={f} ctx={{ ...ctx, inert: true }} />
+                  </FactorHandle>
+                ) : f.kind === "var" ? (
+                  <TSym ctx={ctx} role="xdiv" id={`${ctx.id}@${f.name}`} className="italic">
+                    {f.name}
+                  </TSym>
+                ) : varsIn(f).size === 0 ? (
+                  // constant-valued factors (ln 2, √2) are coefficient handles
+                  <TN node={f} ctx={ctx} coefZone />
+                ) : f.kind === "fn" || f.kind === "pow" || f.kind === "add" ? (
+                  <FactorHandle ctx={ctx} id={`${ctx.id}@n${i}`} role="numer">
+                    <TN node={f} ctx={{ ...ctx, inert: true }} />
+                  </FactorHandle>
+                ) : (
+                  <TN node={f} ctx={ctx} coefZone />
+                );
               return (
                 <Fragment key={i}>
                   {dot && <TSym ctx={ctx} className="mx-0.5">·</TSym>}
-                  {markCoefs && f.kind === "var" ? (
-                    // a bare variable factor is a divide handle, like the flat model's
-                    <TSym ctx={ctx} role="xdiv" id={`${ctx.id}@${f.name}`} className="italic">
-                      {f.name}
-                    </TSym>
-                  ) : (
-                    <TN node={f} ctx={ctx} coefZone={markCoefs} />
-                  )}
+                  {body}
                 </Fragment>
               );
             })}
           </span>
         );
-      if (denom.length === 0) return row(numer, true);
+      if (denom.length === 0) return row(numer, "top");
       return (
         <span className="mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
-          <span className="px-[0.15em]">{row(numer, true)}</span>
+          <span className="px-[0.15em]">{row(numer, "top")}</span>
           <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
-          <span className="px-[0.15em]">{row(denom, false)}</span>
+          <span className="px-[0.15em]">{row(denom, "bottom")}</span>
         </span>
       );
     }
@@ -160,7 +214,13 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
             <TSym ctx={ctx} className="px-[0.15em]">1</TSym>
             <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
             <span className="px-[0.15em]">
-              <TN node={inv} ctx={ctx} />
+              {ctx.inert ? (
+                <TN node={inv} ctx={ctx} />
+              ) : (
+                <FactorHandle ctx={ctx} id={`${ctx.id}@d0`} role="den">
+                  <TN node={inv} ctx={{ ...ctx, inert: true }} />
+                </FactorHandle>
+              )}
             </span>
           </span>
         );

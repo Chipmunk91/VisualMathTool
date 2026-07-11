@@ -41,12 +41,20 @@ import {
   splitCoef,
   tc,
   tmul,
+  tpow,
   treeSideToFlat,
   tv,
   varsIn,
 } from "./tree";
 import { TangentPane } from "./tangent";
-import { applyToolT, divideBothT, moveTermsT, type TreeMoveResult, type TreeOutcome } from "./treemoves";
+import {
+  applyToolT,
+  divideBothT,
+  moveTermsT,
+  multiplyBothT,
+  type TreeMoveResult,
+  type TreeOutcome,
+} from "./treemoves";
 import { TreeSideView } from "./treeview";
 
 /**
@@ -1647,6 +1655,25 @@ const EquationBuilderTool = () => {
     return simplifyTree(parts.length === 1 ? parts[0] : tmul(...parts));
   };
 
+  /** The fraction part a handle id (L0@n1, R0@d0) points at */
+  const treeFactorOf = (id: string): { expr: TNode; zone: "n" | "d" } | null => {
+    const m = id.match(/^([LR]\d+)@([nd])(\d+)$/);
+    if (!m) return null;
+    const addend = treeAddend(m[1]);
+    if (!addend) return null;
+    const factors = addend.kind === "mul" ? addend.factors : [addend];
+    const numer: TNode[] = [];
+    const denom: TNode[] = [];
+    for (const f of factors) {
+      if (f.kind === "pow" && f.exp.kind === "const" && f.exp.num < 0) {
+        denom.push(simplifyTree(tpow(f.base, tc(-f.exp.num, f.exp.den))));
+      } else numer.push(f);
+    }
+    const list = m[2] === "n" ? numer : denom;
+    const expr = list[Number(m[3])];
+    return expr !== undefined ? { expr, zone: m[2] as "n" | "d" } : null;
+  };
+
   const computeTreeDrop = (payload: DragPayload, target: DropTarget): TreeMoveResult => {
     if (!treeEq) return null;
     if (payload.kind === "tool") {
@@ -1665,6 +1692,23 @@ const EquationBuilderTool = () => {
       if (!v) return null;
       if (target.kind === "under") return divideBothT(treeEq, tv(v), v);
       if (target.kind === "side") return moveTermsT(treeEq, [payload.termId], payload.from, target.side);
+      return null;
+    }
+    if (payload.kind === "numer") {
+      // a compound numerator factor: under → divide both sides by it
+      const f = treeFactorOf(payload.termId);
+      if (!f) return null;
+      if (target.kind === "under") return divideBothT(treeEq, f.expr, printNode(f.expr));
+      if (target.kind === "side") return moveTermsT(treeEq, [payload.termId], payload.from, target.side);
+      return null;
+    }
+    if (payload.kind === "den") {
+      // a denominator factor multiplies both sides — its nonzero-ness is
+      // already part of the equation's own domain
+      const f = treeFactorOf(payload.termId);
+      if (!f) return null;
+      if (target.kind === "under") return "a denominator multiplies — drop it beside the other side";
+      if (target.kind === "side") return multiplyBothT(treeEq, f.expr, printNode(f.expr));
       return null;
     }
     if (payload.kind === "terms") {
@@ -1936,6 +1980,10 @@ const EquationBuilderTool = () => {
         return expr ? printNode(expr) : "?";
       }
       if (p.kind === "xdiv") return p.termId.split("@")[1] ?? "x";
+      if (p.kind === "numer" || p.kind === "den") {
+        const f = treeFactorOf(p.termId);
+        return f ? printNode(f.expr) : "?";
+      }
       return "?";
     }
     const findTerm = (id: string) => equation[p.from].find((t) => t.id === id);
