@@ -31,13 +31,14 @@ const evalLeaf = (l: LeafTerm, x: number): number => {
               ? Math.exp(a)
               : Math.log(a);
   }
+  if (l.neg) v = -v; // a chosen negative branch
   // ± values plot their principal (+) branch
   return v * Math.pow(x, l.power);
 };
 
 const evalTerm = (t: EqTerm, x: number): number => {
   if (t.kind === "leaf") return evalLeaf(t, x);
-  const inner = t.inner.reduce((acc, l) => acc + evalLeaf(l, x), 0);
+  const inner = t.inner.reduce((acc, l) => acc + evalTerm(l, x), 0);
   const coef = t.num / t.den;
   return t.kind === "group" ? coef * inner : coef * FN[t.fn](inner);
 };
@@ -49,9 +50,7 @@ export const evalSide = (terms: EqTerm[], x: number): number =>
 export const isFunctionEquation = ({ left, right }: EquationState): boolean => {
   const nonlinear = (t: EqTerm): boolean =>
     t.kind === "func" ||
-    (t.kind === "leaf"
-      ? t.power === 2 || t.power === -1
-      : t.inner.some((l) => l.power === 2 || l.power === -1));
+    (t.kind === "leaf" ? t.power !== 0 && t.power !== 1 : t.inner.some(nonlinear));
   return [...left, ...right].some(nonlinear);
 };
 

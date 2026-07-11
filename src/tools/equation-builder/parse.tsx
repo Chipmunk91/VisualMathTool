@@ -70,12 +70,9 @@ function addTerms(node: Node, negate: boolean): EqTerm[] {
 }
 
 /** An additive expression that must reduce to plain leaves (inside parens/functions) */
-function innerLeaves(node: Node): LeafTerm[] {
-  const terms = addTerms(node, false);
-  if (!terms.every((t): t is LeafTerm => t.kind === "leaf" && !t.pm && !t.radical && !t.fnVal)) {
-    throw new Unsupported("nesting parentheses or functions inside each other isn't playable yet");
-  }
-  return terms;
+function innerLeaves(node: Node): EqTerm[] {
+  // nested parentheses and functions are welcome — the model holds full terms
+  return addTerms(node, false);
 }
 
 /** One multiplicative term → a playground term */
@@ -115,10 +112,11 @@ function convertTerm(node: Node): EqTerm {
     }
     if (base.type === "SymbolNode" && (base.name === "x" || base.name === "y")) {
       const v = base.name as "x" | "y";
-      if (exponent && exponent.den === 1 && exponent.num === 2) return leaf(1, 2, 1, v);
-      if (exponent && exponent.den === 1 && exponent.num === 1) return leaf(1, 1, 1, v);
-      if (exponent && exponent.den === 1 && exponent.num === -1) return leaf(1, -1, 1, v);
-      throw new Unsupported(`only ${v}, ${v}² and 1/${v} powers are playable so far`);
+      if (exponent && exponent.den === 1 && Number.isInteger(exponent.num) && exponent.num !== 0 && Math.abs(exponent.num) <= 9) {
+        return leaf(1, exponent.num, 1, v);
+      }
+      if (exponent && exponent.den === 1 && exponent.num === 0) return leaf(1, 0, 1);
+      throw new Unsupported(`only whole-number powers of ${v} up to ±9 are playable`);
     }
     throw new Unsupported("that exponent isn't playable yet");
   }

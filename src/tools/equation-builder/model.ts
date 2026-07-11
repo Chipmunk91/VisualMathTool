@@ -5,7 +5,8 @@
  * Func terms are (num/den) · fn(sum of leaves) — sin/cos/tan/ln/exp wrappers.
  */
 
-export type Power = -1 | 0 | 1 | 2;
+/** Any integer power of the variable — x⁻³ … x⁰ … x⁷ all welcome */
+export type Power = number;
 
 export type Variable = "x" | "y";
 
@@ -22,6 +23,8 @@ export interface LeafTerm {
   variable?: Variable;
   /** Result of a square root: shown with a ± prefix (both roots kept) */
   pm?: boolean;
+  /** A chosen negative branch of a terminal value: −√5, −arcsin(…) */
+  neg?: boolean;
   /** num/den is a radicand: the value is √(num/den), display-only */
   radical?: boolean;
   /** An inverse-function value: fnVal applied to num/den (e.g. arcsin(1/2)), display-only */
@@ -33,19 +36,20 @@ export interface GroupTerm {
   kind: "group";
   num: number; // the factor's numerator (signed)
   den: number; // the factor's denominator
-  inner: LeafTerm[];
+  inner: EqTerm[];
 }
 
 export type FuncName = "sin" | "cos" | "tan" | "ln" | "exp";
 
-/** A function wrapped around an argument, with a rational coefficient: a·fn(inner) */
+/** A function wrapped around an argument, with a rational coefficient: a·fn(inner).
+ *  The argument is a full sum of terms — functions and parentheses nest. */
 export interface FuncTerm {
   id: string;
   kind: "func";
   num: number;
   den: number;
   fn: FuncName;
-  inner: LeafTerm[];
+  inner: EqTerm[];
 }
 
 export type EqTerm = LeafTerm | GroupTerm | FuncTerm;
@@ -78,27 +82,48 @@ export const leaf = (num: number, power: Power = 0, den = 1, variable?: Variable
   power,
   ...(variable && variable !== "x" ? { variable } : {}),
 });
-export const group = (num: number, inner: LeafTerm[], den = 1): GroupTerm => ({
+/** Deep copy with fresh ids, preserving terminal flags */
+export const reTerm = (t: EqTerm): EqTerm =>
+  t.kind === "leaf"
+    ? {
+        ...leaf(t.num, t.power, t.den, varOf(t)),
+        ...(t.pm ? { pm: true } : {}),
+        ...(t.radical ? { radical: true } : {}),
+        ...(t.fnVal ? { fnVal: t.fnVal } : {}),
+        ...(t.neg ? { neg: true } : {}),
+      }
+    : t.kind === "group"
+      ? group(t.num, t.inner, t.den)
+      : func(t.fn, t.num, t.inner, t.den);
+export const group = (num: number, inner: EqTerm[], den = 1): GroupTerm => ({
   id: `t${termCounter++}`,
   kind: "group",
   ...reduce(num, den),
-  inner: inner.map((l) => leaf(l.num, l.power, l.den, varOf(l))),
+  inner: inner.map(reTerm),
 });
-export const func = (fn: FuncName, num: number, inner: LeafTerm[], den = 1): FuncTerm => ({
+export const func = (fn: FuncName, num: number, inner: EqTerm[], den = 1): FuncTerm => ({
   id: `t${termCounter++}`,
   kind: "func",
   ...reduce(num, den),
   fn,
-  inner: inner.map((l) => leaf(l.num, l.power, l.den, varOf(l))),
+  inner: inner.map(reTerm),
 });
 
-// Scale a term's value: identical on leaves and group/function coefficients
-export const scaleNum = (t: EqTerm, k: number): EqTerm =>
-  t.kind === "leaf"
+// Scale a term's value: identical on leaves and group/function coefficients.
+// Terminal leaves (±/√/arc values) hold a VALUE in num/den, not a coefficient:
+// only sign flips are meaningful — ± absorbs them, others toggle `neg`.
+export const scaleNum = (t: EqTerm, k: number): EqTerm => {
+  if (t.kind === "leaf" && (t.pm || t.radical || t.fnVal)) {
+    if (k === 1) return { ...t };
+    if (k === -1) return t.pm ? { ...t } : { ...t, neg: !t.neg };
+    return { ...t }; // guarded upstream; never scale a frozen value silently
+  }
+  return t.kind === "leaf"
     ? leaf(t.num * k, t.power, t.den, varOf(t))
     : t.kind === "group"
       ? group(t.num * k, t.inner, t.den)
       : func(t.fn, t.num * k, t.inner, t.den);
+};
 export const scaleDen = (t: EqTerm, k: number): EqTerm =>
   t.kind === "leaf"
     ? leaf(t.num, t.power, t.den * k, varOf(t))
@@ -107,7 +132,7 @@ export const scaleDen = (t: EqTerm, k: number): EqTerm =>
       : func(t.fn, t.num, t.inner, t.den * k);
 
 export const cloneTerm = (t: EqTerm): EqTerm =>
-  t.kind === "leaf" ? { ...t } : { ...t, inner: t.inner.map((l) => ({ ...l })) };
+  t.kind === "leaf" ? { ...t } : { ...t, inner: t.inner.map(cloneTerm) };
 
 export const cloneState = (state: EquationState): EquationState => ({
   left: state.left.map(cloneTerm),
@@ -122,10 +147,10 @@ export const cloneState = (state: EquationState): EquationState => ({
 export function combine(terms: EqTerm[]): EqTerm[] {
   const passthrough: EqTerm[] = [];
   const leaves: LeafTerm[] = [];
-  for (const t of terms) {
+  const consume = (t: EqTerm) => {
     if (t.kind === "group") {
-      if (t.num === 0) continue;
-      if (t.num === 1 && t.den === 1) leaves.push(...t.inner.map((l) => leaf(l.num, l.power, l.den)));
+      if (t.num === 0) return;
+      if (t.num === 1 && t.den === 1) t.inner.forEach((i) => consume(reTerm(i)));
       else passthrough.push(group(t.num, t.inner, t.den));
     } else if (t.kind === "func") {
       if (t.num !== 0) passthrough.push(func(t.fn, t.num, t.inner, t.den));
@@ -134,13 +159,17 @@ export function combine(terms: EqTerm[]): EqTerm[] {
     } else {
       leaves.push(t);
     }
-  }
+  };
+  terms.forEach(consume);
   const sum = (list: LeafTerm[]) =>
     list.reduce((acc, t) => reduce(acc.num * t.den + t.num * acc.den, acc.den * t.den), { num: 0, den: 1 });
   const merged: LeafTerm[] = [];
   // like terms merge per variable and power; constants merge regardless of variable
   for (const variable of ["y", "x"] as Variable[]) {
-    for (const power of [2, 1, -1] as Power[]) {
+    const powers = Array.from(
+      new Set(leaves.filter((t) => t.power !== 0 && varOf(t) === variable).map((t) => t.power))
+    ).sort((a, b) => b - a);
+    for (const power of powers) {
       const s = sum(leaves.filter((t) => t.power === power && varOf(t) === variable));
       if (s.num !== 0) merged.push(leaf(s.num, power, s.den, variable));
     }
