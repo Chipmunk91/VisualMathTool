@@ -307,6 +307,8 @@ const EquationBuilderTool = () => {
   const toolGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [underHover, setUnderHover] = useState<string | null>(null);
   const underHoverRef = useRef<string | null>(null);
+  const [termHover, setTermHover] = useState<string | null>(null);
+  const termHoverRef = useRef<string | null>(null);
   const [expHover, setExpHover] = useState<string | null>(null);
   const [inputText, setInputText] = useState("");
   const [inputMsg, setInputMsg] = useState<{ kind: "err" | "warn"; text: string } | null>(null);
@@ -329,9 +331,22 @@ const EquationBuilderTool = () => {
     noticeTimer.current = setTimeout(() => setNotice(null), 2800);
   };
 
-  const commitMove = (label: string, next: EquationState, dangerous?: boolean, note?: string, pill?: string) => {
+  const commitMove = (
+    label: string,
+    next: EquationState,
+    dangerous?: boolean,
+    note?: string,
+    pill?: string,
+    rebuild?: boolean
+  ) => {
     setEquation(next);
-    setHistory((h) => [...h, makeStep(label, next, dangerous, note, pill)]);
+    if (rebuild) {
+      // a building move rewrites the equation itself — new problem, new trail
+      setHistory([makeStep(label, next, false, note)]);
+      setPresetIndex(-1);
+    } else {
+      setHistory((h) => [...h, makeStep(label, next, dangerous, note, pill)]);
+    }
     setSelection(null);
     setNotice(null);
   };
@@ -433,6 +448,8 @@ const EquationBuilderTool = () => {
     dangerous?: boolean;
     note?: string;
     pill?: string;
+    /** a building move: rewrites the equation itself and restarts the trail */
+    rebuild?: boolean;
   }
   type MoveResult = MoveOutcome | string | null;
 
@@ -901,6 +918,94 @@ const EquationBuilderTool = () => {
     return [leaf(sign * t.den, (-t.power) as Power, Math.abs(t.num), varOf(t))];
   };
 
+  /** Human names for the toolbox operations, for rebuild labels */
+  const TOOL_NAME: Record<ToolKind, string> = {
+    ln: "ln",
+    exp: "e^( )",
+    sqrt: "√",
+    square: "( )²",
+    recip: "1/( )",
+  };
+
+  /**
+   * The BUILDING move: a toolbox symbol dropped onto one term transforms
+   * that term alone. This rewrites the equation itself — it is not an
+   * equivalence — so the step history restarts from the rebuilt equation.
+   */
+  const tryTransformTerm = (tool: ToolKind, termId: string, side: Side): MoveResult => {
+    const t = equation[side].find((x) => x.id === termId);
+    if (!t) return null;
+    if (t.kind === "leaf" && t.num === 0) return null;
+    if (t.kind === "leaf" && (t.pm || t.radical || t.fnVal))
+      return "frozen values can't be rebuilt — rewind instead";
+    const asLeaves = (): LeafTerm[] | string =>
+      t.kind === "leaf"
+        ? [leaf(t.num, t.power, t.den, varOf(t))]
+        : t.kind === "group"
+          ? t.inner.map((l) => leaf(t.num * l.num, l.power, t.den * l.den, varOf(l)))
+          : "functions can't nest inside another function — beyond this playground";
+    const done = (replacement: EqTerm[], note?: string): MoveResult => {
+      const nextSide = equation[side].flatMap((x) => (x.id === termId ? replacement : [x]));
+      const next = { ...equation, [side]: combine(nextSide) } as EquationState;
+      return {
+        next,
+        label: `rebuilt: applied ${TOOL_NAME[tool]} to ${termText(t, true).trim()}`,
+        note: note ?? "this rewrites the equation itself — the trail restarts here",
+        rebuild: true,
+      };
+    };
+    if (tool === "ln" || tool === "exp") {
+      const ls = asLeaves();
+      if (typeof ls === "string") return ls;
+      if (tool === "ln") {
+        const constant = ls.length === 1 && ls[0].power === 0 ? ls[0] : null;
+        if (constant && constant.num <= 0) return "ln needs a positive value — that term isn't";
+      }
+      return done([func(tool === "ln" ? "ln" : "exp", 1, ls)]);
+    }
+    if (tool === "square") {
+      const ls = asLeaves();
+      if (typeof ls === "string") return "squaring a function isn't representable here";
+      const out: LeafTerm[] = [];
+      for (const a of ls)
+        for (const b of ls) {
+          if (a.power !== 0 && b.power !== 0 && varOf(a) !== varOf(b))
+            return "squaring this would create x·y cross-terms — beyond this playground";
+          const power = a.power + b.power;
+          if (power < -1 || power > 2) return "squaring this would need powers beyond x² (or below 1/x)";
+          out.push(leaf(a.num * b.num, power as Power, a.den * b.den, a.power !== 0 ? varOf(a) : varOf(b)));
+        }
+      return done(out);
+    }
+    if (tool === "recip") {
+      if (t.kind !== "leaf") return "1/(…) of that isn't representable here";
+      if (t.power === 2) return "that would nest a square into a denominator — beyond this playground";
+      const sign = t.num < 0 ? -1 : 1;
+      return done([leaf(sign * t.den, -t.power as Power, Math.abs(t.num), varOf(t))]);
+    }
+    if (tool === "sqrt") {
+      if (t.kind !== "leaf") return "√ of that isn't representable here";
+      const isSquare = (n: number) => {
+        const r = Math.round(Math.sqrt(n));
+        return r * r === n;
+      };
+      if (t.power === 0) {
+        if (t.num < 0) return "√ of a negative number isn't real";
+        if (isSquare(t.num) && isSquare(t.den))
+          return done([leaf(Math.round(Math.sqrt(t.num)), 0, Math.round(Math.sqrt(t.den)))]);
+        return done([{ ...leaf(t.num, 0, t.den), radical: true }]);
+      }
+      if (t.power === 2 && t.num > 0 && isSquare(t.num) && isSquare(t.den)) {
+        return done(
+          [leaf(Math.round(Math.sqrt(t.num)), 1, Math.round(Math.sqrt(t.den)), varOf(t))],
+          `took √ of the term — assumes ${varOf(t)} ≥ 0, and the trail restarts here`
+        );
+      }
+      return "√ of that term isn't representable here — try a constant or a perfect-square x²";
+    }
+    return null;
+  };
+
   const tryApplyTool = (tool: ToolKind): MoveResult => {
     if (tool === "ln") {
       const l = lnOfSide(equation.left);
@@ -1019,6 +1124,9 @@ const EquationBuilderTool = () => {
     setDragActive(false);
     setUnderHover(null);
     setExpHover(null);
+    setTermHover(null);
+    underHoverRef.current = null;
+    termHoverRef.current = null;
   };
 
   type DropTarget =
@@ -1026,13 +1134,19 @@ const EquationBuilderTool = () => {
     | { kind: "parens"; termId: string; side: Side }
     | { kind: "under"; termId: string; side: Side }
     | { kind: "onexp"; termId: string; side: Side }
+    | { kind: "onterm"; termId: string; side: Side }
     | { kind: "funcparens"; termId: string; side: Side };
 
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
-    // Toolbox operations act on both sides — any drop position applies them
-    // (and some, like squaring a ±√ value, are the way OUT of a frozen state)
-    if (payload.kind === "tool") return tryApplyTool(payload.tool);
+    // Toolbox symbols: dropped ON a term they rebuild that term (a building
+    // move — new equation, trail restarts); dropped anywhere else they apply
+    // to both sides as a legal move (and some, like squaring a ±√ value, are
+    // the way OUT of a frozen state)
+    if (payload.kind === "tool") {
+      if (target.kind === "onterm") return tryTransformTerm(payload.tool, target.termId, target.side);
+      return tryApplyTool(payload.tool);
+    }
     if (hasTerminal) return "± roots and inverse values freeze in-equation moves — square them away or rewind";
     if (target.kind === "parens") {
       if (payload.kind === "factor" && payload.termId === target.termId) {
@@ -1176,6 +1290,17 @@ const EquationBuilderTool = () => {
         }
       }
     }
+    // Sticky term-acquisition for tools: the wrap ghosts change the layout,
+    // so hold an acquired term within a generous live box
+    if (payload.kind === "tool" && termHoverRef.current) {
+      const held = eq.querySelector<HTMLElement>(`[data-term-wrap="${termHoverRef.current}"]`);
+      if (held) {
+        const r = held.getBoundingClientRect();
+        if (x >= r.left - 34 && x <= r.right + 34 && y >= r.top - 24 && y <= r.bottom + 30) {
+          return { kind: "onterm", termId: termHoverRef.current, side: held.dataset.side as Side };
+        }
+      }
+    }
     // Sticky under-acquisition: hover targets change the layout (the morph,
     // the side ghost chip), which can move the zone out from under a still
     // pointer. Once a term is acquired, a generous live box holds it — only
@@ -1196,6 +1321,7 @@ const EquationBuilderTool = () => {
       if (x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad + 26) {
         const termId = wrap.dataset.termWrap!;
         const side = wrap.dataset.side as Side;
+        if (payload.kind === "tool") return { kind: "onterm", termId, side };
         const xish = payload.kind === "xdiv" || payload.kind === "xmul";
         if (xish && wrap.dataset.expOk === "1" && x > r.left + r.width * 0.55 && y < r.top + r.height * 0.42) {
           return { kind: "onexp", termId, side };
@@ -1217,6 +1343,8 @@ const EquationBuilderTool = () => {
   const applyHoverTarget = (payload: DragPayload, target: DropTarget | null) => {
     underHoverRef.current = target?.kind === "under" ? target.termId : null;
     setUnderHover(underHoverRef.current);
+    termHoverRef.current = target?.kind === "onterm" ? target.termId : null;
+    setTermHover(termHoverRef.current);
     setExpHover(target?.kind === "onexp" ? target.termId : null);
     setParenHover(target?.kind === "parens" || target?.kind === "funcparens" ? target.termId : null);
     setDragOver(
@@ -1283,7 +1411,7 @@ const EquationBuilderTool = () => {
       flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
       return;
     }
-    commitMove(result.label, result.next, result.dangerous, result.note, result.pill);
+    commitMove(result.label, result.next, result.dangerous, result.note, result.pill, result.rebuild);
   };
 
   // --- Rendering ---
@@ -1378,7 +1506,8 @@ const EquationBuilderTool = () => {
   type SpreadPreview =
     | { kind: "divide"; text: string }
     | { kind: "multiply"; text: string }
-    | { kind: "wrap"; before: string; after: string };
+    | { kind: "wrap"; before: string; after: string }
+    | { kind: "wrapTerm"; termId: string; before: string; after: string };
 
   const spread = ((): SpreadPreview | null => {
     const p = dragPayloadRef.current;
@@ -1393,6 +1522,8 @@ const EquationBuilderTool = () => {
         recip: ["1/(", ")"],
       };
       const [before, after] = WRAP[p.tool];
+      // hovering one term = the building move: the wrap embraces just that term
+      if (termHover) return { kind: "wrapTerm", termId: termHover, before, after };
       return { kind: "wrap", before, after };
     }
     const findTermBy = (id: string) => equation[p.from].find((t) => t.id === id);
@@ -1512,7 +1643,17 @@ const EquationBuilderTool = () => {
           </span>
         ) : (
           <span className="inline-flex items-center">
+            {spread?.kind === "wrapTerm" && spread.termId === t.id && (
+              <span className="mr-[0.08em] self-center whitespace-nowrap text-[0.6em] leading-none text-amber-500/90">
+                {spread.before}
+              </span>
+            )}
             {content}
+            {spread?.kind === "wrapTerm" && spread.termId === t.id && (
+              <span className="ml-[0.08em] self-center whitespace-nowrap text-[0.6em] leading-none text-amber-500/90">
+                {spread.after}
+              </span>
+            )}
             {multiplied && spread?.kind === "multiply" && (
               <span className="ml-[0.1em] self-center whitespace-nowrap text-[0.55em] italic leading-none text-amber-500/90">
                 ·{spread.text}
@@ -2021,7 +2162,7 @@ const EquationBuilderTool = () => {
                 </div>
               ))}
               <div className="mt-1.5 whitespace-nowrap border-t border-border pt-1 text-center text-[10px] text-muted-foreground">
-                click or drag onto the equation — applies to both sides
+                click = both sides (a legal move) · drag onto one term = rebuild it (a new equation)
               </div>
             </div>
           )}
