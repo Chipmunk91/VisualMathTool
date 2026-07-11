@@ -1370,34 +1370,103 @@ const EquationBuilderTool = () => {
   };
 
   /**
-   * What lands in denominator position if the current under-drop happens —
-   * dividing both sides puts it under EVERY term, so the preview does too.
+   * The whole-equation preview: any operation that hits BOTH SIDES shows
+   * itself on every term (or around every side) while dragging, not just at
+   * the drop point — dividing fractions everything, multiplying appends the
+   * factor, negation and function wraps embrace each side.
    */
-  const spreadDivisor = ((): string | null => {
+  type SpreadPreview =
+    | { kind: "divide"; text: string }
+    | { kind: "multiply"; text: string }
+    | { kind: "wrap"; before: string; after: string };
+
+  const spread = ((): SpreadPreview | null => {
     const p = dragPayloadRef.current;
-    if (!dragActive || !underHover || !p || p.kind === "tool") return null;
+    if (!dragActive || !p) return null;
     if (dragPreview?.kind !== "ok") return null; // only preview moves that will land
+    if (p.kind === "tool") {
+      const WRAP: Record<ToolKind, [string, string]> = {
+        ln: ["ln(", ")"],
+        exp: ["e^(", ")"],
+        sqrt: ["√(", ")"],
+        square: ["(", ")²"],
+        recip: ["1/(", ")"],
+      };
+      const [before, after] = WRAP[p.tool];
+      return { kind: "wrap", before, after };
+    }
+    const findTermBy = (id: string) => equation[p.from].find((t) => t.id === id);
+    // denominator position: divide both sides
+    if (underHover) {
+      switch (p.kind) {
+        case "xdiv": {
+          const t = findTermBy(p.termId);
+          return { kind: "divide", text: t && t.kind === "leaf" ? varOf(t) : "x" };
+        }
+        case "coef":
+        case "factor":
+        case "numer": {
+          const t = findTermBy(p.termId);
+          return t ? { kind: "divide", text: String(Math.abs(t.num)) } : null;
+        }
+        case "terms": {
+          const ts = equation[p.from].filter((x) => p.ids.includes(x.id));
+          const text = ts.map((x, i) => termText(x, i === 0)).join("").trim();
+          return text ? { kind: "divide", text } : null;
+        }
+        case "neg": {
+          const t = findTermBy(p.termId);
+          return t ? { kind: "divide", text: termText(t, true).trim() } : null;
+        }
+        default:
+          return null;
+      }
+    }
+    // exponent position: multiply both sides by the variable
+    if (expHover) {
+      if (p.kind === "xdiv" || p.kind === "xmul") {
+        const t = findTermBy(p.termId);
+        return { kind: "multiply", text: t && t.kind === "leaf" ? varOf(t) : "x" };
+      }
+      return null;
+    }
+    if (parenHover) return null; // distribution reshapes one term, not the equation
+    if (!dragOver) return null; // remaining both-sides ops need a cross-side target
     switch (p.kind) {
-      case "xdiv": {
-        const t = equation[p.from].find((x) => x.id === p.termId);
-        return t && t.kind === "leaf" ? varOf(t) : "x";
-      }
       case "coef":
-      case "factor":
-      case "numer": {
-        const t = equation[p.from].find((x) => x.id === p.termId);
-        return t ? String(Math.abs(t.num)) : null;
+      case "factor": {
+        const t = findTermBy(p.termId);
+        return t && Math.abs(t.num) > 1 ? { kind: "divide", text: String(Math.abs(t.num)) } : null;
       }
-      case "terms": {
-        const ts = equation[p.from].filter((x) => p.ids.includes(x.id));
-        return ts.map((x, i) => termText(x, i === 0)).join("").trim() || null;
+      case "den": {
+        const t = findTermBy(p.termId);
+        return t && t.den > 1 ? { kind: "multiply", text: String(t.den) } : null;
       }
-      case "neg": {
-        const t = equation[p.from].find((x) => x.id === p.termId);
-        return t ? termText(t, true).trim() : null;
+      case "xmul": {
+        const t = findTermBy(p.termId);
+        return { kind: "multiply", text: t && t.kind === "leaf" ? varOf(t) : "x" };
       }
-      default:
+      case "neg":
+        return { kind: "wrap", before: "−(", after: ")" };
+      case "fn": {
+        const t = findTermBy(p.termId);
+        if (t?.kind === "func") {
+          const INV: Record<FuncName, [string, string]> = {
+            sin: ["arcsin(", ")"],
+            cos: ["arccos(", ")"],
+            tan: ["arctan(", ")"],
+            ln: ["e^(", ")"],
+            exp: ["ln(", ")"],
+          };
+          const [before, after] = INV[t.fn];
+          return { kind: "wrap", before, after };
+        }
         return null;
+      }
+      case "exp":
+        return { kind: "wrap", before: "√(", after: ")" };
+      default:
+        return null; // a plain term move touches one term only
     }
   })();
 
@@ -1410,8 +1479,10 @@ const EquationBuilderTool = () => {
   const withZones = (t: EqTerm, side: Side, content: ReactNode) => {
     const payload = dragPayloadRef.current;
     const hoveredHere = !!(dragActive && underHover === t.id && payload && payload.kind !== "tool");
-    const fractioned = spreadDivisor !== null;
+    const fractioned = spread?.kind === "divide";
     const expGhosted = !!(dragActive && expHover === t.id && payload && payload.kind !== "tool");
+    // the exp-target term shows its ² ghost instead of the ·x everyone else gets
+    const multiplied = spread?.kind === "multiply" && expHover !== t.id;
     return (
       <span
         key={t.id}
@@ -1435,12 +1506,19 @@ const EquationBuilderTool = () => {
               </span>
             ) : (
               <span className="whitespace-nowrap rounded-md border-2 border-transparent px-[0.3em] py-[0.05em] text-[0.75em] leading-tight text-amber-500/80">
-                {spreadDivisor}
+                {spread?.kind === "divide" ? spread.text : ""}
               </span>
             )}
           </span>
         ) : (
-          <span className="inline-flex items-center">{content}</span>
+          <span className="inline-flex items-center">
+            {content}
+            {multiplied && spread?.kind === "multiply" && (
+              <span className="ml-[0.1em] self-center whitespace-nowrap text-[0.55em] italic leading-none text-amber-500/90">
+                ·{spread.text}
+              </span>
+            )}
+          </span>
         )}
         {expGhosted && (
           <span className="pointer-events-none absolute -right-[0.5em] -top-[0.3em] z-30 rounded border-2 border-dashed border-amber-400 bg-background px-[0.12em] text-[0.45em] leading-tight text-amber-500">
@@ -1573,6 +1651,11 @@ const EquationBuilderTool = () => {
         dragOver === side ? "ring-2 ring-amber-300" : ""
       }`}
     >
+      {spread?.kind === "wrap" && (
+        <span className="mr-1 self-center whitespace-nowrap text-[0.6em] leading-none text-amber-500/90">
+          {spread.before}
+        </span>
+      )}
       {terms.map((t, i) => {
         // The lone "0" placeholder is display-only
         if (t.num === 0) {
@@ -1828,7 +1911,12 @@ const EquationBuilderTool = () => {
           </span>
         ));
       })}
-      {dragActive && dragOver === side && !underHover && sideGhost(side)}
+      {spread?.kind === "wrap" && (
+        <span className="ml-1 self-center whitespace-nowrap text-[0.6em] leading-none text-amber-500/90">
+          {spread.after}
+        </span>
+      )}
+      {dragActive && dragOver === side && !underHover && !spread && sideGhost(side)}
     </span>
   );
 
