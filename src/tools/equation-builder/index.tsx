@@ -994,9 +994,10 @@ const EquationBuilderTool = () => {
     [inputText, searchMode]
   );
 
-  // Word search: the catalog rows matching what's typed
+  // Word search: matches for what's typed — or the whole catalog while the
+  // box is empty, so flipping the mode on is immediately visible
   const searchMatches = useMemo(
-    () => (searchMode ? searchCatalog(inputText) : []),
+    () => (searchMode ? (inputText.trim() ? searchCatalog(inputText) : CATALOG) : []),
     [searchMode, inputText]
   );
 
@@ -1026,9 +1027,9 @@ const EquationBuilderTool = () => {
 
   const submitInput = () => {
     if (searchMode) {
+      if (!inputText.trim()) return; // an empty Enter shouldn't grab the top row
       if (searchMatches.length > 0) selectCatalogEntry(searchMatches[0]);
-      else if (inputText.trim())
-        setInputMsg({ kind: "warn", text: 'no function matches — try "bell curve" or "sigmoid"' });
+      else setInputMsg({ kind: "warn", text: 'no function matches — try "bell curve" or "sigmoid"' });
       return;
     }
     const result = parseEquation(inputText);
@@ -1053,6 +1054,8 @@ const EquationBuilderTool = () => {
     if (dragActive) finishPointerDrag();
     if (e.button !== 0) return;
     const targetEl = e.target as HTMLElement;
+    // word search is modal to its own bar: any press elsewhere exits it
+    if (!targetEl.closest("[data-search]")) setSearchMode(false);
     // Toolbox items drag via the pointer engine (click still applies them)
     const toolButton = targetEl.closest("[data-tool]") as HTMLElement | null;
     if (toolButton?.dataset.tool) {
@@ -2782,7 +2785,7 @@ const EquationBuilderTool = () => {
     >
       {/* Typed equation input with live parse preview; the magnifier toggles
           word search over the function catalog */}
-      <div className="absolute left-1/2 top-4 w-[min(560px,75vw)] -translate-x-1/2" data-ui>
+      <div className="absolute left-1/2 top-4 w-[min(560px,75vw)] -translate-x-1/2" data-ui data-search>
         <div
           className={`flex items-center gap-2 rounded-full border bg-background px-4 py-2 shadow-sm transition-colors focus-within:border-foreground/40 ${
             searchMode ? "border-amber-300" : "border-border"
@@ -2817,12 +2820,12 @@ const EquationBuilderTool = () => {
             className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
           />
         </div>
-        {/* suggestions — words resolving to famous functions */}
+        {/* suggestions — the whole catalog on activation, narrowing as you type */}
         {searchMode && searchMatches.length > 0 && (
-          <div className="absolute left-0 right-0 z-40 mt-2 overflow-hidden rounded-2xl border border-border bg-card py-1 shadow-lg">
+          <div className="absolute left-0 right-0 z-40 mt-2 max-h-80 overflow-y-auto rounded-2xl border border-border bg-card py-1 shadow-lg">
             {searchMatches.map((entry) => {
               const q = inputText.trim().toLowerCase();
-              const bold = entry.name.toLowerCase().startsWith(q) ? entry.name.slice(q.length) : null;
+              const bold = q && entry.name.toLowerCase().startsWith(q) ? entry.name.slice(q.length) : null;
               return (
                 <button
                   key={entry.name}
@@ -2844,11 +2847,6 @@ const EquationBuilderTool = () => {
                 </button>
               );
             })}
-          </div>
-        )}
-        {searchMode && !inputText.trim() && (
-          <div className="mt-2 text-center text-xs text-muted-foreground/70">
-            search mode — words load famous functions ({CATALOG.length} known)
           </div>
         )}
         {(inputPreview || inputMsg) && (
