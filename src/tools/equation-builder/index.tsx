@@ -35,8 +35,10 @@ import {
   printNode,
   printTreeEq,
   simplify as simplifyTree,
+  antiderivative,
   derivative,
   flatToTree,
+  introducesLnOf,
   keyOf,
   splitCoef,
   tc,
@@ -47,6 +49,7 @@ import {
   varsIn,
 } from "./tree";
 import { TangentPane } from "./tangent";
+import { AreaPane } from "./area";
 import {
   applyToolT,
   divideBothT,
@@ -171,8 +174,8 @@ type ToolKind = "ln" | "exp" | "sin" | "cos" | "tan" | "sqrt" | "square" | "reci
 interface ToolItem {
   glyph: string;
   tool?: ToolKind; // absent = shown as roadmap, disabled
-  /** click-only operators with their own gate (d/dx needs function mode) */
-  action?: "ddx";
+  /** click-only operators with their own gate (calculus needs function mode) */
+  action?: "ddx" | "int";
   title?: string;
 }
 
@@ -200,7 +203,7 @@ const TOOLBOX: { id: string; label: string; items: ToolItem[] }[] = [
   {
     id: "calculus",
     label: "Calculus",
-    items: [{ glyph: "d⁄dx", action: "ddx" }, { glyph: "∫" }, { glyph: "Σ" }, { glyph: "lim" }],
+    items: [{ glyph: "d⁄dx", action: "ddx" }, { glyph: "∫", action: "int" }, { glyph: "Σ" }, { glyph: "lim" }],
   },
 ];
 
@@ -363,6 +366,8 @@ const EquationBuilderTool = () => {
   const [inputMsg, setInputMsg] = useState<{ kind: "err" | "warn"; text: string } | null>(null);
   /** magnifier toggled: words find famous functions instead of parsing math */
   const [searchMode, setSearchMode] = useState(false);
+  /** keyboard-highlighted row in the search dropdown */
+  const [searchSel, setSearchSel] = useState(0);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const equationRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -598,8 +603,10 @@ const EquationBuilderTool = () => {
     return null;
   }, [treeEq]);
 
-  /** Which view function mode shows: the mapping machine, or the curve & slope */
-  const [fnView, setFnView] = useState<"mapping" | "slope">("mapping");
+  /** Which view function mode shows: mapping, curve & slope, or area */
+  const [fnView, setFnView] = useState<"mapping" | "slope" | "area">("mapping");
+  /** Definite-integral bounds for the area view — draggable, or set by term drops */
+  const [bounds, setBounds] = useState<{ lo: number; hi: number }>({ lo: 0, hi: 2 });
 
   /** d/dx is only meaningful on an identity — exactly what function mode is */
   const ddxReady = treeEq ? treePane?.kind === "mapping" : !!functionMode;
@@ -641,6 +648,53 @@ const EquationBuilderTool = () => {
       setTreeEq(nextTree);
       setEquation(TREE_DUMMY());
       setHistory([makeTreeStep(label, nextTree, false, note)]);
+    }
+    setSelection(null);
+    setNotice(null);
+  };
+
+  /**
+   * Integrate the function: y = f(x) → y = F(x), one antiderivative of the
+   * family F + C. The + C rides along as a pill; like d/dx this is a new
+   * equation about the same function, so the trail restarts. Default is the
+   * INDEFINITE integral — the definite one lives in the area view, where
+   * bounds are dragged (or set by dropping numbers onto them).
+   */
+  const applyIntegral = () => {
+    const fm = treeEq
+      ? treePane?.kind === "mapping"
+        ? { input: treePane.input, output: treePane.out, rhsTree: treePane.rhs }
+        : null
+      : functionMode
+        ? { input: functionMode.input, output: functionMode.output, rhsTree: flatToTree(functionMode.rhs) }
+        : null;
+    if (!fm) {
+      flashNotice("∫ needs an identity — isolate y = f(x) first.");
+      return;
+    }
+    const F = antiderivative(fm.rhsTree, fm.input);
+    if (F === null) {
+      flashNotice("No rule reaches this integral — some (like e^(−x²)) provably have no elementary antiderivative.");
+      return;
+    }
+    const simplified = simplifyTree(F);
+    const lnCame = introducesLnOf(simplified, fm.input);
+    const label = `integrated — ${fm.output} now shows an antiderivative`;
+    const note =
+      "one antiderivative of the family F + C (C = 0 shown)" +
+      (lnCame ? "; ln|…| written without the bars — argument > 0 assumed" : "");
+    const lhs = leaf(1, 1, 1, fm.output);
+    const fl = treeSideToFlat(simplified);
+    if (fl) {
+      const next: EquationState = { left: [lhs], right: combine(fl.length ? fl : [leaf(0)]) };
+      setTreeEq(null);
+      setEquation(next);
+      setHistory([makeStep(label, next, false, note, "+ C")]);
+    } else {
+      const nextTree: TreeEq = { left: tv(fm.output), right: simplified };
+      setTreeEq(nextTree);
+      setEquation(TREE_DUMMY());
+      setHistory([makeTreeStep(label, nextTree, false, note, "+ C")]);
     }
     setSelection(null);
     setNotice(null);
@@ -984,6 +1038,17 @@ const EquationBuilderTool = () => {
     [searchMode, inputText]
   );
 
+  // keyboard selection resets when the query (and thus the list) changes,
+  // and the highlighted row stays scrolled into view
+  useEffect(() => {
+    setSearchSel(0);
+  }, [inputText, searchMode]);
+  useEffect(() => {
+    document
+      .querySelector(`[data-search-row='${searchSel}']`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [searchSel]);
+
   const applyParse = (result: ParseResult & { ok: true }) => {
     if (result.tree) {
       // frontier mode: the flat model can't hold this — the tree can
@@ -1006,18 +1071,25 @@ const EquationBuilderTool = () => {
     applyParse(result);
     setInputText("");
     setSearchMode(false); // choosing is the end of the search
+    searchInputRef.current?.blur(); // back to default mode — shortcuts work again
   };
 
   const submitInput = () => {
     if (searchMode) {
-      if (!inputText.trim()) return; // an empty Enter shouldn't grab the top row
-      if (searchMatches.length > 0) selectCatalogEntry(searchMatches[0]);
-      else setInputMsg({ kind: "warn", text: 'no function matches — try "bell curve" or "sigmoid"' });
+      if (searchMatches.length === 0) {
+        if (inputText.trim())
+          setInputMsg({ kind: "warn", text: 'no function matches — try "bell curve" or "sigmoid"' });
+        return;
+      }
+      // an empty Enter with no navigation shouldn't grab the top row
+      if (!inputText.trim() && searchSel === 0) return;
+      selectCatalogEntry(searchMatches[Math.min(searchSel, searchMatches.length - 1)]);
       return;
     }
     const result = parseEquation(inputText);
     if (result.ok) {
       applyParse(result);
+      searchInputRef.current?.blur(); // loaded — hand focus back to the playground
     } else {
       setInputMsg({ kind: result.stage === "parse" ? "err" : "warn", text: result.message });
     }
@@ -1508,7 +1580,8 @@ const EquationBuilderTool = () => {
     | { kind: "under"; termId: string; side: Side }
     | { kind: "onexp"; termId: string; side: Side }
     | { kind: "onterm"; termId: string; side: Side }
-    | { kind: "funcparens"; termId: string; side: Side };
+    | { kind: "funcparens"; termId: string; side: Side }
+    | { kind: "bound"; which: "lo" | "hi" };
 
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
@@ -1590,6 +1663,7 @@ const EquationBuilderTool = () => {
           return "functions unwrap — drag the name across the equals sign";
       }
     }
+    if (target.kind === "bound") return null; // handled before dispatch
     const to = target.side;
     switch (payload.kind) {
       case "terms":
@@ -1730,6 +1804,12 @@ const EquationBuilderTool = () => {
     const key = JSON.stringify([payload, target]);
     if (previewKeyRef.current === key) return;
     previewKeyRef.current = key;
+    if (target.kind === "bound") {
+      const v = boundValueOf(payload);
+      if (v === null) setDragPreview({ kind: "reject", text: "only a plain number can set a bound" });
+      else setDragPreview({ kind: "ok", text: `set the ${target.which === "lo" ? "lower" : "upper"} bound to ${v}` });
+      return;
+    }
     const result = treeEq ? computeTreeDrop(payload, target) : computeDrop(payload, target);
     if (result === null) setDragPreview({ kind: "cancel", text: "" });
     else if (typeof result === "string") setDragPreview({ kind: "reject", text: result });
@@ -1773,6 +1853,15 @@ const EquationBuilderTool = () => {
   const findTarget = (x: number, y: number, payload: DragPayload): DropTarget | null => {
     const eq = equationRef.current;
     if (!eq) return null;
+    // integral bounds (area view): plain terms can be dropped onto a handle
+    if (payload.kind === "terms") {
+      for (const el of Array.from(document.querySelectorAll<HTMLElement>("[data-bound]"))) {
+        const r = el.getBoundingClientRect();
+        if (x >= r.left - 16 && x <= r.right + 16 && y >= r.top - 16 && y <= r.bottom + 16) {
+          return { kind: "bound", which: el.dataset.bound as "lo" | "hi" };
+        }
+      }
+    }
     // Parenthesis zones (most specific) — only for the matching factor/coef
     if (payload.kind === "factor" || payload.kind === "coef") {
       for (const paren of Array.from(eq.querySelectorAll<HTMLElement>("[data-parens-for]"))) {
@@ -1910,7 +1999,28 @@ const EquationBuilderTool = () => {
     window.addEventListener("keydown", esc);
   };
 
+  /** The numeric value of a dragged constant term, for setting a bound */
+  const boundValueOf = (payload: DragPayload): number | null => {
+    if (payload.kind !== "terms" || payload.ids.length !== 1) return null;
+    if (treeEq) {
+      const a = treeAddend(payload.ids[0]);
+      if (!a || varsIn(a).size > 0) return null;
+      return constValue(a);
+    }
+    const t = equation[payload.from].find((x) => x.id === payload.ids[0]);
+    if (!t) return null;
+    if (sideMentions([t], "x") || sideMentions([t], "y")) return null;
+    const v = evalSide([t], 0);
+    return Number.isFinite(v) ? Math.round(v * 1000) / 1000 : null;
+  };
+
   const performDrop = (payload: DragPayload, target: DropTarget) => {
+    if (target.kind === "bound") {
+      const v = boundValueOf(payload);
+      if (v === null) flashNotice("Only a plain number can set an integral bound.");
+      else setBounds((b) => ({ ...b, [target.which]: v }));
+      return;
+    }
     if (treeEq) {
       const result = computeTreeDrop(payload, target);
       if (result === null) return;
@@ -2768,7 +2878,7 @@ const EquationBuilderTool = () => {
     >
       {/* Typed equation input with live parse preview; the magnifier toggles
           word search over the function catalog */}
-      <div className="absolute left-1/2 top-4 w-[min(560px,75vw)] -translate-x-1/2" data-ui data-search>
+      <div className="absolute left-1/2 top-4 z-50 w-[min(560px,75vw)] -translate-x-1/2" data-ui data-search>
         <div
           className={`flex items-center gap-2 rounded-full border bg-background px-4 py-2 shadow-sm transition-colors focus-within:border-foreground/40 ${
             searchMode ? "border-amber-300" : "border-border"
@@ -2795,7 +2905,21 @@ const EquationBuilderTool = () => {
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") submitInput();
-              if (e.key === "Escape" && searchMode) setSearchMode(false);
+              if (e.key === "Escape") {
+                // Escape steps outward: search mode off, then focus released
+                if (searchMode) setSearchMode(false);
+                (e.target as HTMLInputElement).blur();
+              }
+              if (searchMode && searchMatches.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSearchSel((i) => (i + 1) % searchMatches.length);
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSearchSel((i) => (i - 1 + searchMatches.length) % searchMatches.length);
+                }
+              }
             }}
             placeholder={
               searchMode ? 'search a function… try "bell curve" or "sigmoid"' : "type an equation… e.g. 2(x + 3) = 8"
@@ -2807,14 +2931,18 @@ const EquationBuilderTool = () => {
         {/* suggestions — the whole catalog on activation, narrowing as you type */}
         {searchMode && searchMatches.length > 0 && (
           <div className="absolute left-0 right-0 z-40 mt-2 max-h-80 overflow-y-auto rounded-2xl border border-border bg-card py-1 shadow-lg">
-            {searchMatches.map((entry) => {
+            {searchMatches.map((entry, i) => {
               const q = inputText.trim().toLowerCase();
               const bold = q && entry.name.toLowerCase().startsWith(q) ? entry.name.slice(q.length) : null;
               return (
                 <button
                   key={entry.name}
+                  data-search-row={i}
                   onClick={() => selectCatalogEntry(entry)}
-                  className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-sm transition-colors hover:bg-muted"
+                  onMouseEnter={() => setSearchSel(i)}
+                  className={`flex w-full items-center gap-3 px-4 py-1.5 text-left text-sm transition-colors ${
+                    i === searchSel ? "bg-muted" : ""
+                  }`}
                 >
                   <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
                   <span className="flex-none">
@@ -2887,21 +3015,24 @@ const EquationBuilderTool = () => {
                         key={item.glyph}
                         data-tool={item.tool || undefined}
                         data-action={item.action || undefined}
-                        disabled={!item.tool && !(item.action === "ddx" && ddxReady)}
+                        disabled={!item.tool && !(item.action && ddxReady)}
                         title={
                           item.tool
                             ? item.title
-                            : item.action === "ddx"
+                            : item.action
                               ? ddxReady
-                                ? "Differentiate the function — a new equation about the same function"
-                                : "d/dx needs y = f(x) — isolate the function first"
+                                ? item.action === "ddx"
+                                  ? "Differentiate the function — a new equation about the same function"
+                                  : "Integrate the function — one antiderivative, + C rides along"
+                                : `${item.action === "ddx" ? "d/dx" : "∫"} needs y = f(x) — isolate the function first`
                               : "coming soon"
                         }
                         onClick={() => {
-                          if (item.action === "ddx") {
+                          if (item.action) {
                             if (!ddxReady) return;
                             setToolboxOpen(false);
-                            applyDdx();
+                            if (item.action === "ddx") applyDdx();
+                            else applyIntegral();
                             return;
                           }
                           if (!item.tool) return;
@@ -2928,7 +3059,7 @@ const EquationBuilderTool = () => {
                           }
                         }}
                         className={`relative flex h-9 min-w-9 items-center justify-center whitespace-nowrap rounded-md border border-transparent px-1.5 font-serif text-sm transition-all hover:z-10 ${
-                          item.tool || (item.action === "ddx" && ddxReady)
+                          item.tool || (item.action && ddxReady)
                             ? "cursor-grab hover:scale-105 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
                             : "cursor-not-allowed opacity-35"
                         }`}
@@ -3118,11 +3249,13 @@ const EquationBuilderTool = () => {
             <>
               {fnView === "mapping" ? (
                 <MappingPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} />
-              ) : (
+              ) : fnView === "slope" ? (
                 <TangentPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} />
+              ) : (
+                <AreaPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} bounds={bounds} onBounds={setBounds} />
               )}
               <div className="mt-2 flex items-center gap-1.5 text-[11px]" data-ui>
-                {(["mapping", "slope"] as const).map((view) => (
+                {(["mapping", "slope", "area"] as const).map((view) => (
                   <button
                     key={view}
                     onClick={() => setFnView(view)}
@@ -3132,7 +3265,7 @@ const EquationBuilderTool = () => {
                         : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
                     }`}
                   >
-                    {view === "mapping" ? "input → output" : "curve & slope"}
+                    {view === "mapping" ? "input → output" : view === "slope" ? "curve & slope" : "area ∫"}
                   </button>
                 ))}
               </div>

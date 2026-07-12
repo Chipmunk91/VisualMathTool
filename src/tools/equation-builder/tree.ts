@@ -502,6 +502,112 @@ export function derivative(n: TNode, v: Variable): TNode | null {
   }
 }
 
+/* --- antidifferentiation --------------------------------------------------- */
+
+/** n as (a·v + b) with rational a ≠ 0 and b free of v, or null */
+function linearIn(n: TNode, v: Variable): { aNum: number; aDen: number } | null {
+  let aNum = 0;
+  let aDen = 1;
+  for (const t of addendsOf(simplify(n))) {
+    if (!varsIn(t).has(v)) continue; // a constant (or other-variable) offset
+    const { num, den, core } = splitCoef(t);
+    if (core.length !== 1 || core[0].kind !== "var" || core[0].name !== v) return null;
+    aNum = aNum * den + num * aDen;
+    aDen *= den;
+  }
+  if (aNum === 0) return null;
+  const g = gcd(aNum, aDen) || 1;
+  return { aNum: aNum / g, aDen: aDen / g };
+}
+
+/**
+ * ∫ n dv by rules, or null where the rules end. Unlike differentiation this
+ * CANNOT be total: some integrands (e^(−x²)) provably have no elementary
+ * antiderivative at all — refusal is the mathematics, not a shortcut.
+ * Introduced ln's carry a positivity assumption; the MOVE pins the pill.
+ */
+export function antiderivative(n: TNode, v: Variable): TNode | null {
+  switch (n.kind) {
+    case "const":
+      return tmul(n, tv(v));
+    case "var":
+      return n.name === v ? tmul(tc(1, 2), tpow(tv(v), 2)) : tmul(n, tv(v));
+    case "add": {
+      const parts = n.terms.map((t) => antiderivative(t, v));
+      if (parts.some((p) => p === null)) return null;
+      return tadd(...(parts as TNode[]));
+    }
+    case "mul": {
+      // factors free of v ride along as constants; one v-core integrates
+      const { num, den, core } = splitCoef(n);
+      const constant = core.filter((f) => !varsIn(f).has(v));
+      const living = core.filter((f) => varsIn(f).has(v));
+      if (living.length === 0) return tmul(n, tv(v));
+      if (living.length > 1) return null; // no product rule for integrals
+      const inner = antiderivative(living[0], v);
+      if (inner === null) return null;
+      return tmul(tc(num, den), ...constant, inner);
+    }
+    case "pow": {
+      // u^c for linear u: u^(c+1) / (a·(c+1)); c = −1 gives ln(u)/a
+      if (n.exp.kind === "const" && varsIn(n.base).has(v)) {
+        const lin = linearIn(n.base, v);
+        if (!lin) return null;
+        const { num: cn, den: cd } = n.exp;
+        if (cn === -cd) {
+          return tmul(tc(lin.aDen, lin.aNum), tfn("ln", n.base));
+        }
+        const upNum = cn + cd; // c + 1 as (cn + cd)/cd
+        return tmul(tc(cd * lin.aDen, upNum * lin.aNum), tpow(n.base, tc(upNum, cd)));
+      }
+      // a^u for constant a > 0 and linear u: a^u / (a_lin·ln a)
+      if (n.base.kind === "const" && n.base.num > 0 && varsIn(n.exp).has(v)) {
+        const lin = linearIn(n.exp, v);
+        if (!lin) return null;
+        return tmul(tc(lin.aDen, lin.aNum), n, tpow(tfn("ln", n.base), -1));
+      }
+      return null;
+    }
+    case "fn": {
+      if (!varsIn(n.arg).has(v)) return tmul(n, tv(v)); // a constant in disguise
+      const lin = linearIn(n.arg, v);
+      if (!lin) return null; // chain rule has no reverse gear beyond linear
+      const inv = tc(lin.aDen, lin.aNum);
+      switch (n.fn) {
+        case "sin":
+          return tmul(tc(-1), inv, tfn("cos", n.arg));
+        case "cos":
+          return tmul(inv, tfn("sin", n.arg));
+        case "exp":
+          return tmul(inv, tfn("exp", n.arg));
+        case "sqrt":
+          return tmul(tc(2, 3), inv, tpow(n.arg, tc(3, 2)));
+        case "ln":
+          // ∫ln(u) = (u·ln u − u)/a
+          return tmul(inv, tadd(tmul(n.arg, tfn("ln", n.arg)), tmul(tc(-1), n.arg)));
+        case "tan":
+          return null; // −ln|cos| needs the |…| we don't have
+      }
+    }
+  }
+}
+
+/** Does the tree contain ln(something mentioning v)? — the ∫ move's pill scan */
+export function introducesLnOf(n: TNode, v: Variable): boolean {
+  switch (n.kind) {
+    case "fn":
+      return (n.fn === "ln" && varsIn(n.arg).has(v)) || introducesLnOf(n.arg, v);
+    case "add":
+      return n.terms.some((t) => introducesLnOf(t, v));
+    case "mul":
+      return n.factors.some((f) => introducesLnOf(f, v));
+    case "pow":
+      return introducesLnOf(n.base, v) || introducesLnOf(n.exp, v);
+    default:
+      return false;
+  }
+}
+
 /* --- the escape hatch: tree → flat model when representable --------------- */
 
 const FLAT_FN: TFnName[] = ["sin", "cos", "tan", "ln", "exp"];
