@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { ChevronDown, History, Search, TriangleAlert } from "lucide-react";
+import { ChevronDown, History, Play, Search, Square, TriangleAlert } from "lucide-react";
 import {
   Power,
   LeafTerm,
@@ -54,6 +54,7 @@ import { sharedFromUrl, shareUrl } from "./share";
 import {
   applyToolT,
   divideBothT,
+  finalize,
   moveTermsT,
   multiplyBothT,
   type TreeMoveResult,
@@ -392,6 +393,46 @@ const EquationBuilderTool = () => {
     });
   };
 
+  /**
+   * FLIP: remember where each term's glyphs sit now; after the next step
+   * renders, matched ids fly from their old spot to the new one, and fresh
+   * glyphs fade in. Move functions preserve term ids through sign flips and
+   * side changes, so a term crossing "=" visibly travels across.
+   */
+  const captureGlyphRects = (): Map<string, DOMRect> => {
+    const rects = new Map<string, DOMRect>();
+    equationRef.current?.querySelectorAll<HTMLElement>("[data-term-wrap]").forEach((el) => {
+      rects.set(el.dataset.termWrap!, el.getBoundingClientRect());
+    });
+    return rects;
+  };
+
+  const animateFromRects = (prev: Map<string, DOMRect>) => {
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        equationRef.current?.querySelectorAll<HTMLElement>("[data-term-wrap]").forEach((el) => {
+          const before = prev.get(el.dataset.termWrap!);
+          if (before) {
+            const after = el.getBoundingClientRect();
+            const dx = before.left - after.left;
+            const dy = before.top - after.top;
+            if (Math.abs(dx) + Math.abs(dy) > 4) {
+              el.animate(
+                [
+                  { transform: `translate(${dx}px, ${dy}px)`, color: "rgb(245 158 11)" },
+                  { transform: "translate(0, 0)", color: "inherit" },
+                ],
+                { duration: 650, easing: "cubic-bezier(0.3, 0.9, 0.3, 1)" }
+              );
+            }
+          } else {
+            el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 450, easing: "ease-out" });
+          }
+        });
+      })
+    );
+  };
+
   const startPlayback = () => {
     if (playingRef.current) return;
     setHistory((h) => {
@@ -400,16 +441,18 @@ const EquationBuilderTool = () => {
       setPlaying(true);
       let i = 0;
       const showStep = () => {
+        const prev = captureGlyphRects();
         const step = h[i];
         setEquation(cloneState(step.state));
         setTreeEq(step.tree ? cloneTreeEq(step.tree) : null);
         setPlayIndex(i);
+        if (i > 0) animateFromRects(prev);
         if (i >= h.length - 1) {
-          playTimer.current = setTimeout(stopPlayback, 1400);
+          playTimer.current = setTimeout(stopPlayback, 1500);
           return;
         }
         i++;
-        playTimer.current = setTimeout(showStep, 1100);
+        playTimer.current = setTimeout(showStep, 1250);
       };
       showStep();
       return h;
@@ -1901,7 +1944,12 @@ const EquationBuilderTool = () => {
       else setDragPreview({ kind: "ok", text: `set the ${target.which === "lo" ? "lower" : "upper"} bound to ${v}` });
       return;
     }
-    const result = treeEq ? computeTreeDrop(payload, target) : computeDrop(payload, target);
+    const result =
+      oddRootPayload(payload) && payload.kind === "exp" && target.kind === "side"
+        ? tryOddRoot(payload.termId, payload.from)
+        : treeEq
+          ? computeTreeDrop(payload, target)
+          : computeDrop(payload, target);
     if (result === null) setDragPreview({ kind: "cancel", text: "" });
     else if (typeof result === "string") setDragPreview({ kind: "reject", text: result });
     else {
@@ -2090,6 +2138,34 @@ const EquationBuilderTool = () => {
     window.addEventListener("keydown", esc);
   };
 
+  /**
+   * Odd roots are bijections — x³ = c and x = c^(1/3) have exactly the same
+   * solutions, no branches, no pill. The result may live in the tree
+   * (5^(1/3)) or fold back flat (8^(1/3) = 2).
+   */
+  const tryOddRoot = (termId: string, from: Side): TreeMoveResult => {
+    const t = equation[from].find((x) => x.id === termId);
+    if (!t || t.kind !== "leaf" || t.power < 3 || t.power % 2 === 0) return null;
+    if (equation[from].length !== 1) return "move the other terms away first — the power must be alone on its side";
+    if (!(t.num === 1 && t.den === 1)) return "divide away the coefficient first — the root needs a bare power";
+    const q = t.power;
+    const rootWord = q === 3 ? "cube" : `${q}th`;
+    const newFrom = tv(varOf(t));
+    const newTo = tpow(flatToTree(equation[opposite(from)]), tc(1, q));
+    return finalize(
+      from === "left" ? newFrom : newTo,
+      from === "left" ? newTo : newFrom,
+      `took the ${rootWord} root of both sides`
+    );
+  };
+
+  /** Is this exp-payload drag an odd-root move? (flat mode only) */
+  const oddRootPayload = (payload: DragPayload): boolean => {
+    if (treeEq || payload.kind !== "exp") return false;
+    const t = equation[payload.from].find((x) => x.id === payload.termId);
+    return !!t && t.kind === "leaf" && t.power >= 3 && t.power % 2 === 1;
+  };
+
   /** The numeric value of a dragged constant term, for setting a bound */
   const boundValueOf = (payload: DragPayload): number | null => {
     if (payload.kind !== "terms" || payload.ids.length !== 1) return null;
@@ -2110,6 +2186,16 @@ const EquationBuilderTool = () => {
       const v = boundValueOf(payload);
       if (v === null) flashNotice("Only a plain number can set an integral bound.");
       else setBounds((b) => ({ ...b, [target.which]: v }));
+      return;
+    }
+    if (oddRootPayload(payload) && payload.kind === "exp" && target.kind === "side") {
+      const result = tryOddRoot(payload.termId, payload.from);
+      if (result === null) return;
+      if (typeof result === "string") {
+        flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+        return;
+      }
+      commitTreeOutcome(result);
       return;
     }
     if (treeEq) {
@@ -2487,14 +2573,14 @@ const EquationBuilderTool = () => {
               side={side}
               role={inert ? innerRole : "exp"}
               highlighted={highlighted}
-              blue={!inert && t.power % 2 === 0}
+              blue={!inert}
               handlers={symHandlers}
               title={
                 inert
                   ? undefined
                   : t.power % 2 === 0
                     ? "Drag across the equals sign to take the square root of both sides"
-                    : undefined
+                    : `Drag across the equals sign to take the ${t.power === 3 ? "cube" : `${t.power}th`} root of both sides`
               }
               className="self-start mt-[0.08em] text-[0.5em] leading-none"
             >
@@ -3203,19 +3289,6 @@ const EquationBuilderTool = () => {
         >
           {copied ? "copied ✓" : "⧉ share"}
         </button>
-        {history.length > 1 && (
-          <button
-            onClick={() => (playing ? stopPlayback() : startPlayback())}
-            className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
-              playing
-                ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
-                : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
-            }`}
-            title={playing ? "Stop the replay" : "Replay the derivation from the original equation"}
-          >
-            {playing ? "■" : "▶"}
-          </button>
-        )}
         <button
           onClick={() => setHistoryOpen((open) => !open)}
           className="relative flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
@@ -3233,9 +3306,14 @@ const EquationBuilderTool = () => {
             {history.length > 1 && (
               <button
                 onClick={() => (playing ? stopPlayback() : startPlayback())}
-                className="mb-1 block w-full rounded-md border border-dashed border-border px-3 py-1.5 text-center text-xs text-muted-foreground transition-colors hover:border-amber-300 hover:text-amber-700"
+                className={`mb-1 flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed px-3 py-1.5 text-xs transition-colors ${
+                  playing
+                    ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                    : "border-border text-muted-foreground hover:border-amber-300 hover:text-amber-700"
+                }`}
               >
-                {playing ? "■ stop replay" : "▶ replay the derivation"}
+                {playing ? <Square className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                {playing ? "stop replay" : "replay the derivation"}
               </button>
             )}
             {history.map((step, i) => (

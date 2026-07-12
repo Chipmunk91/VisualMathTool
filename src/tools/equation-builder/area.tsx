@@ -14,6 +14,8 @@ const X_MAX = 6;
 const SAMPLES = 241;
 
 const fmt = (v: number): string => {
+  if (v === Infinity) return "∞";
+  if (v === -Infinity) return "−∞";
   const r = Math.round(v * 100) / 100;
   return String(r).replace("-", "−");
 };
@@ -80,31 +82,50 @@ export function AreaPane({
 
   const { paths, lo, hi, px, py } = plot;
 
-  // signed area by midpoint rule, skipping undefined stretches
-  const { area, fill } = useMemo(() => {
-    const a = Math.min(bounds.lo, bounds.hi);
-    const b = Math.max(bounds.lo, bounds.hi);
-    const N = 400;
-    const dx = (b - a) / N;
-    let sum = 0;
-    const pts: string[] = [];
-    for (let i = 0; i < N; i++) {
-      const m = f(a + (i + 0.5) * dx);
-      if (isFinite(m)) sum += m * dx;
+  // signed area by midpoint rule, skipping undefined stretches. Infinite
+  // bounds are IMPROPER integrals: computed at two growing cutoffs — if the
+  // values agree it converged; if they don't, the honest answer is "diverges"
+  const { area, diverges, fill } = useMemo(() => {
+    const clampLo = (v: number, cutoff: number) => (v === -Infinity ? -cutoff : v);
+    const clampHi = (v: number, cutoff: number) => (v === Infinity ? cutoff : v);
+    const improper = !isFinite(bounds.lo) || !isFinite(bounds.hi);
+    const integrate = (cutoff: number): number => {
+      const a = Math.min(clampLo(bounds.lo, cutoff), clampHi(bounds.hi, cutoff));
+      const b = Math.max(clampLo(bounds.lo, cutoff), clampHi(bounds.hi, cutoff));
+      const N = 800;
+      const dx = (b - a) / N;
+      let sum = 0;
+      for (let i = 0; i < N; i++) {
+        const m = f(a + (i + 0.5) * dx);
+        if (isFinite(m)) sum += m * dx;
+      }
+      return bounds.hi >= bounds.lo || improper ? sum : -sum;
+    };
+    let value: number;
+    let div = false;
+    if (improper) {
+      const i1 = integrate(40);
+      const i2 = integrate(80);
+      div = !isFinite(i2) || Math.abs(i2 - i1) > Math.max(1e-3, Math.abs(i2) * 1e-3);
+      value = i2;
+    } else {
+      value = integrate(0);
     }
     // the shaded region: curve clamped to the window, down to the x-axis
+    const da = Math.max(X_MIN, Math.min(bounds.lo, bounds.hi));
+    const db = Math.min(X_MAX, Math.max(bounds.lo, bounds.hi));
+    const pts: string[] = [];
     const steps = 120;
     for (let i = 0; i <= steps; i++) {
-      const x = a + ((b - a) * i) / steps;
+      const x = da + ((db - da) * i) / steps;
       let y = f(x);
       if (!isFinite(y)) y = 0;
       y = Math.max(lo, Math.min(hi, y));
       pts.push(`${px(x).toFixed(1)},${py(y).toFixed(1)}`);
     }
-    pts.push(`${px(b).toFixed(1)},${py(0).toFixed(1)}`);
-    pts.push(`${px(a).toFixed(1)},${py(0).toFixed(1)}`);
-    const signed = bounds.hi >= bounds.lo ? sum : -sum;
-    return { area: signed, fill: pts.join(" ") };
+    pts.push(`${px(db).toFixed(1)},${py(0).toFixed(1)}`);
+    pts.push(`${px(da).toFixed(1)},${py(0).toFixed(1)}`);
+    return { area: value, diverges: div, fill: pts.join(" ") };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bounds.lo, bounds.hi, depKey, lo, hi]);
 
@@ -112,6 +133,9 @@ export function AreaPane({
     const rect = svgRef.current!.getBoundingClientRect();
     const sx = ((e.clientX - rect.left) / rect.width) * W;
     const x = X_MIN + ((sx - PAD) / (W - 2 * PAD)) * (X_MAX - X_MIN);
+    // dragged to (or past) the edge → the bound goes improper
+    if (x >= X_MAX - 0.1) return Infinity;
+    if (x <= X_MIN + 0.1) return -Infinity;
     return Math.round(Math.min(X_MAX, Math.max(X_MIN, x)) * 20) / 20;
   };
   const down = (which: "lo" | "hi") => (e: ReactPointerEvent) => {
@@ -128,23 +152,26 @@ export function AreaPane({
   };
 
   const y0 = py(0);
-  const handle = (which: "lo" | "hi", x: number) => (
-    <g key={which}>
-      <line x1={px(x)} y1={PAD} x2={px(x)} y2={H - PAD} className="stroke-amber-500/60" strokeWidth="1" strokeDasharray="3 3" />
-      <circle
-        cx={px(x)}
-        cy={y0}
-        r="6"
-        data-bound={which}
-        onPointerDown={down(which)}
-        className="cursor-ew-resize fill-amber-500 stroke-background"
-        strokeWidth="2"
-      />
-      <text x={px(x)} y={H - 2} textAnchor="middle" className="fill-amber-600 text-[10px]">
-        {which === "lo" ? "a" : "b"} = {fmt(x)}
-      </text>
-    </g>
-  );
+  const handle = (which: "lo" | "hi", x: number) => {
+    const hx = px(Math.max(X_MIN, Math.min(X_MAX, x))); // ±∞ pins to the edge
+    return (
+      <g key={which}>
+        <line x1={hx} y1={PAD} x2={hx} y2={H - PAD} className="stroke-amber-500/60" strokeWidth="1" strokeDasharray="3 3" />
+        <circle
+          cx={hx}
+          cy={y0}
+          r="6"
+          data-bound={which}
+          onPointerDown={down(which)}
+          className="cursor-ew-resize fill-amber-500 stroke-background"
+          strokeWidth="2"
+        />
+        <text x={hx} y={H - 2} textAnchor="middle" className="fill-amber-600 text-[10px]">
+          {which === "lo" ? "a" : "b"} = {fmt(x)}
+        </text>
+      </g>
+    );
+  };
 
   return (
     <div
@@ -192,9 +219,15 @@ export function AreaPane({
         {handle("hi", bounds.hi)}
       </svg>
       <div className="text-[10px] text-muted-foreground">
-        ∫ from {inputVar} = {fmt(bounds.lo)} to {fmt(bounds.hi)} ≈{" "}
-        <span className="text-amber-600">{isFinite(area) ? fmt(area) : "undefined"}</span> — drag the bounds, or drop a
-        number from the equation onto one
+        ∫ from {inputVar} = {fmt(bounds.lo)} to {fmt(bounds.hi)}{" "}
+        {diverges ? (
+          <span className="text-rose-500">diverges — the area grows without bound</span>
+        ) : (
+          <>
+            ≈ <span className="text-amber-600">{isFinite(area) ? fmt(area) : "undefined"}</span>
+          </>
+        )}{" "}
+        — drag the bounds (to the edge for ±∞), or drop a number from the equation onto one
       </div>
     </div>
   );

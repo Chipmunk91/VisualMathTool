@@ -182,6 +182,16 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
           if (Number.isFinite(nn) && Number.isFinite(dd) && dd !== 0) return tc(nn, dd);
         }
       }
+      // perfect roots fold exactly: 8^(1/3) = 2, 9^(1/2) = 3. Odd roots of
+      // negatives are fine ((−8)^(1/3) = −2); even roots need base ≥ 0
+      if (base.kind === "const" && exp.kind === "const" && exp.num === 1 && exp.den > 1) {
+        const q = exp.den;
+        if (base.num >= 0 || q % 2 === 1) {
+          const rn = Math.round(Math.sign(base.num) * Math.abs(base.num) ** (1 / q));
+          const rd = Math.round(base.den ** (1 / q));
+          if (Math.pow(rn, q) === base.num && Math.pow(rd, q) === base.den) return tc(rn, rd);
+        }
+      }
       // (b^m)^n = b^(mn) for integers m, n. Unconditional when m, n > 0, and
       // when mn < 0 (both sides then require b ≠ 0 — same domain). Both
       // negative would ENLARGE the domain ((b⁻²)⁻¹ = b² claims b = 0 works),
@@ -403,7 +413,8 @@ export function printNode(n: TNode): string {
         return `${base}${supInt(n.exp.num)}`;
       }
       const e = printNode(n.exp);
-      return `${base}^${n.exp.kind === "var" || n.exp.kind === "const" ? e : `(${e})`}`;
+      const bare = n.exp.kind === "var" || (n.exp.kind === "const" && n.exp.den === 1);
+      return `${base}^${bare ? e : `(${e})`}`;
     }
     case "fn":
       if (n.fn === "exp") return `e^${n.arg.kind === "var" || n.arg.kind === "const" ? printNode(n.arg) : `(${printNode(n.arg)})`}`;
