@@ -50,6 +50,7 @@ import {
 } from "./tree";
 import { TangentPane } from "./tangent";
 import { AreaPane } from "./area";
+import { sharedFromUrl, shareUrl } from "./share";
 import {
   applyToolT,
   divideBothT,
@@ -371,6 +372,89 @@ const EquationBuilderTool = () => {
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const equationRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // --- Replay: animate the derivation from step 0 to the latest form ------
+  const [playing, setPlaying] = useState(false);
+  const [playIndex, setPlayIndex] = useState(0);
+  const playingRef = useRef(false);
+  const playTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopPlayback = () => {
+    if (playTimer.current) clearTimeout(playTimer.current);
+    playTimer.current = null;
+    playingRef.current = false;
+    setPlaying(false);
+    setHistory((h) => {
+      const last = h[h.length - 1];
+      setEquation(cloneState(last.state));
+      setTreeEq(last.tree ? cloneTreeEq(last.tree) : null);
+      return h;
+    });
+  };
+
+  const startPlayback = () => {
+    if (playingRef.current) return;
+    setHistory((h) => {
+      if (h.length < 2) return h;
+      playingRef.current = true;
+      setPlaying(true);
+      let i = 0;
+      const showStep = () => {
+        const step = h[i];
+        setEquation(cloneState(step.state));
+        setTreeEq(step.tree ? cloneTreeEq(step.tree) : null);
+        setPlayIndex(i);
+        if (i >= h.length - 1) {
+          playTimer.current = setTimeout(stopPlayback, 1400);
+          return;
+        }
+        i++;
+        playTimer.current = setTimeout(showStep, 1100);
+      };
+      showStep();
+      return h;
+    });
+  };
+
+  // --- Share: the whole derivation in a link ------------------------------
+  const [copied, setCopied] = useState(false);
+  const copyShare = () => {
+    const url = shareUrl({
+      steps: history.map((s) => ({
+        label: s.label,
+        note: s.note,
+        dangerous: s.dangerous,
+        pill: s.pill,
+        state: s.state,
+        tree: s.tree,
+      })),
+    });
+    navigator.clipboard?.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  // Restore a shared derivation from the URL, once, on mount
+  useEffect(() => {
+    const shared = sharedFromUrl();
+    if (!shared) return;
+    const steps: Step[] = shared.steps.map((s) => ({
+      id: stepCounter++,
+      label: s.label,
+      note: s.note,
+      dangerous: s.dangerous,
+      pill: s.pill,
+      state: cloneState(s.state),
+      tree: s.tree ? cloneTreeEq(s.tree) : undefined,
+      text: s.tree ? printTreeEq(s.tree) : equationText(s.state),
+    }));
+    const last = steps[steps.length - 1];
+    setHistory(steps);
+    setEquation(cloneState(last.state));
+    setTreeEq(last.tree ? cloneTreeEq(last.tree) : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Shortcut into search mode: "/" (when not already typing) or Ctrl/Cmd+K
   useEffect(() => {
@@ -1096,6 +1180,7 @@ const EquationBuilderTool = () => {
   };
 
   const restoreStep = (index: number) => {
+    if (playingRef.current) stopPlayback();
     const step = history[index];
     setTreeEq(step.tree ? cloneTreeEq(step.tree) : null);
     setEquation(cloneState(step.state));
@@ -1108,6 +1193,12 @@ const EquationBuilderTool = () => {
   const onBackgroundPointerDown = (e: ReactPointerEvent) => {
     if (dragActive) finishPointerDrag();
     if (e.button !== 0) return;
+    // any press during replay stops it — the equation returns to the latest
+    // step before anything else can happen
+    if (playingRef.current) {
+      stopPlayback();
+      return;
+    }
     const targetEl = e.target as HTMLElement;
     // word search is modal to its own bar: any press elsewhere exits it
     if (!targetEl.closest("[data-search]")) setSearchMode(false);
@@ -3028,6 +3119,7 @@ const EquationBuilderTool = () => {
                               : "coming soon"
                         }
                         onClick={() => {
+                          if (playingRef.current) return; // replay owns the stage
                           if (item.action) {
                             if (!ddxReady) return;
                             setToolboxOpen(false);
@@ -3102,8 +3194,28 @@ const EquationBuilderTool = () => {
         `}</style>
       )}
 
-      {/* History menu button */}
-      <div className="absolute right-4 top-4" data-ui data-history>
+      {/* History menu button, with replay and share beside it */}
+      <div className="absolute right-4 top-4 flex items-center gap-2" data-ui data-history>
+        <button
+          onClick={copyShare}
+          className="rounded-full border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+          title="Copy a link to this equation and its whole step history"
+        >
+          {copied ? "copied ✓" : "⧉ share"}
+        </button>
+        {history.length > 1 && (
+          <button
+            onClick={() => (playing ? stopPlayback() : startPlayback())}
+            className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
+              playing
+                ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+            }`}
+            title={playing ? "Stop the replay" : "Replay the derivation from the original equation"}
+          >
+            {playing ? "■" : "▶"}
+          </button>
+        )}
         <button
           onClick={() => setHistoryOpen((open) => !open)}
           className="relative flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
@@ -3117,7 +3229,15 @@ const EquationBuilderTool = () => {
         </button>
 
         {historyOpen && (
-          <div className="absolute right-0 z-40 mt-2 max-h-96 w-80 overflow-y-auto rounded-lg border border-border bg-card p-2 shadow-lg">
+          <div className="absolute right-0 top-[calc(100%+8px)] z-40 max-h-96 w-80 overflow-y-auto rounded-lg border border-border bg-card p-2 shadow-lg">
+            {history.length > 1 && (
+              <button
+                onClick={() => (playing ? stopPlayback() : startPlayback())}
+                className="mb-1 block w-full rounded-md border border-dashed border-border px-3 py-1.5 text-center text-xs text-muted-foreground transition-colors hover:border-amber-300 hover:text-amber-700"
+              >
+                {playing ? "■ stop replay" : "▶ replay the derivation"}
+              </button>
+            )}
             {history.map((step, i) => (
               <button
                 key={step.id}
@@ -3125,7 +3245,15 @@ const EquationBuilderTool = () => {
                 title={i < history.length - 1 ? "Click to rewind to this step" : "Current state"}
                 className={`block w-full rounded-md px-3 py-2 text-left transition-colors hover:bg-muted ${
                   step.dangerous ? "bg-amber-50 dark:bg-amber-950/30" : ""
-                } ${i === history.length - 1 ? "ring-1 ring-border" : ""}`}
+                } ${
+                  playing
+                    ? i === playIndex
+                      ? "ring-1 ring-amber-400"
+                      : ""
+                    : i === history.length - 1
+                      ? "ring-1 ring-border"
+                      : ""
+                }`}
               >
                 <div className="flex items-center gap-2">
                   <span className="w-5 shrink-0 text-xs text-muted-foreground">{i}</span>
@@ -3182,7 +3310,11 @@ const EquationBuilderTool = () => {
 
       {/* State line: notice, solved, or a neutral hint — plus the active assumption */}
       <div className="mt-10 flex h-6 items-center gap-3 text-sm text-muted-foreground">
-        {dragPreview ? (
+        {playing ? (
+          <span className="font-medium text-amber-600">
+            step {playIndex} of {history.length - 1} — {history[playIndex]?.label}
+          </span>
+        ) : dragPreview ? (
           dragPreview.kind === "ok" ? (
             <span className="font-serif text-base">→ {dragPreview.text}</span>
           ) : dragPreview.kind === "reject" ? (
