@@ -50,7 +50,7 @@ import {
 } from "./tree";
 import { TangentPane } from "./tangent";
 import { AreaPane } from "./area";
-import { sharedFromUrl, shareUrl } from "./share";
+import { sharedFromUrl, shareUrl, type MoveStory } from "./share";
 import {
   applyToolT,
   divideBothT,
@@ -140,16 +140,26 @@ interface Step {
   state: EquationState;
   /** Present when this step lives in the expression tree (frontier mode) */
   tree?: TreeEq;
+  /** how this step's move happened — drives the replay choreography */
+  story?: MoveStory;
   text: string;
 }
 
 let stepCounter = 0;
-const makeStep = (label: string, state: EquationState, dangerous?: boolean, note?: string, pill?: string): Step => ({
+const makeStep = (
+  label: string,
+  state: EquationState,
+  dangerous?: boolean,
+  note?: string,
+  pill?: string,
+  story?: MoveStory
+): Step => ({
   id: stepCounter++,
   label,
   note,
   dangerous,
   pill,
+  story,
   state: cloneState(state),
   text: equationText(state),
 });
@@ -411,6 +421,9 @@ const EquationBuilderTool = () => {
     font: string;
     color: string;
     isBar: boolean;
+    /** which term this glyph belongs to, and its role — provenance anchors */
+    term: string | null;
+    role: string | null;
   }
   const FLY_MS = 620;
 
@@ -424,6 +437,7 @@ const EquationBuilderTool = () => {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) return;
       const cs = getComputedStyle(el);
+      const owner = el.closest<HTMLElement>("[data-term-id]") ?? el.closest<HTMLElement>("[data-term-wrap]");
       out.push({
         key: isBar ? "—bar—" : text,
         text,
@@ -431,6 +445,8 @@ const EquationBuilderTool = () => {
         font: `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`,
         color: cs.color,
         isBar,
+        term: owner?.dataset.termId ?? owner?.dataset.termWrap ?? null,
+        role: el.dataset.role ?? null,
       });
     });
     return out;
@@ -467,7 +483,7 @@ const EquationBuilderTool = () => {
    * arriving ones fade in at their destination. Only when the clones have
    * landed does the real equation take over.
    */
-  const beginGlyphTransition = (): (() => void) => {
+  const beginGlyphTransition = (story?: MoveStory): (() => void) => {
     const olds = snapshotGlyphs();
     clearOverlay();
     const overlay = document.createElement("div");
@@ -482,16 +498,216 @@ const EquationBuilderTool = () => {
         requestAnimationFrame(() => {
           if (!playingRef.current || overlayRef.current !== overlay) return;
           const news = snapshotGlyphs();
+          const easing = "cubic-bezier(0.35, 0.8, 0.3, 1)";
+          type Clone = (typeof clones)[number];
 
-          const groups = new Map<string, { olds: typeof clones; news: Glyph[] }>();
+          const glide = (c: Clone, to: Glyph) => {
+            const dx = to.rect.left - c.g.rect.left;
+            const dy = to.rect.top - c.g.rect.top;
+            const sx = c.g.rect.width > 0 ? to.rect.width / c.g.rect.width : 1;
+            const sy = c.g.rect.height > 0 ? to.rect.height / c.g.rect.height : 1;
+            c.node.animate(
+              [
+                { transform: "translate(0, 0) scale(1, 1)" },
+                { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
+              ],
+              { duration: FLY_MS, easing, fill: "forwards" }
+            );
+          };
+          const fadeOut = (c: Clone) =>
+            c.node.animate([{ opacity: 1 }, { opacity: 0, offset: 0.6 }, { opacity: 0 }], {
+              duration: FLY_MS,
+              easing: "ease-in",
+              fill: "forwards",
+            });
+          const fadeIn = (n: Glyph) => {
+            const born = makeClone(n, overlay);
+            born.animate([{ opacity: 0 }, { opacity: 0, offset: 0.4 }, { opacity: 1 }], {
+              duration: FLY_MS,
+              easing: "ease-out",
+              fill: "forwards",
+            });
+          };
+          const center = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+
+          // ---- story choreography: actors converge, results are born ------
+          const actorSet = new Map<string, string | null>();
+          story?.actors.forEach((a) => actorSet.set(a.term, a.role ?? null));
+          const siteSet = new Set(story?.site ?? []);
+          const bornSet = new Set(story?.born ?? []);
+          const newTermIds = new Set(news.map((g) => g.term).filter(Boolean));
+
+          const isActor = (g: Glyph) =>
+            !!g.term &&
+            actorSet.has(g.term) &&
+            (actorSet.get(g.term) === null || g.role === actorSet.get(g.term)) &&
+            // an actor whose term survives isn't consumed — it just travels
+            (actorSet.get(g.term) !== null || !newTermIds.has(g.term));
+          const actorClones = clones.filter((c) => isActor(c.g));
+          const siteClones = clones.filter((c) => c.g.term && siteSet.has(c.g.term) && !isActor(c.g));
+          const bornGlyphs = news.filter((g) => g.term && bornSet.has(g.term));
+
+          const bornCenter =
+            bornGlyphs.length > 0
+              ? center(
+                  bornGlyphs.reduce(
+                    (acc, g) =>
+                      new DOMRect(
+                        Math.min(acc.left, g.rect.left),
+                        Math.min(acc.top, g.rect.top),
+                        Math.max(acc.right, g.rect.right) - Math.min(acc.left, g.rect.left),
+                        Math.max(acc.bottom, g.rect.bottom) - Math.min(acc.top, g.rect.top)
+                      ),
+                    bornGlyphs[0].rect
+                  )
+                )
+              : siteClones.length > 0
+                ? center(siteClones[0].g.rect)
+                : null;
+
+          for (const c of actorClones) {
+            const from = center(c.g.rect);
+            if (bornCenter) {
+              // converge on the interaction site, shrinking out on contact
+              c.node.animate(
+                [
+                  { transform: "translate(0,0) scale(1)", opacity: 1 },
+                  {
+                    transform: `translate(${bornCenter.x - from.x}px, ${bornCenter.y - from.y}px) scale(0.45)`,
+                    opacity: 0,
+                  },
+                ],
+                { duration: FLY_MS * 0.8, easing, fill: "forwards" }
+              );
+            } else {
+              // no landing site (a divisor slipping under): drift down and out
+              c.node.animate(
+                [
+                  { transform: "translate(0,0) scale(1)", opacity: 1 },
+                  { transform: "translate(0, 22px) scale(0.7)", opacity: 0 },
+                ],
+                { duration: FLY_MS * 0.75, easing: "ease-in", fill: "forwards" }
+              );
+            }
+          }
+          for (const c of siteClones) {
+            c.node.animate(
+              [
+                { transform: "translate(0,0) scale(1)", opacity: 1 },
+                { transform: "translate(0,0) scale(0.6)", opacity: 0 },
+              ],
+              { duration: FLY_MS * 0.7, easing: "ease-in", fill: "forwards" }
+            );
+          }
+          for (const n of bornGlyphs) {
+            const to = center(n.rect);
+            const fromX = bornCenter ? bornCenter.x - to.x : 0;
+            const fromY = bornCenter ? bornCenter.y - to.y : 0;
+            const born = makeClone(n, overlay);
+            born.animate(
+              [
+                { transform: `translate(${fromX}px, ${fromY}px) scale(0.45)`, opacity: 0 },
+                { transform: `translate(${fromX}px, ${fromY}px) scale(0.45)`, opacity: 0, offset: 0.35 },
+                { transform: "translate(0,0) scale(1)", opacity: 1 },
+              ],
+              { duration: FLY_MS, easing, fill: "forwards" }
+            );
+          }
+
+          // ---- everything else: pair by TERM ID first, then by content ----
+          const storyHandledNew = new Set(bornGlyphs);
+          const restClones = clones.filter((c) => !actorClones.includes(c) && !siteClones.includes(c));
+          const restNews = news.filter((g) => !storyHandledNew.has(g));
+
+          const oldByTerm = new Map<string, Clone[]>();
+          restClones.forEach((c) => {
+            if (!c.g.term) return;
+            if (!oldByTerm.has(c.g.term)) oldByTerm.set(c.g.term, []);
+            oldByTerm.get(c.g.term)!.push(c);
+          });
+
+          const globalOld: Clone[] = [];
+          const globalNew: Glyph[] = [];
+          const claimedOld = new Set<Clone>();
+
+          const newByTerm = new Map<string, Glyph[]>();
+          restNews.forEach((g) => {
+            if (g.term && oldByTerm.has(g.term)) {
+              if (!newByTerm.has(g.term)) newByTerm.set(g.term, []);
+              newByTerm.get(g.term)!.push(g);
+            } else {
+              globalNew.push(g);
+            }
+          });
+
+          // within a surviving term: same-text glyphs glide; leftovers are the
+          // term's CHANGED VALUE — they morph in place (old out, new in)
+          newByTerm.forEach((termNews, termId) => {
+            const termOlds = oldByTerm.get(termId)!;
+            const used = new Set<number>();
+            const leftoverNews: Glyph[] = [];
+            for (const n of termNews) {
+              let best = -1;
+              termOlds.forEach((c, i) => {
+                if (used.has(i) || claimedOld.has(c) || c.g.key !== n.key) return;
+                if (best === -1) best = i;
+              });
+              if (best >= 0) {
+                used.add(best);
+                claimedOld.add(termOlds[best]);
+                glide(termOlds[best], n);
+              } else {
+                leftoverNews.push(n);
+              }
+            }
+            const leftoverOlds = termOlds.filter((c, i) => !used.has(i) && !claimedOld.has(c));
+            leftoverOlds.sort((a, b) => a.g.rect.left - b.g.rect.left);
+            leftoverNews.sort((a, b) => a.rect.left - b.rect.left);
+            const pairs = Math.min(leftoverOlds.length, leftoverNews.length);
+            for (let k = 0; k < pairs; k++) {
+              const o = leftoverOlds[k];
+              const n = leftoverNews[k];
+              claimedOld.add(o);
+              // value morph: the old digits shrink toward the new spot as the
+              // new digits grow in — 6 visibly becomes 3
+              const dx = n.rect.left - o.g.rect.left;
+              const dy = n.rect.top - o.g.rect.top;
+              o.node.animate(
+                [
+                  { transform: "translate(0,0) scale(1)", opacity: 1 },
+                  { transform: `translate(${dx * 0.6}px, ${dy * 0.6}px) scale(0.6)`, opacity: 0 },
+                ],
+                { duration: FLY_MS * 0.65, easing, fill: "forwards" }
+              );
+              const grown = makeClone(n, overlay);
+              grown.animate(
+                [
+                  { transform: "scale(0.6)", opacity: 0 },
+                  { transform: "scale(0.6)", opacity: 0, offset: 0.3 },
+                  { transform: "scale(1)", opacity: 1 },
+                ],
+                { duration: FLY_MS, easing, fill: "forwards" }
+              );
+            }
+            leftoverOlds.slice(pairs).forEach((c) => {
+              claimedOld.add(c);
+              fadeOut(c);
+            });
+            leftoverNews.slice(pairs).forEach(fadeIn);
+          });
+
+          restClones.forEach((c) => {
+            if (!claimedOld.has(c) && (!c.g.term || !newByTerm.has(c.g.term))) globalOld.push(c);
+          });
+
+          // global content matching for whatever provenance couldn't claim
+          const groups = new Map<string, { olds: Clone[]; news: Glyph[] }>();
           const groupOf = (k: string) => {
             if (!groups.has(k)) groups.set(k, { olds: [], news: [] });
             return groups.get(k)!;
           };
-          clones.forEach((c) => groupOf(c.g.key).olds.push(c));
-          news.forEach((g) => groupOf(g.key).news.push(g));
-
-          const easing = "cubic-bezier(0.35, 0.8, 0.3, 1)";
+          globalOld.forEach((c) => groupOf(c.g.key).olds.push(c));
+          globalNew.forEach((g) => groupOf(g.key).news.push(g));
           groups.forEach(({ olds: oldClones, news: newGlyphs }) => {
             const used = new Set<number>();
             for (const n of newGlyphs.sort((a, b) => a.rect.left - b.rect.left)) {
@@ -499,8 +715,7 @@ const EquationBuilderTool = () => {
               let bestDist = Infinity;
               oldClones.forEach((c, i) => {
                 if (used.has(i)) return;
-                const d =
-                  Math.abs(c.g.rect.left - n.rect.left) + Math.abs(c.g.rect.top - n.rect.top) * 2;
+                const d = Math.abs(c.g.rect.left - n.rect.left) + Math.abs(c.g.rect.top - n.rect.top) * 2;
                 if (d < bestDist) {
                   bestDist = d;
                   best = i;
@@ -508,36 +723,13 @@ const EquationBuilderTool = () => {
               });
               if (best >= 0) {
                 used.add(best);
-                const c = oldClones[best];
-                const dx = n.rect.left - c.g.rect.left;
-                const dy = n.rect.top - c.g.rect.top;
-                const sx = c.g.rect.width > 0 ? n.rect.width / c.g.rect.width : 1;
-                const sy = c.g.rect.height > 0 ? n.rect.height / c.g.rect.height : 1;
-                c.node.animate(
-                  [
-                    { transform: "translate(0, 0) scale(1, 1)" },
-                    { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
-                  ],
-                  { duration: FLY_MS, easing, fill: "forwards" }
-                );
+                glide(oldClones[best], n);
               } else {
-                // an arriving glyph: fade in at its destination
-                const born = makeClone(n, overlay);
-                born.animate([{ opacity: 0 }, { opacity: 0, offset: 0.4 }, { opacity: 1 }], {
-                  duration: FLY_MS,
-                  easing: "ease-out",
-                  fill: "forwards",
-                });
+                fadeIn(n);
               }
             }
-            // departing glyphs: fade away in place
             oldClones.forEach((c, i) => {
-              if (used.has(i)) return;
-              c.node.animate([{ opacity: 1 }, { opacity: 0, offset: 0.6 }, { opacity: 0 }], {
-                duration: FLY_MS,
-                easing: "ease-in",
-                fill: "forwards",
-              });
+              if (!used.has(i)) fadeOut(c);
             });
           });
 
@@ -567,7 +759,7 @@ const EquationBuilderTool = () => {
       const showStep = () => {
         const step = h[i];
         // the overlay takes the stage BEFORE the state switches — no blank frame
-        const retarget = i > 0 ? beginGlyphTransition() : null;
+        const retarget = i > 0 ? beginGlyphTransition(step.story) : null;
         setEquation(cloneState(step.state));
         setTreeEq(step.tree ? cloneTreeEq(step.tree) : null);
         setPlayIndex(i);
@@ -595,6 +787,7 @@ const EquationBuilderTool = () => {
         pill: s.pill,
         state: s.state,
         tree: s.tree,
+        story: s.story,
       })),
     });
     navigator.clipboard?.writeText(url).then(() => {
@@ -613,6 +806,7 @@ const EquationBuilderTool = () => {
       note: s.note,
       dangerous: s.dangerous,
       pill: s.pill,
+      story: s.story,
       state: cloneState(s.state),
       tree: s.tree ? cloneTreeEq(s.tree) : undefined,
       text: s.tree ? printTreeEq(s.tree) : equationText(s.state),
@@ -685,14 +879,15 @@ const EquationBuilderTool = () => {
     dangerous?: boolean,
     note?: string,
     pill?: string,
-    rebuild?: boolean
+    rebuild?: boolean,
+    story?: MoveStory
   ) => {
     setEquation(next);
     if (rebuild) {
       // a building move rewrites the equation itself — new problem, new trail
       setHistory([makeStep(label, next, false, note)]);
     } else {
-      setHistory((h) => [...h, makeStep(label, next, dangerous, note, pill)]);
+      setHistory((h) => [...h, makeStep(label, next, dangerous, note, pill, story)]);
     }
     setSelection(null);
     setNotice(null);
@@ -982,6 +1177,8 @@ const EquationBuilderTool = () => {
     pill?: string;
     /** a building move: rewrites the equation itself and restarts the trail */
     rebuild?: boolean;
+    /** provenance for the replay choreography — who interacted with whom */
+    story?: MoveStory;
   }
   type MoveResult = MoveOutcome | string | null;
 
@@ -998,7 +1195,18 @@ const EquationBuilderTool = () => {
     if (real.length === 0) return null;
     const target = [...equation[to], ...real.map((m) => scaleNum(m, -1))];
     const next = { ...equation, [from]: combine(source), [to]: combine(target) } as EquationState;
-    return { next, label: `moved ${real.map((m) => termText(m, true).trim()).join(", ")} across` };
+    // provenance: if combine() merged the traveler into a resident term, the
+    // replay shows it converging on that term and the result being born there
+    const oldTargetIds = new Set(equation[to].map((t) => t.id));
+    const newTargetIds = new Set(next[to].map((t) => t.id));
+    const consumedActors = real.filter((m) => !newTargetIds.has(m.id)).map((m) => m.id);
+    const site = Array.from(oldTargetIds).filter((id) => !newTargetIds.has(id));
+    const born = Array.from(newTargetIds).filter(
+      (id) => !oldTargetIds.has(id) && !real.some((m) => m.id === id)
+    );
+    const story: MoveStory | undefined =
+      consumedActors.length > 0 ? { actors: consumedActors.map((term) => ({ term })), site, born } : undefined;
+    return { next, label: `moved ${real.map((m) => termText(m, true).trim()).join(", ")} across`, story };
   };
 
   /** Divide every term on both sides by the (positive) numeral that was dragged */
@@ -1011,7 +1219,13 @@ const EquationBuilderTool = () => {
     if (v <= 1) return null;
     const divide = (t: EqTerm) => scaleDen(t, v);
     const next = { left: combine(equation.left.map(divide)), right: combine(equation.right.map(divide)) };
-    return { next, label: `divided both sides by ${v}` };
+    return {
+      next,
+      label: `divided both sides by ${v}`,
+      // the dragged numeral is the actor; every term it divides keeps its id,
+      // so their value changes morph in place via id-pairing
+      story: { actors: [{ term: termId, role: isFactor ? "factor" : "coef" }], site: [], born: [] },
+    };
   };
 
   /** Multiply every term on both sides by a fraction's numeric denominator */
@@ -2339,7 +2553,7 @@ const EquationBuilderTool = () => {
       flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
       return;
     }
-    commitMove(result.label, result.next, result.dangerous, result.note, result.pill, result.rebuild);
+    commitMove(result.label, result.next, result.dangerous, result.note, result.pill, result.rebuild, result.story);
   };
 
   // --- Rendering ---

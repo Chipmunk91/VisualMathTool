@@ -7,6 +7,21 @@
 import type { EquationState } from "./model";
 import type { TreeEq } from "./tree";
 
+/**
+ * A move's provenance, recorded by the move function itself — it knows what
+ * interacted with what. The replay animator turns this into choreography:
+ * actors converge on the site, consumed glyphs annihilate, and results are
+ * born where the interaction happened.
+ */
+export interface MoveStory {
+  /** old-state terms (optionally one glyph role) that travel and get consumed */
+  actors: { term: string; role?: string }[];
+  /** old-state terms consumed at the destination */
+  site: string[];
+  /** new-state terms created by the interaction */
+  born: string[];
+}
+
 export interface SharedStep {
   label: string;
   note?: string;
@@ -14,6 +29,7 @@ export interface SharedStep {
   pill?: string;
   state: EquationState;
   tree?: TreeEq;
+  story?: MoveStory;
 }
 
 export interface SharedHistory {
