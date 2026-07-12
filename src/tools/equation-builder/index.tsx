@@ -51,6 +51,7 @@ import {
 import { TangentPane } from "./tangent";
 import { AreaPane } from "./area";
 import { sharedFromUrl, shareUrl, type MoveStory } from "./share";
+import { embedSnippet, isEmbed } from "../../lib/embed";
 import {
   applyToolT,
   divideBothT,
@@ -776,10 +777,11 @@ const EquationBuilderTool = () => {
     });
   };
 
-  // --- Share: the whole derivation in a link ------------------------------
+  // --- Share: the whole derivation in a link (or an embeddable iframe) ----
   const [copied, setCopied] = useState(false);
-  const copyShare = () => {
-    const url = shareUrl({
+  const [copiedEmbed, setCopiedEmbed] = useState(false);
+  const currentShareUrl = () =>
+    shareUrl({
       steps: history.map((s) => ({
         label: s.label,
         note: s.note,
@@ -790,9 +792,16 @@ const EquationBuilderTool = () => {
         story: s.story,
       })),
     });
-    navigator.clipboard?.writeText(url).then(() => {
+  const copyShare = () => {
+    navigator.clipboard?.writeText(currentShareUrl()).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  const copyEmbed = () => {
+    navigator.clipboard?.writeText(embedSnippet(currentShareUrl(), "Equation Playground")).then(() => {
+      setCopiedEmbed(true);
+      setTimeout(() => setCopiedEmbed(false), 1500);
     });
   };
 
@@ -3595,7 +3604,8 @@ const EquationBuilderTool = () => {
         </div>
       </div>
 
-      {/* Dev: visualize grab regions and drop zones */}
+      {/* Dev: visualize grab regions and drop zones (not in embeds) */}
+      {!isEmbed && (
       <label
         className="absolute bottom-6 left-4 flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
         data-ui
@@ -3611,6 +3621,7 @@ const EquationBuilderTool = () => {
           <span className="text-muted-foreground/70">— grab activates on the nearest symbol within 28px</span>
         )}
       </label>
+      )}
       {devHitboxes && (
         <style>{`
           [data-symbol] { outline: 1.5px dashed rgba(244, 63, 94, 0.55); outline-offset: -1px; }
@@ -3627,6 +3638,13 @@ const EquationBuilderTool = () => {
           title="Copy a link to this equation and its whole step history"
         >
           {copied ? "copied ✓" : "⧉ share"}
+        </button>
+        <button
+          onClick={copyEmbed}
+          className="rounded-full border border-border px-3 py-1.5 font-mono text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+          title="Copy an iframe of this exact derivation — plug it into any page"
+        >
+          {copiedEmbed ? "copied ✓" : "</>"}
         </button>
         <button
           onClick={() => setHistoryOpen((open) => !open)}

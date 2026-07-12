@@ -5,11 +5,13 @@ import { ArrowLeft } from "lucide-react";
 import Home from "./pages/Home";
 import NotFound from "./pages/NotFound";
 import { tools, type ToolDefinition } from "./tools/registry";
+import { isEmbed } from "./lib/embed";
 
 function ToolShell({ tool }: { tool: ToolDefinition }) {
   const ToolComponent = tool.component;
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+      {!isEmbed && (
       <header className="flex items-center gap-3 h-12 px-4 border-b border-border bg-card shrink-0">
         <Link
           href="/"
@@ -24,6 +26,7 @@ function ToolShell({ tool }: { tool: ToolDefinition }) {
           {tool.name}
         </h1>
       </header>
+      )}
       <main className="flex-1 min-h-0">
         <Suspense
           fallback={
