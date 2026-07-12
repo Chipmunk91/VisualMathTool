@@ -79,8 +79,13 @@ import { TreeSideView } from "./treeview";
  * side cancels. Every move lands in the step history behind the menu.
  */
 
-/** The equation on first load — everything else arrives via typing or search */
-const INITIAL = (): EquationState => ({ left: [leaf(2, 1), leaf(-3)], right: [leaf(-7)] });
+/**
+ * The equation on first load — everything else arrives via typing or search.
+ * ONE shared instance: the live state and the step-0 snapshot must carry the
+ * SAME term ids, or move stories (which reference live ids) can never find
+ * their actors when the history replays.
+ */
+const BOOT: EquationState = { left: [leaf(2, 1), leaf(-3)], right: [leaf(-7)] };
 
 const SUP = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 /** x³ etc. in plain text */
@@ -353,10 +358,10 @@ const Fraction = ({
 );
 
 const EquationBuilderTool = () => {
-  const [equation, setEquation] = useState<EquationState>(() => INITIAL());
+  const [equation, setEquation] = useState<EquationState>(BOOT);
   /** Non-null when the equation lives in the expression tree (frontier mode) */
   const [treeEq, setTreeEq] = useState<TreeEq | null>(null);
-  const [history, setHistory] = useState<Step[]>(() => [makeStep("start", INITIAL())]);
+  const [history, setHistory] = useState<Step[]>(() => [makeStep("start", BOOT)]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dragOver, setDragOver] = useState<Side | null>(null);
   const [parenHover, setParenHover] = useState<string | null>(null);
