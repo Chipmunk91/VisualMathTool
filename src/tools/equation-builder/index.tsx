@@ -365,6 +365,24 @@ const EquationBuilderTool = () => {
   const [searchMode, setSearchMode] = useState(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const equationRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Shortcut into search mode: "/" (when not already typing) or Ctrl/Cmd+K
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const typing =
+        document.activeElement instanceof HTMLInputElement ||
+        document.activeElement instanceof HTMLTextAreaElement;
+      const palette = (e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey);
+      if (palette || (e.key === "/" && !typing)) {
+        e.preventDefault();
+        setSearchMode(true);
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const { left, right } = equation;
 
@@ -2761,7 +2779,7 @@ const EquationBuilderTool = () => {
               setSearchMode((on) => !on);
               setInputMsg(null);
             }}
-            title={searchMode ? "Back to typing equations" : "Search famous functions by name"}
+            title={searchMode ? "Back to typing equations" : "Search famous functions by name (/ or Ctrl+K)"}
             className={`shrink-0 transition-colors ${
               searchMode ? "text-amber-500" : "text-muted-foreground hover:text-foreground"
             }`}
@@ -2769,6 +2787,7 @@ const EquationBuilderTool = () => {
             <Search className="h-4 w-4" />
           </button>
           <input
+            ref={searchInputRef}
             value={inputText}
             onChange={(e) => {
               setInputText(e.target.value);
