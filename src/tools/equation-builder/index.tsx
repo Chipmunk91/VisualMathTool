@@ -501,6 +501,9 @@ const EquationBuilderTool = () => {
           const news = snapshotGlyphs();
           const easing = "cubic-bezier(0.35, 0.8, 0.3, 1)";
           type Clone = (typeof clones)[number];
+          // when a story plays, bystanders wait a beat so the actor reads first
+          const hasStory = !!story && (story.actors.length > 0 || story.born.length > 0);
+          const beat = hasStory ? 140 : 0;
 
           const glide = (c: Clone, to: Glyph) => {
             const dx = to.rect.left - c.g.rect.left;
@@ -512,21 +515,23 @@ const EquationBuilderTool = () => {
                 { transform: "translate(0, 0) scale(1, 1)" },
                 { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
               ],
-              { duration: FLY_MS, easing, fill: "forwards" }
+              { duration: FLY_MS, easing, delay: beat, fill: "both" }
             );
           };
           const fadeOut = (c: Clone) =>
             c.node.animate([{ opacity: 1 }, { opacity: 0, offset: 0.6 }, { opacity: 0 }], {
               duration: FLY_MS,
               easing: "ease-in",
-              fill: "forwards",
+              delay: beat,
+              fill: "both",
             });
           const fadeIn = (n: Glyph) => {
             const born = makeClone(n, overlay);
             born.animate([{ opacity: 0 }, { opacity: 0, offset: 0.4 }, { opacity: 1 }], {
               duration: FLY_MS,
               easing: "ease-out",
-              fill: "forwards",
+              delay: beat,
+              fill: "both",
             });
           };
           const center = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
@@ -566,40 +571,54 @@ const EquationBuilderTool = () => {
                 ? center(siteClones[0].g.rect)
                 : null;
 
+          // the actor's journey is THE story — slow, opaque, arcing over the
+          // equation, only vanishing at the moment of contact
+          const ACTOR_MS = 900;
           for (const c of actorClones) {
             const from = center(c.g.rect);
             if (bornCenter) {
-              // converge on the interaction site, shrinking out on contact
+              const dx = bornCenter.x - from.x;
+              const dy = bornCenter.y - from.y;
+              c.node.style.zIndex = "10";
               c.node.animate(
                 [
                   { transform: "translate(0,0) scale(1)", opacity: 1 },
                   {
-                    transform: `translate(${bornCenter.x - from.x}px, ${bornCenter.y - from.y}px) scale(0.45)`,
-                    opacity: 0,
+                    // arc apex: lifted above the straight line, slightly enlarged
+                    transform: `translate(${dx * 0.5}px, ${dy * 0.5 - 46}px) scale(1.18)`,
+                    opacity: 1,
+                    offset: 0.48,
                   },
+                  { transform: `translate(${dx}px, ${dy}px) scale(0.7)`, opacity: 0.9, offset: 0.86 },
+                  { transform: `translate(${dx}px, ${dy}px) scale(0.4)`, opacity: 0 },
                 ],
-                { duration: FLY_MS * 0.8, easing, fill: "forwards" }
+                { duration: ACTOR_MS, easing, fill: "both" }
               );
             } else {
               // no landing site (a divisor slipping under): drift down and out
               c.node.animate(
                 [
                   { transform: "translate(0,0) scale(1)", opacity: 1 },
-                  { transform: "translate(0, 22px) scale(0.7)", opacity: 0 },
+                  { transform: "translate(0, 10px) scale(1.05)", opacity: 1, offset: 0.4 },
+                  { transform: "translate(0, 30px) scale(0.7)", opacity: 0 },
                 ],
-                { duration: FLY_MS * 0.75, easing: "ease-in", fill: "forwards" }
+                { duration: ACTOR_MS * 0.85, easing: "ease-in", fill: "both" }
               );
             }
           }
+          // the consumed partner holds its ground until the actor arrives
           for (const c of siteClones) {
             c.node.animate(
               [
                 { transform: "translate(0,0) scale(1)", opacity: 1 },
-                { transform: "translate(0,0) scale(0.6)", opacity: 0 },
+                { transform: "translate(0,0) scale(1)", opacity: 1, offset: 0.55 },
+                { transform: "translate(0,0) scale(0.55)", opacity: 0 },
               ],
-              { duration: FLY_MS * 0.7, easing: "ease-in", fill: "forwards" }
+              { duration: ACTOR_MS, easing: "ease-in", fill: "both" }
             );
           }
+          // the result pops into existence AT the contact moment, with a
+          // little overshoot as it settles
           for (const n of bornGlyphs) {
             const to = center(n.rect);
             const fromX = bornCenter ? bornCenter.x - to.x : 0;
@@ -607,11 +626,15 @@ const EquationBuilderTool = () => {
             const born = makeClone(n, overlay);
             born.animate(
               [
-                { transform: `translate(${fromX}px, ${fromY}px) scale(0.45)`, opacity: 0 },
-                { transform: `translate(${fromX}px, ${fromY}px) scale(0.45)`, opacity: 0, offset: 0.35 },
+                { transform: `translate(${fromX}px, ${fromY}px) scale(0.4)`, opacity: 0 },
+                {
+                  transform: `translate(${fromX * 0.2}px, ${fromY * 0.2}px) scale(1.12)`,
+                  opacity: 1,
+                  offset: 0.55,
+                },
                 { transform: "translate(0,0) scale(1)", opacity: 1 },
               ],
-              { duration: FLY_MS, easing, fill: "forwards" }
+              { duration: 460, delay: ACTOR_MS * 0.62, easing, fill: "both" }
             );
           }
 
@@ -735,6 +758,7 @@ const EquationBuilderTool = () => {
           });
 
           // hand the stage back: reveal the real equation, then drop the overlay
+          const curtain = hasStory ? 1100 : FLY_MS + beat + 40;
           setTimeout(() => {
             if (overlayRef.current !== overlay) return;
             if (equationRef.current) equationRef.current.style.opacity = "";
@@ -744,7 +768,7 @@ const EquationBuilderTool = () => {
                 overlayRef.current = null;
               }
             });
-          }, FLY_MS + 30);
+          }, curtain);
         })
       );
     };
@@ -766,11 +790,11 @@ const EquationBuilderTool = () => {
         setPlayIndex(i);
         retarget?.();
         if (i >= h.length - 1) {
-          playTimer.current = setTimeout(stopPlayback, 1600);
+          playTimer.current = setTimeout(stopPlayback, 1900);
           return;
         }
         i++;
-        playTimer.current = setTimeout(showStep, 1450);
+        playTimer.current = setTimeout(showStep, 1750);
       };
       showStep();
       return h;
