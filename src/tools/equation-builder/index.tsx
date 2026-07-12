@@ -431,7 +431,6 @@ const EquationBuilderTool = () => {
     term: string | null;
     role: string | null;
   }
-  const FLY_MS = 620;
 
   const snapshotGlyphs = (): Glyph[] => {
     const out: Glyph[] = [];
@@ -481,13 +480,19 @@ const EquationBuilderTool = () => {
   };
 
   /**
-   * The continuous scene, in two beats. BEFORE the state switches, the old
-   * view is rebuilt as an overlay of self-styled clones and the real
-   * container hides — pixel-identical, so no frame is ever blank or doubled.
-   * AFTER the new layout exists (still hidden), each clone is retargeted:
-   * matched glyphs glide to their new spot, departing ones fade in place,
-   * arriving ones fade in at their destination. Only when the clones have
-   * landed does the real equation take over.
+   * The spec's engine. BEFORE the state switches, the old view is rebuilt as
+   * an overlay of self-styled clones and the real container hides —
+   * pixel-identical, so no frame is ever blank, doubled, or ghosted.
+   *
+   * Every token gets exactly one classification (unchanged / moved /
+   * mutated / created / destroyed) and the timeline plays in phases:
+   *   1. emphasis  — the actor pulses so the eye locks on
+   *   2. travel    — ONLY the actor moves, along a gentle arc
+   *   3. land      — consequences fire at the landing instant: mutations
+   *                  swap-and-pulse, merge partners collapse, results are born
+   *   4. reflow    — everyone else glides to the new layout (the = included,
+   *                  which is frozen until here)
+   * Opacity animates only on true births and deaths. Survivors MOVE.
    */
   const beginGlyphTransition = (story?: MoveStory): (() => void) => {
     const olds = snapshotGlyphs();
@@ -504,64 +509,12 @@ const EquationBuilderTool = () => {
         requestAnimationFrame(() => {
           if (!playingRef.current || overlayRef.current !== overlay) return;
           const news = snapshotGlyphs();
-          const easing = "cubic-bezier(0.35, 0.8, 0.3, 1)";
           type Clone = (typeof clones)[number];
-          // when a story plays, bystanders wait a beat so the actor reads first
-          const hasStory = !!story && (story.actors.length > 0 || story.born.length > 0);
-          const beat = hasStory ? 140 : 0;
 
-          const glide = (c: Clone, to: Glyph) => {
-            const dx = to.rect.left - c.g.rect.left;
-            const dy = to.rect.top - c.g.rect.top;
-            const sx = c.g.rect.width > 0 ? to.rect.width / c.g.rect.width : 1;
-            const sy = c.g.rect.height > 0 ? to.rect.height / c.g.rect.height : 1;
-            c.node.animate(
-              [
-                { transform: "translate(0, 0) scale(1, 1)" },
-                { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
-              ],
-              { duration: FLY_MS, easing, delay: beat, fill: "both" }
-            );
-          };
-          const fadeOut = (c: Clone) =>
-            c.node.animate([{ opacity: 1 }, { opacity: 0, offset: 0.6 }, { opacity: 0 }], {
-              duration: FLY_MS,
-              easing: "ease-in",
-              delay: beat,
-              fill: "both",
-            });
-          const fadeIn = (n: Glyph) => {
-            const born = makeClone(n, overlay);
-            born.animate([{ opacity: 0 }, { opacity: 0, offset: 0.4 }, { opacity: 1 }], {
-              duration: FLY_MS,
-              easing: "ease-out",
-              delay: beat,
-              fill: "both",
-            });
-          };
+          const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+          const TRAVEL = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+          const SETTLE = "cubic-bezier(0.2, 0.6, 0.3, 1)";
           const center = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
-
-          // ---- story choreography: actors converge, results are born ------
-          const actorSet = new Map<string, string | null>();
-          story?.actors.forEach((a) => actorSet.set(a.term, a.role ?? null));
-          const siteSet = new Set(story?.site ?? []);
-          const bornSet = new Set(story?.born ?? []);
-          const newTermIds = new Set(news.map((g) => g.term).filter(Boolean));
-
-          const isActor = (g: Glyph) =>
-            !!g.term &&
-            actorSet.has(g.term) &&
-            (actorSet.get(g.term) === null || g.role === actorSet.get(g.term)) &&
-            // an actor whose term survives isn't consumed — it just travels
-            (actorSet.get(g.term) !== null || !newTermIds.has(g.term));
-          const actorClones = clones.filter((c) => isActor(c.g));
-          const siteClones = clones.filter((c) => c.g.term && siteSet.has(c.g.term) && !isActor(c.g));
-          const bornGlyphs = news.filter((g) => g.term && bornSet.has(g.term));
-
-          // THE RULE: the whole merge happens at ONE place — where the
-          // consumed partner currently stands. The actor travels there,
-          // contact and birth happen there, and the result then settles
-          // into its final layout position.
           const unionCenter = (rects: DOMRect[]) => {
             const left = Math.min(...rects.map((r) => r.left));
             const right = Math.max(...rects.map((r) => r.right));
@@ -569,182 +522,139 @@ const EquationBuilderTool = () => {
             const bottom = Math.max(...rects.map((r) => r.bottom));
             return { x: (left + right) / 2, y: (top + bottom) / 2 };
           };
-          const siteCenter =
-            siteClones.length > 0
-              ? unionCenter(siteClones.map((c) => c.g.rect))
-              : bornGlyphs.length > 0
-                ? unionCenter(bornGlyphs.map((g) => g.rect))
-                : null;
 
-          const ACTOR_MS = 900;
-          for (const c of actorClones) {
-            const from = center(c.g.rect);
-            c.node.style.transformOrigin = "50% 50%"; // shrink around itself, no drift
-            if (siteCenter) {
-              const dx = siteCenter.x - from.x;
-              const dy = siteCenter.y - from.y;
-              // a gentle hop, proportional to the trip — not a circus leap
-              const lift = Math.min(26, Math.hypot(dx, dy) * 0.14);
-              c.node.style.zIndex = "10";
-              c.node.animate(
-                [
-                  { transform: "translate(0,0) scale(1)", opacity: 1 },
-                  {
-                    transform: `translate(${dx * 0.5}px, ${dy * 0.5 - lift}px) scale(1.06)`,
-                    opacity: 1,
-                    offset: 0.5,
-                  },
-                  { transform: `translate(${dx}px, ${dy}px) scale(0.92)`, opacity: 1, offset: 0.86 },
-                  { transform: `translate(${dx}px, ${dy}px) scale(0.6)`, opacity: 0 },
-                ],
-                { duration: ACTOR_MS, easing, fill: "both" }
-              );
-            } else {
-              // no landing site (a divisor slipping under): drift down and out
-              c.node.animate(
-                [
-                  { transform: "translate(0,0) scale(1)", opacity: 1 },
-                  { transform: "translate(0, 10px) scale(1.02)", opacity: 1, offset: 0.4 },
-                  { transform: "translate(0, 30px) scale(0.8)", opacity: 0 },
-                ],
-                { duration: ACTOR_MS * 0.85, easing: "ease-in", fill: "both" }
-              );
-            }
-          }
-          // the consumed partner holds its ground until the actor arrives,
-          // then collapses into the merge
-          for (const c of siteClones) {
-            c.node.style.transformOrigin = "50% 50%";
-            c.node.animate(
-              [
-                { transform: "scale(1)", opacity: 1 },
-                { transform: "scale(1)", opacity: 1, offset: 0.62 },
-                { transform: "scale(0.7)", opacity: 0 },
-              ],
-              { duration: ACTOR_MS, easing: "ease-in", fill: "both" }
-            );
-          }
-          // the result is born AT the merge point, then settles into place
-          for (const n of bornGlyphs) {
-            const to = center(n.rect);
-            const fromX = siteCenter ? siteCenter.x - to.x : 0;
-            const fromY = siteCenter ? siteCenter.y - to.y : 0;
-            const born = makeClone(n, overlay);
-            born.style.transformOrigin = "50% 50%";
-            born.animate(
-              [
-                { transform: `translate(${fromX}px, ${fromY}px) scale(0.6)`, opacity: 0 },
-                {
-                  transform: `translate(${fromX}px, ${fromY}px) scale(0.95)`,
-                  opacity: 1,
-                  offset: 0.3,
-                },
-                { transform: "translate(0,0) scale(1)", opacity: 1 },
-              ],
-              { duration: 520, delay: ACTOR_MS * 0.62, easing, fill: "both" }
-            );
-          }
+          // ---- classification: every token gets exactly one transition ----
+          const actorRole = new Map<string, string | null>();
+          story?.actors.forEach((a) => actorRole.set(a.term, a.role ?? null));
+          const siteSet = new Set(story?.site ?? []);
+          const bornSet = new Set(story?.born ?? []);
 
-          // ---- everything else: pair by TERM ID first, then by content ----
-          const storyHandledNew = new Set(bornGlyphs);
+          const isActorGlyph = (g: Glyph) =>
+            !!g.term &&
+            actorRole.has(g.term) &&
+            (actorRole.get(g.term) === null || g.role === actorRole.get(g.term));
+          const actorClones = clones.filter((c) => isActorGlyph(c.g));
+          const siteClones = clones.filter((c) => c.g.term && siteSet.has(c.g.term) && !isActorGlyph(c.g));
+          const bornGlyphs = news.filter((g) => g.term && bornSet.has(g.term));
+
           const restClones = clones.filter((c) => !actorClones.includes(c) && !siteClones.includes(c));
-          const restNews = news.filter((g) => !storyHandledNew.has(g));
+          const bornGlyphSet = new Set(bornGlyphs);
+          const restNews = news.filter((g) => !bornGlyphSet.has(g));
 
+          // pair actor glyphs with their own new home (a surviving traveler)
+          const actorNewByTerm = new Map<string, Glyph[]>();
+          restNews.forEach((g) => {
+            if (g.term && actorRole.has(g.term)) {
+              if (!actorNewByTerm.has(g.term)) actorNewByTerm.set(g.term, []);
+              actorNewByTerm.get(g.term)!.push(g);
+            }
+          });
+          const claimedNew = new Set<Glyph>();
+
+          // pair followers by term id first, then by content, nearest-first
+          const pairs: { c: Clone; n: Glyph }[] = [];
+          const mutations: { c: Clone; n: Glyph }[] = [];
+          const actorTravels: { c: Clone; n: Glyph | null }[] = [];
+          const deaths: Clone[] = [];
+          const births: Glyph[] = [];
+
+          // actor terms: same-key glyphs travel to their own new rects;
+          // leftovers (the flipping sign) travel too, mutating mid-flight
+          const actorMutations: { c: Clone; n: Glyph }[] = [];
+          const actorByTerm = new Map<string, Clone[]>();
+          actorClones.forEach((c) => {
+            if (!c.g.term) return;
+            if (!actorByTerm.has(c.g.term)) actorByTerm.set(c.g.term, []);
+            actorByTerm.get(c.g.term)!.push(c);
+          });
+          actorByTerm.forEach((termClones, termId) => {
+            const homes = actorNewByTerm.get(termId) ?? [];
+            const usedHome = new Set<Glyph>();
+            const leftoverClones: Clone[] = [];
+            for (const c of termClones) {
+              const match = homes.find((h) => !usedHome.has(h) && h.key === c.g.key);
+              if (match) {
+                usedHome.add(match);
+                claimedNew.add(match);
+                actorTravels.push({ c, n: match });
+              } else {
+                leftoverClones.push(c);
+              }
+            }
+            const leftoverHomes = homes.filter((h) => !usedHome.has(h));
+            leftoverClones.sort((a, b) => a.g.rect.left - b.g.rect.left);
+            leftoverHomes.sort((a, b) => a.rect.left - b.rect.left);
+            const k = Math.min(leftoverClones.length, leftoverHomes.length);
+            for (let i = 0; i < k; i++) {
+              claimedNew.add(leftoverHomes[i]);
+              actorMutations.push({ c: leftoverClones[i], n: leftoverHomes[i] });
+            }
+            leftoverClones.slice(k).forEach((c) => actorTravels.push({ c, n: null })); // consumed traveler
+          });
+
+          // followers
           const oldByTerm = new Map<string, Clone[]>();
           restClones.forEach((c) => {
             if (!c.g.term) return;
             if (!oldByTerm.has(c.g.term)) oldByTerm.set(c.g.term, []);
             oldByTerm.get(c.g.term)!.push(c);
           });
-
-          const globalOld: Clone[] = [];
-          const globalNew: Glyph[] = [];
-          const claimedOld = new Set<Clone>();
-
-          const newByTerm = new Map<string, Glyph[]>();
-          restNews.forEach((g) => {
-            if (g.term && oldByTerm.has(g.term)) {
-              if (!newByTerm.has(g.term)) newByTerm.set(g.term, []);
-              newByTerm.get(g.term)!.push(g);
+          const followerNews = restNews.filter((g) => !claimedNew.has(g));
+          const inTermNews = new Map<string, Glyph[]>();
+          const globalNews: Glyph[] = [];
+          followerNews.forEach((g) => {
+            if (g.term && oldByTerm.has(g.term) && !actorRole.has(g.term)) {
+              if (!inTermNews.has(g.term)) inTermNews.set(g.term, []);
+              inTermNews.get(g.term)!.push(g);
             } else {
-              globalNew.push(g);
+              globalNews.push(g);
             }
           });
-
-          // within a surviving term: same-text glyphs glide; leftovers are the
-          // term's CHANGED VALUE — they morph in place (old out, new in)
-          newByTerm.forEach((termNews, termId) => {
-            const termOlds = oldByTerm.get(termId)!;
-            const used = new Set<number>();
+          const claimedOld = new Set<Clone>();
+          inTermNews.forEach((termNews, termId) => {
+            const termOlds = (oldByTerm.get(termId) ?? []).filter((c) => !claimedOld.has(c));
+            const usedOld = new Set<Clone>();
             const leftoverNews: Glyph[] = [];
             for (const n of termNews) {
-              let best = -1;
-              termOlds.forEach((c, i) => {
-                if (used.has(i) || claimedOld.has(c) || c.g.key !== n.key) return;
-                if (best === -1) best = i;
-              });
-              if (best >= 0) {
-                used.add(best);
-                claimedOld.add(termOlds[best]);
-                glide(termOlds[best], n);
+              const match = termOlds.find((c) => !usedOld.has(c) && c.g.key === n.key);
+              if (match) {
+                usedOld.add(match);
+                claimedOld.add(match);
+                pairs.push({ c: match, n });
               } else {
                 leftoverNews.push(n);
               }
             }
-            const leftoverOlds = termOlds.filter((c, i) => !used.has(i) && !claimedOld.has(c));
+            const leftoverOlds = termOlds.filter((c) => !usedOld.has(c));
             leftoverOlds.sort((a, b) => a.g.rect.left - b.g.rect.left);
             leftoverNews.sort((a, b) => a.rect.left - b.rect.left);
-            const pairs = Math.min(leftoverOlds.length, leftoverNews.length);
-            for (let k = 0; k < pairs; k++) {
-              const o = leftoverOlds[k];
-              const n = leftoverNews[k];
-              claimedOld.add(o);
-              // value morph: the old digits shrink toward the new spot as the
-              // new digits grow in — 6 visibly becomes 3
-              const dx = n.rect.left - o.g.rect.left;
-              const dy = n.rect.top - o.g.rect.top;
-              o.node.animate(
-                [
-                  { transform: "translate(0,0) scale(1)", opacity: 1 },
-                  { transform: `translate(${dx * 0.6}px, ${dy * 0.6}px) scale(0.6)`, opacity: 0 },
-                ],
-                { duration: FLY_MS * 0.65, easing, fill: "forwards" }
-              );
-              const grown = makeClone(n, overlay);
-              grown.animate(
-                [
-                  { transform: "scale(0.6)", opacity: 0 },
-                  { transform: "scale(0.6)", opacity: 0, offset: 0.3 },
-                  { transform: "scale(1)", opacity: 1 },
-                ],
-                { duration: FLY_MS, easing, fill: "forwards" }
-              );
+            const k = Math.min(leftoverOlds.length, leftoverNews.length);
+            for (let i = 0; i < k; i++) {
+              claimedOld.add(leftoverOlds[i]);
+              mutations.push({ c: leftoverOlds[i], n: leftoverNews[i] });
             }
-            leftoverOlds.slice(pairs).forEach((c) => {
+            leftoverOlds.slice(k).forEach((c) => {
               claimedOld.add(c);
-              fadeOut(c);
+              deaths.push(c);
             });
-            leftoverNews.slice(pairs).forEach(fadeIn);
+            leftoverNews.slice(k).forEach((n) => births.push(n));
           });
-
-          restClones.forEach((c) => {
-            if (!claimedOld.has(c) && (!c.g.term || !newByTerm.has(c.g.term))) globalOld.push(c);
-          });
-
-          // global content matching for whatever provenance couldn't claim
-          const groups = new Map<string, { olds: Clone[]; news: Glyph[] }>();
-          const groupOf = (k: string) => {
-            if (!groups.has(k)) groups.set(k, { olds: [], news: [] });
-            return groups.get(k)!;
+          // global content matching for whatever term pairing could not claim
+          const leftOld = restClones.filter((c) => !claimedOld.has(c));
+          const leftNew = globalNews.filter((g) => !claimedNew.has(g));
+          const byKey = new Map<string, { olds: Clone[]; news: Glyph[] }>();
+          const bucket = (k: string) => {
+            if (!byKey.has(k)) byKey.set(k, { olds: [], news: [] });
+            return byKey.get(k)!;
           };
-          globalOld.forEach((c) => groupOf(c.g.key).olds.push(c));
-          globalNew.forEach((g) => groupOf(g.key).news.push(g));
-          groups.forEach(({ olds: oldClones, news: newGlyphs }) => {
+          leftOld.forEach((c) => bucket(c.g.key).olds.push(c));
+          leftNew.forEach((g) => bucket(g.key).news.push(g));
+          byKey.forEach(({ olds: os, news: ns }) => {
             const used = new Set<number>();
-            for (const n of newGlyphs.sort((a, b) => a.rect.left - b.rect.left)) {
+            for (const n of ns.sort((a, b) => a.rect.left - b.rect.left)) {
               let best = -1;
               let bestDist = Infinity;
-              oldClones.forEach((c, i) => {
+              os.forEach((c, i) => {
                 if (used.has(i)) return;
                 const d = Math.abs(c.g.rect.left - n.rect.left) + Math.abs(c.g.rect.top - n.rect.top) * 2;
                 if (d < bestDist) {
@@ -754,20 +664,172 @@ const EquationBuilderTool = () => {
               });
               if (best >= 0) {
                 used.add(best);
-                glide(oldClones[best], n);
+                pairs.push({ c: os[best], n });
               } else {
-                fadeIn(n);
+                births.push(n);
               }
             }
-            oldClones.forEach((c, i) => {
-              if (!used.has(i)) fadeOut(c);
+            os.forEach((c, i) => {
+              if (!used.has(i)) deaths.push(c);
             });
           });
 
+          // ---- the timeline ------------------------------------------------
+          const hasActor = actorTravels.length > 0 || actorMutations.length > 0;
+          const T_TRAVEL_START = hasActor ? 110 : 0;
+          const TRAVEL_MS = hasActor ? 380 : 0;
+          const T_LAND = T_TRAVEL_START + TRAVEL_MS;
+          const T_REFLOW = hasActor ? T_LAND + 40 : 0;
+          const REFLOW_MS = 240;
+          const CURTAIN = reduced ? 120 : T_REFLOW + REFLOW_MS + 80;
+
+          const siteCenter =
+            siteClones.length > 0
+              ? unionCenter(siteClones.map((c) => c.g.rect))
+              : bornGlyphs.length > 0
+                ? unionCenter(bornGlyphs.map((g) => g.rect))
+                : null;
+          const actorCenter =
+            actorClones.length > 0 ? unionCenter(actorClones.map((c) => c.g.rect)) : null;
+
+          const later = (fn: () => void, ms: number) =>
+            setTimeout(() => {
+              if (overlayRef.current === overlay) fn();
+            }, ms);
+
+          if (!reduced) {
+            // phase 1+2: the actor pulses, then travels — ALONE, along an arc
+            const travel = (c: Clone, toCenter: { x: number; y: number }, consumed: boolean, swap?: Glyph) => {
+              const from = center(c.g.rect);
+              const dx = toCenter.x - from.x;
+              const dy = toCenter.y - from.y;
+              const lift = Math.min(30, Math.hypot(dx, dy) * 0.16);
+              c.node.style.transformOrigin = "50% 50%";
+              c.node.style.zIndex = "10";
+              c.node.animate(
+                [
+                  { transform: "translate(0,0) scale(1)", offset: 0 },
+                  { transform: "translate(0,0) scale(1.08)", offset: 0.18 },
+                  { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - lift}px) scale(1.05)`, offset: 0.6 },
+                  { transform: `translate(${dx}px, ${dy}px) scale(1)`, offset: 1 },
+                ],
+                { duration: T_LAND, easing: TRAVEL, fill: "both" }
+              );
+              if (consumed) {
+                // a true death — but only AT the landing instant
+                c.node.animate([{ opacity: 1 }, { opacity: 0 }], {
+                  duration: 140,
+                  delay: T_LAND,
+                  easing: "ease-in",
+                  fill: "both",
+                });
+              }
+              if (swap) {
+                // the sign flips exactly as it crosses the equals sign
+                later(() => {
+                  c.node.textContent = swap.text;
+                  c.node.animate(
+                    [{ transform: "scale(1)" }, { transform: "scale(1.18)" }, { transform: "scale(1)" }],
+                    { duration: 160, easing: "ease-out", composite: "add" }
+                  );
+                }, T_TRAVEL_START + TRAVEL_MS * 0.5);
+              }
+            };
+            for (const { c, n } of actorTravels) {
+              if (n) travel(c, center(n.rect), false);
+              else travel(c, siteCenter ?? center(c.g.rect), true);
+            }
+            for (const { c, n } of actorMutations) travel(c, center(n.rect), false, n);
+
+            // phase 3: consequences at the landing instant
+            for (const c of siteClones) {
+              c.node.style.transformOrigin = "50% 50%";
+              c.node.animate(
+                [
+                  { transform: "scale(1)", opacity: 1 },
+                  { transform: "scale(0.7)", opacity: 0 },
+                ],
+                { duration: 150, delay: T_LAND - 30, easing: "ease-in", fill: "both" }
+              );
+            }
+            for (const n of bornGlyphs) {
+              const to = center(n.rect);
+              const fromX = siteCenter ? siteCenter.x - to.x : 0;
+              const fromY = siteCenter ? siteCenter.y - to.y : 0;
+              const born = makeClone(n, overlay);
+              born.style.transformOrigin = "50% 50%";
+              born.animate(
+                [
+                  { transform: `translate(${fromX}px, ${fromY}px) scale(0.6)`, opacity: 0, offset: 0 },
+                  { transform: `translate(${fromX}px, ${fromY}px) scale(1.12)`, opacity: 1, offset: 0.35 },
+                  { transform: `translate(${fromX}px, ${fromY}px) scale(1)`, opacity: 1, offset: 0.5 },
+                  { transform: "translate(0,0) scale(1)", opacity: 1, offset: 1 },
+                ],
+                { duration: 150 + REFLOW_MS + 40, delay: T_LAND - 20, easing: SETTLE, fill: "both" }
+              );
+            }
+            // mutations in resident terms swap AT the landing instant, then
+            // ride the reflow to their new slot — one node, no crossfade
+            for (const { c, n } of mutations) {
+              const dx = n.rect.left - c.g.rect.left;
+              const dy = n.rect.top - c.g.rect.top;
+              later(() => {
+                c.node.textContent = n.text;
+                c.node.animate(
+                  [{ transform: "scale(1)" }, { transform: "scale(1.18)" }, { transform: "scale(1)" }],
+                  { duration: 160, easing: "ease-out", composite: "add" }
+                );
+              }, Math.max(0, T_LAND - 20));
+              c.node.animate(
+                [
+                  { transform: "translate(0,0)" },
+                  { transform: `translate(${dx}px, ${dy}px)` },
+                ],
+                { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, fill: "both" }
+              );
+            }
+
+            // phase 4: reflow — followers (the = included) glide to the new
+            // layout, frozen until now; deaths fade; births scale in
+            for (const { c, n } of pairs) {
+              const dx = n.rect.left - c.g.rect.left;
+              const dy = n.rect.top - c.g.rect.top;
+              const sx = c.g.rect.width > 0 ? n.rect.width / c.g.rect.width : 1;
+              const sy = c.g.rect.height > 0 ? n.rect.height / c.g.rect.height : 1;
+              if (Math.abs(dx) + Math.abs(dy) < 1 && Math.abs(sx - 1) + Math.abs(sy - 1) < 0.02) continue;
+              c.node.animate(
+                [
+                  { transform: "translate(0,0) scale(1,1)" },
+                  { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
+                ],
+                { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, fill: "both" }
+              );
+            }
+            for (const c of deaths) {
+              c.node.style.transformOrigin = "50% 50%";
+              c.node.animate(
+                [
+                  { transform: "scale(1)", opacity: 1 },
+                  { transform: "scale(0.8)", opacity: 0 },
+                ],
+                { duration: 180, delay: hasActor ? T_TRAVEL_START + 60 : 40, easing: "ease-in", fill: "both" }
+              );
+            }
+            for (const n of births) {
+              const b = makeClone(n, overlay);
+              b.style.transformOrigin = "50% 50%";
+              b.animate(
+                [
+                  { transform: "scale(0.7)", opacity: 0 },
+                  { transform: "scale(1)", opacity: 1 },
+                ],
+                { duration: 200, delay: T_REFLOW + 40, easing: "ease-out", fill: "both" }
+              );
+            }
+          }
+
           // hand the stage back: reveal the real equation, then drop the overlay
-          const curtain = hasStory ? 1100 : FLY_MS + beat + 40;
-          setTimeout(() => {
-            if (overlayRef.current !== overlay) return;
+          later(() => {
             if (equationRef.current) equationRef.current.style.opacity = "";
             requestAnimationFrame(() => {
               if (overlayRef.current === overlay) {
@@ -775,7 +837,7 @@ const EquationBuilderTool = () => {
                 overlayRef.current = null;
               }
             });
-          }, curtain);
+          }, CURTAIN);
         })
       );
     };
@@ -1235,17 +1297,15 @@ const EquationBuilderTool = () => {
     if (real.length === 0) return null;
     const target = [...equation[to], ...real.map((m) => scaleNum(m, -1))];
     const next = { ...equation, [from]: combine(source), [to]: combine(target) } as EquationState;
-    // provenance: if combine() merged the traveler into a resident term, the
-    // replay shows it converging on that term and the result being born there
+    // provenance: the movers are always the actors; when combine() merged a
+    // traveler into a resident, that resident is the site and the sum is born
     const oldTargetIds = new Set(equation[to].map((t) => t.id));
     const newTargetIds = new Set(next[to].map((t) => t.id));
-    const consumedActors = real.filter((m) => !newTargetIds.has(m.id)).map((m) => m.id);
     const site = Array.from(oldTargetIds).filter((id) => !newTargetIds.has(id));
     const born = Array.from(newTargetIds).filter(
       (id) => !oldTargetIds.has(id) && !real.some((m) => m.id === id)
     );
-    const story: MoveStory | undefined =
-      consumedActors.length > 0 ? { actors: consumedActors.map((term) => ({ term })), site, born } : undefined;
+    const story: MoveStory = { actors: real.map((m) => ({ term: m.id })), site, born };
     return { next, label: `moved ${real.map((m) => termText(m, true).trim()).join(", ")} across`, story };
   };
 
