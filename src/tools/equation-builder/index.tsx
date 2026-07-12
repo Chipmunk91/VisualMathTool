@@ -385,6 +385,7 @@ const EquationBuilderTool = () => {
     playTimer.current = null;
     playingRef.current = false;
     setPlaying(false);
+    clearOverlay();
     setHistory((h) => {
       const last = h[h.length - 1];
       setEquation(cloneState(last.state));
@@ -394,41 +395,134 @@ const EquationBuilderTool = () => {
   };
 
   /**
-   * FLIP: remember where each term's glyphs sit now; after the next step
-   * renders, matched ids fly from their old spot to the new one, and fresh
-   * glyphs fade in. Move functions preserve term ids through sign flips and
-   * side changes, so a term crossing "=" visibly travels across.
+   * The Graspable-style transition: a shared-element pass at the GLYPH level.
+   * Every leaf glyph of the old state is snapshotted (text + position +
+   * typography), the new state renders hidden, and glyphs are matched by
+   * CONTENT — an "x" is an "x" whichever term rebuilt it. Matched glyphs
+   * glide from their old spot to their new one on a fixed overlay; removed
+   * glyphs fade away in place; arriving glyphs fade in at their destination.
+   * Live DOM measurement + CSS transforms — no pre-rendered frames anywhere.
    */
-  const captureGlyphRects = (): Map<string, DOMRect> => {
-    const rects = new Map<string, DOMRect>();
-    equationRef.current?.querySelectorAll<HTMLElement>("[data-term-wrap]").forEach((el) => {
-      rects.set(el.dataset.termWrap!, el.getBoundingClientRect());
+  interface Glyph {
+    key: string;
+    el: HTMLElement;
+    rect: DOMRect;
+  }
+  const FLY_MS = 700;
+
+  const snapshotGlyphs = (): Glyph[] => {
+    const out: Glyph[] = [];
+    equationRef.current?.querySelectorAll<HTMLElement>("*").forEach((el) => {
+      if (el.children.length > 0) return; // leaves only
+      const text = (el.textContent ?? "").trim();
+      const isBar = !text && el.getAttribute("aria-hidden") === "true";
+      if (!text && !isBar) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return;
+      out.push({ key: isBar ? "—bar—" : text, el, rect });
     });
-    return rects;
+    return out;
   };
 
-  const animateFromRects = (prev: Map<string, DOMRect>) => {
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const clearOverlay = () => {
+    overlayRef.current?.remove();
+    overlayRef.current = null;
+    if (equationRef.current) equationRef.current.style.opacity = "";
+  };
+
+  const makeClone = (g: Glyph, overlay: HTMLDivElement): HTMLElement => {
+    const clone = g.el.cloneNode(true) as HTMLElement;
+    const cs = getComputedStyle(g.el);
+    clone.style.cssText =
+      `position:fixed;left:${g.rect.left}px;top:${g.rect.top}px;` +
+      `width:${g.rect.width}px;height:${g.rect.height}px;margin:0;padding:0;` +
+      `display:flex;align-items:center;justify-content:center;` +
+      `font-size:${cs.fontSize};font-family:${cs.fontFamily};font-style:${cs.fontStyle};` +
+      `font-weight:${cs.fontWeight};color:${cs.color};line-height:1;transform-origin:0 0;`;
+    overlay.appendChild(clone);
+    return clone;
+  };
+
+  /** Match old and new glyphs of the same text, nearest-position first */
+  const runGlyphTransition = (before: Glyph[]) => {
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
-        equationRef.current?.querySelectorAll<HTMLElement>("[data-term-wrap]").forEach((el) => {
-          const before = prev.get(el.dataset.termWrap!);
-          if (before) {
-            const after = el.getBoundingClientRect();
-            const dx = before.left - after.left;
-            const dy = before.top - after.top;
-            if (Math.abs(dx) + Math.abs(dy) > 4) {
-              el.animate(
+        if (!playingRef.current) {
+          clearOverlay();
+          return;
+        }
+        const after = snapshotGlyphs();
+        clearOverlay();
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:45;";
+        document.body.appendChild(overlay);
+        overlayRef.current = overlay;
+
+        const groups = new Map<string, { olds: Glyph[]; news: Glyph[] }>();
+        const groupOf = (k: string) => {
+          if (!groups.has(k)) groups.set(k, { olds: [], news: [] });
+          return groups.get(k)!;
+        };
+        before.forEach((g) => groupOf(g.key).olds.push(g));
+        after.forEach((g) => groupOf(g.key).news.push(g));
+
+        const easing = "cubic-bezier(0.35, 0.85, 0.35, 1)";
+        groups.forEach(({ olds, news }) => {
+          const used = new Set<number>();
+          for (const n of news.sort((a, b) => a.rect.left - b.rect.left)) {
+            // nearest unused old glyph with the same text — crossing "=" is welcome
+            let best = -1;
+            let bestDist = Infinity;
+            olds.forEach((o, i) => {
+              if (used.has(i)) return;
+              const d = Math.abs(o.rect.left - n.rect.left) + Math.abs(o.rect.top - n.rect.top) * 2;
+              if (d < bestDist) {
+                bestDist = d;
+                best = i;
+              }
+            });
+            if (best >= 0) {
+              used.add(best);
+              const o = olds[best];
+              const clone = makeClone(o, overlay);
+              const dx = n.rect.left - o.rect.left;
+              const dy = n.rect.top - o.rect.top;
+              const sx = o.rect.width > 0 ? n.rect.width / o.rect.width : 1;
+              const sy = o.rect.height > 0 ? n.rect.height / o.rect.height : 1;
+              clone.animate(
                 [
-                  { transform: `translate(${dx}px, ${dy}px)`, color: "rgb(245 158 11)" },
-                  { transform: "translate(0, 0)", color: "inherit" },
+                  { transform: "translate(0, 0) scale(1, 1)" },
+                  { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
                 ],
-                { duration: 650, easing: "cubic-bezier(0.3, 0.9, 0.3, 1)" }
+                { duration: FLY_MS, easing, fill: "forwards" }
               );
+            } else {
+              // an arriving glyph: fade in at its destination
+              const clone = makeClone(n, overlay);
+              clone.animate([{ opacity: 0 }, { opacity: 0, offset: 0.35 }, { opacity: 1 }], {
+                duration: FLY_MS,
+                easing: "ease-out",
+                fill: "forwards",
+              });
             }
-          } else {
-            el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 450, easing: "ease-out" });
           }
+          // departing glyphs: fade away in place
+          olds.forEach((o, i) => {
+            if (used.has(i)) return;
+            const clone = makeClone(o, overlay);
+            clone.animate([{ opacity: 1 }, { opacity: 0, offset: 0.55 }, { opacity: 0 }], {
+              duration: FLY_MS,
+              easing: "ease-in",
+              fill: "forwards",
+            });
+          });
         });
+
+        // the real equation stays hidden while the overlay performs
+        setTimeout(() => {
+          if (playingRef.current) clearOverlay();
+        }, FLY_MS + 40);
       })
     );
   };
@@ -441,18 +535,19 @@ const EquationBuilderTool = () => {
       setPlaying(true);
       let i = 0;
       const showStep = () => {
-        const prev = captureGlyphRects();
+        const prev = snapshotGlyphs();
         const step = h[i];
+        if (i > 0 && equationRef.current) equationRef.current.style.opacity = "0";
         setEquation(cloneState(step.state));
         setTreeEq(step.tree ? cloneTreeEq(step.tree) : null);
         setPlayIndex(i);
-        if (i > 0) animateFromRects(prev);
+        if (i > 0) runGlyphTransition(prev);
         if (i >= h.length - 1) {
-          playTimer.current = setTimeout(stopPlayback, 1500);
+          playTimer.current = setTimeout(stopPlayback, 1600);
           return;
         }
         i++;
-        playTimer.current = setTimeout(showStep, 1250);
+        playTimer.current = setTimeout(showStep, 1450);
       };
       showStep();
       return h;
