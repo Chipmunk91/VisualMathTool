@@ -558,44 +558,44 @@ const EquationBuilderTool = () => {
           const siteClones = clones.filter((c) => c.g.term && siteSet.has(c.g.term) && !isActor(c.g));
           const bornGlyphs = news.filter((g) => g.term && bornSet.has(g.term));
 
-          const bornCenter =
-            bornGlyphs.length > 0
-              ? center(
-                  bornGlyphs.reduce(
-                    (acc, g) =>
-                      new DOMRect(
-                        Math.min(acc.left, g.rect.left),
-                        Math.min(acc.top, g.rect.top),
-                        Math.max(acc.right, g.rect.right) - Math.min(acc.left, g.rect.left),
-                        Math.max(acc.bottom, g.rect.bottom) - Math.min(acc.top, g.rect.top)
-                      ),
-                    bornGlyphs[0].rect
-                  )
-                )
-              : siteClones.length > 0
-                ? center(siteClones[0].g.rect)
+          // THE RULE: the whole merge happens at ONE place — where the
+          // consumed partner currently stands. The actor travels there,
+          // contact and birth happen there, and the result then settles
+          // into its final layout position.
+          const unionCenter = (rects: DOMRect[]) => {
+            const left = Math.min(...rects.map((r) => r.left));
+            const right = Math.max(...rects.map((r) => r.right));
+            const top = Math.min(...rects.map((r) => r.top));
+            const bottom = Math.max(...rects.map((r) => r.bottom));
+            return { x: (left + right) / 2, y: (top + bottom) / 2 };
+          };
+          const siteCenter =
+            siteClones.length > 0
+              ? unionCenter(siteClones.map((c) => c.g.rect))
+              : bornGlyphs.length > 0
+                ? unionCenter(bornGlyphs.map((g) => g.rect))
                 : null;
 
-          // the actor's journey is THE story — slow, opaque, arcing over the
-          // equation, only vanishing at the moment of contact
           const ACTOR_MS = 900;
           for (const c of actorClones) {
             const from = center(c.g.rect);
-            if (bornCenter) {
-              const dx = bornCenter.x - from.x;
-              const dy = bornCenter.y - from.y;
+            c.node.style.transformOrigin = "50% 50%"; // shrink around itself, no drift
+            if (siteCenter) {
+              const dx = siteCenter.x - from.x;
+              const dy = siteCenter.y - from.y;
+              // a gentle hop, proportional to the trip — not a circus leap
+              const lift = Math.min(26, Math.hypot(dx, dy) * 0.14);
               c.node.style.zIndex = "10";
               c.node.animate(
                 [
                   { transform: "translate(0,0) scale(1)", opacity: 1 },
                   {
-                    // arc apex: lifted above the straight line, slightly enlarged
-                    transform: `translate(${dx * 0.5}px, ${dy * 0.5 - 46}px) scale(1.18)`,
+                    transform: `translate(${dx * 0.5}px, ${dy * 0.5 - lift}px) scale(1.06)`,
                     opacity: 1,
-                    offset: 0.48,
+                    offset: 0.5,
                   },
-                  { transform: `translate(${dx}px, ${dy}px) scale(0.7)`, opacity: 0.9, offset: 0.86 },
-                  { transform: `translate(${dx}px, ${dy}px) scale(0.4)`, opacity: 0 },
+                  { transform: `translate(${dx}px, ${dy}px) scale(0.92)`, opacity: 1, offset: 0.86 },
+                  { transform: `translate(${dx}px, ${dy}px) scale(0.6)`, opacity: 0 },
                 ],
                 { duration: ACTOR_MS, easing, fill: "both" }
               );
@@ -604,42 +604,44 @@ const EquationBuilderTool = () => {
               c.node.animate(
                 [
                   { transform: "translate(0,0) scale(1)", opacity: 1 },
-                  { transform: "translate(0, 10px) scale(1.05)", opacity: 1, offset: 0.4 },
-                  { transform: "translate(0, 30px) scale(0.7)", opacity: 0 },
+                  { transform: "translate(0, 10px) scale(1.02)", opacity: 1, offset: 0.4 },
+                  { transform: "translate(0, 30px) scale(0.8)", opacity: 0 },
                 ],
                 { duration: ACTOR_MS * 0.85, easing: "ease-in", fill: "both" }
               );
             }
           }
-          // the consumed partner holds its ground until the actor arrives
+          // the consumed partner holds its ground until the actor arrives,
+          // then collapses into the merge
           for (const c of siteClones) {
+            c.node.style.transformOrigin = "50% 50%";
             c.node.animate(
               [
-                { transform: "translate(0,0) scale(1)", opacity: 1 },
-                { transform: "translate(0,0) scale(1)", opacity: 1, offset: 0.55 },
-                { transform: "translate(0,0) scale(0.55)", opacity: 0 },
+                { transform: "scale(1)", opacity: 1 },
+                { transform: "scale(1)", opacity: 1, offset: 0.62 },
+                { transform: "scale(0.7)", opacity: 0 },
               ],
               { duration: ACTOR_MS, easing: "ease-in", fill: "both" }
             );
           }
-          // the result pops into existence AT the contact moment, with a
-          // little overshoot as it settles
+          // the result is born AT the merge point, then settles into place
           for (const n of bornGlyphs) {
             const to = center(n.rect);
-            const fromX = bornCenter ? bornCenter.x - to.x : 0;
-            const fromY = bornCenter ? bornCenter.y - to.y : 0;
+            const fromX = siteCenter ? siteCenter.x - to.x : 0;
+            const fromY = siteCenter ? siteCenter.y - to.y : 0;
             const born = makeClone(n, overlay);
+            born.style.transformOrigin = "50% 50%";
             born.animate(
               [
-                { transform: `translate(${fromX}px, ${fromY}px) scale(0.4)`, opacity: 0 },
+                { transform: `translate(${fromX}px, ${fromY}px) scale(0.6)`, opacity: 0 },
                 {
-                  transform: `translate(${fromX * 0.2}px, ${fromY * 0.2}px) scale(1.12)`,
+                  transform: `translate(${fromX}px, ${fromY}px) scale(0.95)`,
                   opacity: 1,
-                  offset: 0.55,
+                  offset: 0.3,
                 },
                 { transform: "translate(0,0) scale(1)", opacity: 1 },
               ],
-              { duration: 460, delay: ACTOR_MS * 0.62, easing, fill: "both" }
+              { duration: 520, delay: ACTOR_MS * 0.62, easing, fill: "both" }
             );
           }
 
