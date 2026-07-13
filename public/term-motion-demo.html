@@ -1,0 +1,1522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Term Motion Testbed</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#14171b;
+    --stage:#fdfdfb;
+    --ink:#22252a;
+    --ink-soft:#6b7280;
+    --actor:#2b6fd4;
+    --emph:#e0740c;
+    --bad:#b45309;
+    --line:#2a2f36;
+    --ui:#c8cdd4;
+    --ui-dim:#7d848d;
+    --accent-track:#2b6fd4;
+    --mono:ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace;
+    --math:'STIX Two Text','Georgia','Times New Roman',serif;
+  }
+  body{
+    background:var(--bg);
+    color:var(--ui);
+    font-family:var(--mono);
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:28px 16px;
+  }
+  .wrap{width:100%;max-width:760px}
+  header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+  header h1{font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ui)}
+  header .sub{font-size:11px;color:var(--ui-dim)}
+
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .seg{display:flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{
+    background:transparent;border:0;color:var(--ui-dim);font-family:var(--mono);
+    font-size:11.5px;padding:7px 12px;cursor:pointer;letter-spacing:.02em;
+  }
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.on{background:#232932;color:var(--ui)}
+  .seg button.on.bad{color:#e8a55e}
+  .spacer{flex:1}
+
+  .stage-card{
+    background:var(--stage);
+    border-radius:14px;
+    box-shadow:0 18px 40px rgba(0,0,0,.45);
+    position:relative;
+    overflow:hidden;
+  }
+  #stage{position:relative;height:210px}
+  .tok{
+    position:absolute;top:0;left:0;
+    font-family:var(--math);
+    font-size:46px;color:var(--ink);
+    white-space:pre;
+    will-change:transform,opacity;
+    padding:2px 3px;
+    line-height:1.15;
+    transition:color .28s ease;
+  }
+  .tok i{font-style:italic}
+  .tok.sup{font-size:29px}
+  .tok .in{display:inline-block;will-change:transform}
+  .fbar{height:4px;padding:0;background:var(--ink);border-radius:2px;transform-origin:center}
+  .tok.actor{color:var(--emph)}
+  .tok .co{transition:color .28s ease}
+  .tok.coHl .co{color:var(--emph)}
+  .tok.ghost-note{font-family:var(--mono);font-size:11px;color:var(--bad)}
+  #measurer{position:absolute;visibility:hidden;pointer-events:none;white-space:pre;
+    font-family:var(--math);font-size:46px;padding:2px 3px;line-height:1.15}
+
+  .caption{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:10px 16px 12px;border-top:1px solid #ebebe6;
+  }
+  .caption .desc{font-size:11.5px;color:#8a8f98}
+  .caption .desc b{color:#4b5563;font-weight:600}
+  .caption .mode-tag{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase}
+  .mode-tag.natural{color:var(--actor)}
+  .mode-tag.crossfade{color:var(--bad)}
+
+  .phases{margin-top:14px}
+  .phases .label{font-size:10.5px;color:var(--ui-dim);letter-spacing:.07em;text-transform:uppercase;margin-bottom:6px}
+  .track{display:flex;gap:4px;height:34px}
+  .ph{
+    flex-grow:1;border:1px solid var(--line);border-radius:6px;
+    display:flex;align-items:center;justify-content:center;
+    font-size:10.5px;color:var(--ui-dim);letter-spacing:.03em;
+    transition:background .12s,color .12s,border-color .12s;
+    text-align:center;padding:0 4px;
+  }
+  .ph.active{background:#1e3a5f;border-color:var(--accent-track);color:#dbe9fb}
+  .ph.bad-active{background:#4a2c0b;border-color:var(--bad);color:#f3c789}
+  .ph small{display:block;color:inherit;opacity:.55;font-size:9.5px}
+
+  .controls{display:flex;gap:8px;margin-top:14px;align-items:center}
+  button.cta{
+    background:#e9eaec;color:#16181c;border:0;border-radius:8px;
+    font-family:var(--mono);font-size:12px;font-weight:600;
+    padding:9px 18px;cursor:pointer;
+  }
+  button.cta:disabled{opacity:.45;cursor:default}
+  button.flat{
+    background:transparent;color:var(--ui-dim);border:1px solid var(--line);
+    border-radius:8px;font-family:var(--mono);font-size:12px;padding:8px 14px;cursor:pointer;
+  }
+  button.flat:hover{color:var(--ui)}
+  .hint{font-size:11px;color:var(--ui-dim);margin-left:auto}
+
+  footer{margin-top:16px;font-size:11px;color:var(--ui-dim);line-height:1.6}
+  footer b{color:var(--ui);font-weight:600}
+  @media (max-width:560px){
+    .tok{font-size:34px}
+    .tok.sup{font-size:21px}
+    #measurer{font-size:34px}
+    #stage{height:170px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Term motion testbed</h1>
+    <div class="sub">FLIP · phased timeline · arcs</div>
+  </header>
+
+  <div class="row">
+    <div class="seg" id="scenarioSeg">
+      <button data-s="0" class="on">move across =</button>
+      <button data-s="1">combine</button>
+      <button data-s="2">commute</button>
+      <button data-s="3">distribute −</button>
+      <button data-s="4">distribute ×</button>
+      <button data-s="5">factor</button>
+      <button data-s="6">divide sides</button>
+      <button data-s="7">cancel pair</button>
+      <button data-s="8">exponents</button>
+      <button data-s="9">split</button>
+      <button data-s="10">cross multiply</button>
+      <button data-s="11">reciprocal</button>
+      <button data-s="12">exp quotient</button>
+      <button data-s="13">inequality</button>
+      <button data-s="14">multiply sides</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="seg" id="modeSeg">
+      <button data-m="natural" class="on">natural</button>
+      <button data-m="crossfade">crossfade (avoid)</button>
+    </div>
+    <div class="seg" id="speedSeg">
+      <button data-v="1">1×</button>
+      <button data-v="0.28" class="on">slow-mo</button>
+    </div>
+  </div>
+
+  <div class="stage-card">
+    <div id="stage"><span id="measurer"></span><span id="measurerSup" class="tok sup" style="visibility:hidden;pointer-events:none"></span></div>
+    <div class="caption">
+      <div class="desc" id="desc"></div>
+      <div class="mode-tag natural" id="modeTag">natural · flip</div>
+    </div>
+  </div>
+
+  <div class="phases">
+    <div class="label">timeline</div>
+    <div class="track" id="track"></div>
+  </div>
+
+  <div class="controls">
+    <button class="cta" id="playBtn">Play step</button>
+    <button class="flat" id="pauseBtn" disabled>Pause</button>
+    <button class="flat" id="resetBtn">Reset</button>
+    <div class="hint" id="hint">pause your eyes anywhere — every glyph should stay legible</div>
+  </div>
+
+  <footer>
+    <b>What to look for.</b> In <b>natural</b> mode the moving term is one persistent element:
+    it stays opaque, travels in a slight arc, the sign flips the instant it crosses =, and only
+    afterwards do neighbors reflow. In <b>crossfade</b> mode every delta plays at once with
+    opacity blending — freeze it in slow-mo and you'll see double-exposure ghosting, the thing
+    to reject in review.
+  </footer>
+</div>
+
+<script>
+'use strict';
+
+/* ================= scenario data =================
+   Tokens carry stable ids. A token in both steps is THE SAME element and must
+   move, never fade. Transition vocabulary:
+   - actors        travel in phase 2 (orange emphasis: source + flight only)
+   - landAfter /   intermediate landing anchored to a neighbor's CURRENT
+     landBefore    position — never the final layout
+   - landTo:'final'  swap-type moves where the line doesn't recenter (commute)
+   - landPlan      per-actor overrides: {onto:id} fly-and-fuse into a token;
+                   {supAfter:id, viaPlus:html} land in the superscript row
+   - actorArcs     per-actor arc heights (opposite signs = crossing paths)
+   - mutations     glyph morphs DURING flight (vertical squash-swap-spring)
+   - hops + hopsWithTravel   distribution: original + copies fly together,
+                   one impact chord at 82%
+   - revHops       factoring: copies converge OUT of every term onto the
+                   factor — launch chord mutates the sources
+   - enclose       parens draw in around the current group extent at land
+   - merge         tokens slide onto a sink → result; resultHtml:null = the
+                   pair annihilates (both dissolve at contact)
+   - holdDissolve  structure (fraction bar) that dissolves at the merge beat
+   - division      fraction forms mid-flight; bar on the math axis
+   - frac0         static fraction layout for step0
+   - sup:true      superscript row token
+================================================== */
+const SCENARIOS = [
+  { /* 0 */
+    name: 'move across =',
+    desc: '<b>2x + 3 = 7</b> → <b>2x = 7 − 3</b> → <b>2x = 4</b> · +3 crosses, morphing mid-flight, then merges',
+    step0: [
+      {id:'lhs', html:'2<i>x</i>'},
+      {id:'op',  html:'+'},
+      {id:'num', html:'3'},
+      {id:'eq',  html:'='},
+      {id:'rhs', html:'7'},
+    ],
+    step1: [
+      {id:'lhs', html:'2<i>x</i>'},
+      {id:'eq',  html:'='},
+      {id:'rhs', html:'4'},
+    ],
+    actors: ['op','num'],
+    mutations: [{id:'op', at:0.52, html:'−'}],
+    landAfter: 'rhs',
+    merge: {sink:'rhs', remove:['op','num'], resultHtml:'4'},
+    arc: -34,
+    phases: {emphasis:170, travel:420, land:170, merge:300, reflow:240},
+  },
+  { /* 1 */
+    name: 'combine terms',
+    desc: '<b>2x + 3x = 10</b> → <b>5x = 10</b> · like terms slide together and merge',
+    step0: [
+      {id:'t1',  html:'2<i>x</i>'},
+      {id:'opc', html:'+'},
+      {id:'t2',  html:'3<i>x</i>'},
+      {id:'eq',  html:'='},
+      {id:'n10', html:'10'},
+    ],
+    step1: [
+      {id:'t1',  html:'5<i>x</i>'},
+      {id:'eq',  html:'='},
+      {id:'n10', html:'10'},
+    ],
+    actors: ['opc','t2'],
+    mutations: [],
+    landAfter: 't1',
+    merge: {sink:'t1', remove:['opc','t2'], resultHtml:'5<i>x</i>'},
+    arc: 0,
+    phases: {emphasis:170, travel:140, land:120, merge:320, reflow:240},
+  },
+  { /* 2 */
+    name: 'commute',
+    desc: '<b>a + b</b> → <b>b + a</b> · the terms arc past each other — one over, one under',
+    step0: [
+      {id:'ta', html:'<i>a</i>'},
+      {id:'pl', html:'+'},
+      {id:'tb', html:'<i>b</i>'},
+    ],
+    step1: [
+      {id:'tb', html:'<i>b</i>'},
+      {id:'pl', html:'+'},
+      {id:'ta', html:'<i>a</i>'},
+    ],
+    actors: ['ta','tb'],
+    actorArcs: {ta:-36, tb:36},
+    mutations: [],
+    landTo: 'final',
+    arc: -36,
+    phases: {emphasis:170, travel:460, land:180, merge:0, reflow:180},
+    trackLabels: {travel:['travel','crossing arcs'], land:['land','both settle']},
+  },
+  { /* 3 */
+    name: 'distribute −',
+    desc: '<b>35 − (14 − 8 + 3)</b> → <b>35 − 14 + 8 − 3</b> · one flight, one impact chord, then the parens fall',
+    step0: [
+      {id:'n35', html:'35'},
+      {id:'m1',  html:'−'},
+      {id:'po',  html:'('},
+      {id:'n14', html:'14'},
+      {id:'m2',  html:'−'},
+      {id:'n8',  html:'8'},
+      {id:'m3',  html:'+'},
+      {id:'n3',  html:'3'},
+      {id:'pc',  html:')'},
+    ],
+    step1: [
+      {id:'n35', html:'35'},
+      {id:'m1',  html:'−'},
+      {id:'n14', html:'14'},
+      {id:'m2',  html:'+'},
+      {id:'n8',  html:'8'},
+      {id:'m3',  html:'−'},
+      {id:'n3',  html:'3'},
+    ],
+    actors: ['m1'],
+    mutations: [],
+    landBefore: 'n14',
+    openParen: 'po',
+    hops: [
+      {cloneOf:'m1', to:'m2', result:'+'},
+      {cloneOf:'m1', to:'m3', result:'−'},
+    ],
+    hopsWithTravel: true,
+    arc: -26,
+    phases: {emphasis:170, travel:460, land:240, merge:0, reflow:240},
+    trackLabels: {travel:['apply','all terms, one flight'], land:['dissolve','parens fall away']},
+  },
+  { /* 4 */
+    name: 'distribute ×',
+    desc: '<b>3(x + 2y − 4)</b> → <b>3x + 6y − 12</b> · the 3 and its copies hit every term in the same beat',
+    step0: [
+      {id:'c3',  html:'3'},
+      {id:'po',  html:'('},
+      {id:'vx',  html:'<i>x</i>'},
+      {id:'pl',  html:'+'},
+      {id:'n2y', html:'2<i>y</i>'},
+      {id:'mi',  html:'−'},
+      {id:'n4',  html:'4'},
+      {id:'pc',  html:')'},
+    ],
+    step1: [
+      {id:'c3',  html:'3'},
+      {id:'vx',  html:'<i>x</i>'},
+      {id:'pl',  html:'+'},
+      {id:'n2y', html:'6<i>y</i>'},
+      {id:'mi',  html:'−'},
+      {id:'n4',  html:'12'},
+    ],
+    actors: ['c3'],
+    mutations: [],
+    landBefore: 'vx',
+    openParen: 'po',
+    hops: [
+      {cloneOf:'c3', to:'n2y', result:'6<i>y</i>'},
+      {cloneOf:'c3', to:'n4',  result:'12'},
+    ],
+    hopsWithTravel: true,
+    arc: -26,
+    phases: {emphasis:170, travel:460, land:240, merge:0, reflow:240},
+    trackLabels: {travel:['apply','all terms, one flight'], land:['dissolve','parens fall away']},
+  },
+  { /* 5 — reverse of distribute × */
+    name: 'factor',
+    desc: '<b>3x + 6y − 12</b> → <b>3(x + 2y − 4)</b> · every coefficient departs as an equal; the factor is born when they all land',
+    step0: [
+      {id:'t1', html:'<span class="co">3</span><i>x</i>'},
+      {id:'pl', html:'+'},
+      {id:'t2', html:'<span class="co">6</span><i>y</i>'},
+      {id:'mi', html:'−'},
+      {id:'t3', html:'<span class="co">12</span>'},
+    ],
+    step1: [
+      {id:'c3', html:'3'},
+      {id:'po', html:'('},
+      {id:'t1', html:'<i>x</i>'},
+      {id:'pl', html:'+'},
+      {id:'t2', html:'2<i>y</i>'},
+      {id:'mi', html:'−'},
+      {id:'t3', html:'4'},
+      {id:'pc', html:')'},
+    ],
+    actors: [],
+    emphasisAlso: ['t1','t2','t3'],   // only the coefficient glyphs light up
+    mutations: [],
+    revHops: [
+      {from:'t1', clone:'3', mutateTo:'<i>x</i>'},
+      {from:'t2', clone:'3', mutateTo:'2<i>y</i>'},
+      {from:'t3', clone:'3', mutateTo:'4'},
+    ],
+    factorResult: {id:'c3', html:'3'},   // born at the convergence point when all copies land
+    enclose: {open:'po', close:'pc', from:'t1', to:'t3'},
+    arc: -34,
+    phases: {emphasis:200, travel:540, land:180, merge:0, reflow:260},
+    trackLabels: {travel:['extract','copies converge; the 3 is born on landing'], land:['land','factor settles']},
+  },
+  { /* 6 */
+    name: 'divide sides',
+    desc: '<b>2x = 8</b> → <b>x = 8/2</b> → <b>x = 4</b> · the 2 dives under a fraction bar, then simplifies',
+    step0: [
+      {id:'c2',  html:'2'},
+      {id:'vx',  html:'<i>x</i>'},
+      {id:'eq',  html:'='},
+      {id:'rhs', html:'8'},
+    ],
+    step1: [
+      {id:'vx',  html:'<i>x</i>'},
+      {id:'eq',  html:'='},
+      {id:'rhs', html:'4'},
+    ],
+    actors: ['c2'],
+    mutations: [],
+    division: {num:'rhs'},
+    merge: {sink:'rhs', remove:['c2'], resultHtml:'4'},
+    arc: -42,
+    phases: {emphasis:170, travel:520, land:260, merge:360, reflow:240},
+    trackLabels: {travel:['travel','bar forms mid-flight'], land:['hold','read 8/2']},
+  },
+  { /* 7 — the Graspable Math reference case */
+    name: 'cancel pair',
+    desc: '<b>3x⁄3</b> → <b>x</b> · the denominator rises onto its partner; both annihilate',
+    step0: [
+      {id:'c3', html:'3'},
+      {id:'vx', html:'<i>x</i>'},
+      {id:'fb', bar:true},
+      {id:'d3', html:'3'},
+    ],
+    step1: [
+      {id:'vx', html:'<i>x</i>'},
+    ],
+    frac0: {num:['c3','vx'], den:['d3'], bar:'fb'},
+    actors: ['d3'],
+    mutations: [],
+    merge: {sink:'c3', remove:['d3'], resultHtml:null},   // annihilation
+    holdDissolve: ['fb'],
+    arc: 0,
+    phases: {emphasis:170, travel:120, land:120, merge:420, reflow:260},
+    trackLabels: {merge:['cancel','the pair annihilates']},
+  },
+  { /* 8 */
+    name: 'exponents',
+    desc: '<b>a³ · a² = a³⁺² = a⁵</b> · bases fuse, the exponent rides up, then the sum merges',
+    step0: [
+      {id:'ba',  html:'<i>a</i>'},
+      {id:'e3',  html:'3', sup:true},
+      {id:'dot', html:'·'},
+      {id:'bb',  html:'<i>a</i>'},
+      {id:'e2',  html:'2', sup:true},
+    ],
+    step1: [
+      {id:'ba',  html:'<i>a</i>'},
+      {id:'e3',  html:'5', sup:true},
+    ],
+    actors: ['bb','e2'],
+    actorArcs: {bb:-20, e2:-44},
+    mutations: [],
+    landPlan: {
+      bb: {onto:'ba'},
+      e2: {supAfter:'e3', viaPlus:'+'},
+    },
+    transientId: 'tplus',
+    merge: {sink:'e3', remove:['tplus','e2'], resultHtml:'5'},
+    arc: -30,
+    phases: {emphasis:170, travel:480, land:340, merge:340, reflow:240},
+    trackLabels: {travel:['travel','base fuses, exponent rises'], land:['hold','read 3+2'], merge:['merge','sum becomes 5']},
+  },
+  { /* 9 — fission: reverse of merge */
+    name: 'split',
+    desc: '<b>5x</b> → <b>2x + 3x</b> · one term fissions into two that fly apart',
+    step0: [
+      {id:'t5', html:'5<i>x</i>'},
+    ],
+    step1: [
+      {id:'t1', html:'2<i>x</i>'},
+      {id:'pl', html:'+'},
+      {id:'t2', html:'3<i>x</i>'},
+    ],
+    actors: ['t5'],
+    mutations: [],
+    fission: {source:'t5', fly:['t1','t2'], popIn:['pl']},
+    actorArcs: {t1:0, t2:0},   // horizontal split: no vertical drama needed
+    arc: 0,
+    phases: {emphasis:200, travel:520, land:160, merge:0, reflow:200},
+    trackLabels: {travel:['fission','one becomes two'], land:['land','both settle']},
+  },
+  { /* 10 — dual fractions, diagonal double-cross */
+    name: 'cross multiply',
+    desc: '<b>a⁄b = c⁄d</b> → <b>ad = cb</b> · the denominators cross the equals in diagonals',
+    step0: [
+      {id:'na',  html:'<i>a</i>'},
+      {id:'fb1', bar:true},
+      {id:'nb',  html:'<i>b</i>'},
+      {id:'eq',  html:'='},
+      {id:'nc',  html:'<i>c</i>'},
+      {id:'fb2', bar:true},
+      {id:'nd',  html:'<i>d</i>'},
+    ],
+    frac0: [
+      {num:['na'], den:['nb'], bar:'fb1'},
+      {num:['nc'], den:['nd'], bar:'fb2'},
+    ],
+    step1: [
+      {id:'na', html:'<i>a</i>'},
+      {id:'nd', html:'<i>d</i>'},
+      {id:'eq', html:'='},
+      {id:'nc', html:'<i>c</i>'},
+      {id:'nb', html:'<i>b</i>'},
+    ],
+    actors: ['nb','nd'],
+    landTo: 'final',               // diagonals aim straight at the settled line
+    reflowEarly: true,             // numerators and = glide to final DURING the cross
+    actorArcs: {nb:-22, nd:-64},   // different altitudes: crossing paths never collide
+    mutations: [],
+    arc: -30,
+    phases: {emphasis:200, travel:560, land:200, merge:0, reflow:160},
+    trackLabels: {travel:['cross','diagonals; the line settles beneath'], reflow:['reflow','final tidy']},
+  },
+  { /* 11 — rotation about the bar */
+    name: 'reciprocal',
+    desc: '<b>x ÷ a⁄b</b> → <b>x · b⁄a</b> · the fraction rotates about its bar; ÷ collapses into ·',
+    step0: [
+      {id:'vx', html:'<i>x</i>'},
+      {id:'dv', html:'÷'},
+      {id:'na', html:'<i>a</i>'},
+      {id:'fb', bar:true},
+      {id:'nb', html:'<i>b</i>'},
+    ],
+    frac0: [{num:['na'], den:['nb'], bar:'fb'}],
+    step1: [
+      {id:'vx', html:'<i>x</i>'},
+      {id:'dv', html:'·'},
+      {id:'nb', html:'<i>b</i>'},
+      {id:'fb', bar:true},
+      {id:'na', html:'<i>a</i>'},
+    ],
+    frac1: [{num:['nb'], den:['na'], bar:'fb'}],
+    actors: ['na','nb'],
+    landTo: 'final',
+    actorArcs: {na:0, nb:0},
+    actorArcsX: {na:-28, nb:28},   // horizontal bulges: a rounds the left, b rounds the right
+    mutations: [{id:'dv', at:0.5, html:'·'}],
+    arc: 0,
+    phases: {emphasis:200, travel:520, land:160, merge:0, reflow:200},
+    trackLabels: {travel:['rotate','swap about the bar']},
+  },
+  { /* 12 — the original Graspable Math reference case */
+    name: 'exp quotient',
+    desc: '<b>a⁵/a² = a⁵⁻² = a³</b> · the exponent rises with a minus; the denominator empties away',
+    step0: [
+      {id:'ba', html:'<i>a</i>'},
+      {id:'e5', html:'5', sup:true},
+      {id:'fb', bar:true},
+      {id:'bb', html:'<i>a</i>'},
+      {id:'e2', html:'2', sup:true},
+    ],
+    frac0: [{num:['ba','e5'], den:['bb','e2'], bar:'fb'}],
+    step1: [
+      {id:'ba', html:'<i>a</i>'},
+      {id:'e5', html:'3', sup:true},
+    ],
+    actors: ['e2'],
+    landPlan: {e2:{supAfter:'e5', viaPlus:'−'}},
+    reflowEarly: true,             // a and its exponent settle to the line while the 2 rises
+    transientId: 'tmin',
+    merge: {sink:'e5', remove:['tmin','e2'], resultHtml:'3'},
+    actorArcs: {e2:-40},
+    mutations: [],
+    arc: -40,
+    phases: {emphasis:170, travel:520, land:300, merge:340, reflow:180},
+    trackLabels: {travel:['rise','the 2 climbs; the line settles'], land:['hold','read 5−2'], merge:['merge','difference becomes 3']},
+  },
+  { /* 13 — the comparator mirrors at the crossing */
+    name: 'inequality',
+    desc: '<b>−x < 3</b> → <b>x > −3</b> · the sign crosses; the comparator mirrors at the exact crossing moment',
+    step0: [
+      {id:'mn', html:'−'},
+      {id:'vx', html:'<i>x</i>'},
+      {id:'lt', html:'<'},
+      {id:'n3', html:'3'},
+    ],
+    step1: [
+      {id:'vx', html:'<i>x</i>'},
+      {id:'lt', html:'>'},
+      {id:'mn', html:'−'},
+      {id:'n3', html:'3'},
+    ],
+    actors: ['mn'],
+    landBefore: 'n3',
+    mutations: [{id:'lt', at:0.52, html:'>', morph:'flipX'}],
+    arc: -36,
+    phases: {emphasis:180, travel:480, land:170, merge:0, reflow:220},
+    trackLabels: {travel:['cross','comparator mirrors at the crossing']},
+  },
+  { /* 14 — mirror of divide sides (backlog warm-up #1) */
+    name: 'multiply sides',
+    desc: '<b>x⁄2 = 4</b> → <b>x = 4·2</b> → <b>x = 8</b> · the denominator rises across =; the bar falls as it leaves',
+    step0: [
+      {id:'vx',  html:'<i>x</i>'},
+      {id:'fb',  bar:true},
+      {id:'c2',  html:'2'},
+      {id:'eq',  html:'='},
+      {id:'rhs', html:'4'},
+    ],
+    frac0: [{num:['vx'], den:['c2'], bar:'fb'}],
+    step1: [
+      {id:'vx',  html:'<i>x</i>'},
+      {id:'eq',  html:'='},
+      {id:'rhs', html:'8'},
+    ],
+    actors: ['c2'],
+    mutations: [],
+    /* inverse of division formation (§11): the numerator descends to the line
+       and the bar falls DURING the flight — the fraction stops existing the
+       moment its denominator leaves (§8). Destination is a product forming
+       next to the 4, i.e. defined by the final layout → early reflow (§4). */
+    reflowEarly: true,
+    landPlan: {c2: {after:'rhs', viaPlus:'·'}},
+    transientId: 'tdot',
+    merge: {sink:'rhs', remove:['tdot','c2'], resultHtml:'8'},
+    arc: -42,
+    phases: {emphasis:170, travel:520, land:260, merge:360, reflow:240},
+    trackLabels: {travel:['travel','the 2 rises past =; the bar falls'], land:['hold','read 4·2']},
+  },
+];
+
+const CROSSFADE_MS = 430;
+const GAP = 14;
+const SUPGAP = 3;
+const EASE_TRAVEL = 'cubic-bezier(0.4, 0.0, 0.2, 1)';
+const EASE_OUT    = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const stage    = document.getElementById('stage');
+const measurer = document.getElementById('measurer');
+const measurerSup = document.getElementById('measurerSup');
+const playBtn  = document.getElementById('playBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const resetBtn = document.getElementById('resetBtn');
+const descEl   = document.getElementById('desc');
+const modeTag  = document.getElementById('modeTag');
+const track    = document.getElementById('track');
+
+let scenarioIdx = 0;
+let mode  = 'natural';
+let speed = 0.28;              // slow-mo by default: this testbed is for inspection
+let atStep = 0;
+let playing = false;
+let els = new Map();
+let anims = [];
+
+/* Pausable master clock: every phase event is scheduled against this clock,
+   so Pause freezes the WHOLE timeline — flights, chords, and pending phases —
+   for frame capture. */
+const clock = {running:false, paused:false, t0:0, pausedAt:0, elapsed:0, events:[], raf:null};
+function clockTick(now){
+  if(!clock.running) return;
+  if(!clock.paused){
+    clock.elapsed = now - clock.t0;
+    for(const e of clock.events){
+      if(!e.fired && e.t <= clock.elapsed){ e.fired = true; e.fn(); }
+    }
+  }
+  clock.raf = requestAnimationFrame(clockTick);
+}
+function startClock(){
+  if(clock.raf) cancelAnimationFrame(clock.raf);
+  clock.running = true; clock.paused = false;
+  clock.t0 = performance.now(); clock.elapsed = 0; clock.events = [];
+  clock.raf = requestAnimationFrame(clockTick);
+}
+function stopClock(){
+  clock.running = false; clock.paused = false; clock.events = [];
+  if(clock.raf){ cancelAnimationFrame(clock.raf); clock.raf = null; }
+}
+function pausePlayback(){
+  if(!playing || clock.paused) return;
+  clock.paused = true; clock.pausedAt = performance.now();
+  anims.forEach(a=>{ try{a.pause();}catch(e){} });
+  pauseBtn.textContent = 'Resume';
+}
+function resumePlayback(){
+  if(!playing || !clock.paused) return;
+  clock.t0 += performance.now() - clock.pausedAt;
+  clock.paused = false;
+  anims.forEach(a=>{ try{ if(a.playState==='paused') a.play(); }catch(e){} });
+  pauseBtn.textContent = 'Pause';
+}
+
+/* ---------------- measuring & layout ---------------- */
+function lineH(){ measurer.innerHTML = '8'; return measurer.offsetHeight; }
+function measure(html, sup){
+  if(sup){ measurerSup.innerHTML = html; return measurerSup.offsetWidth; }
+  measurer.innerHTML = html;
+  return measurer.offsetWidth;
+}
+/* Fraction vertical metrics (ink-symmetric around the math axis at 0.52·LH,
+   matching the divide scenario): */
+function fracMetrics(LH, y){
+  return {
+    numY: y - LH*0.33 - 8,
+    barY: y + LH*0.52,
+    denY: y + LH*0.30 + 12,
+  };
+}
+function layout(tokens, fracSpec){
+  const LH = lineH();
+  const widths = {};
+  tokens.forEach(t=>{ widths[t.id] = t.bar ? 0 : measure(t.html, t.sup); });
+  const byId = {}; tokens.forEach(t=>{ byId[t.id] = t; });
+
+  const fracs = fracSpec ? (Array.isArray(fracSpec) ? fracSpec : [fracSpec]) : [];
+  const memberOf = {};
+  fracs.forEach((f,k)=>{ [...f.num, ...f.den, f.bar].forEach(id=>{ memberOf[id] = k; }); });
+
+  /* row width honors sup spacing inside fraction rows */
+  const rowW = ids => {
+    let w = 0, first = true;
+    ids.forEach(id=>{
+      w += (first ? 0 : (byId[id].sup ? SUPGAP : GAP)) + widths[id];
+      first = false;
+    });
+    return w;
+  };
+
+  const entries = [];
+  const emitted = new Set();
+  for(const t of tokens){
+    const k = memberOf[t.id];
+    if(k !== undefined){
+      if(emitted.has(k)) continue;
+      emitted.add(k);
+      const f = fracs[k];
+      entries.push({frac:f, w:Math.max(rowW(f.num), rowW(f.den))+12});
+    }else{
+      entries.push({id:t.id, w:widths[t.id], sup:!!t.sup});
+    }
+  }
+  let total = 0, first = true;
+  entries.forEach(e=>{
+    e.gap = first ? 0 : (e.sup ? SUPGAP : GAP);
+    total += e.gap + e.w;
+    first = false;
+  });
+
+  const x0 = (stage.clientWidth - total)/2;
+  const yLine = (stage.clientHeight - LH)/2;
+  const pos = {};
+  const placeRow = (ids, startX, rowY)=>{
+    let rx = startX, rowFirst = true;
+    ids.forEach(id=>{
+      rx += rowFirst ? 0 : (byId[id].sup ? SUPGAP : GAP);
+      pos[id] = {x:rx, y: rowY + (byId[id].sup ? -LH*0.12 : 0)};
+      rx += widths[id];
+      rowFirst = false;
+    });
+  };
+  let x = x0;
+  entries.forEach(e=>{
+    x += e.gap;
+    if(e.frac){
+      const f = e.frac;
+      const M = fracMetrics(LH, yLine);
+      placeRow(f.num, x + (e.w - rowW(f.num))/2, M.numY);
+      placeRow(f.den, x + (e.w - rowW(f.den))/2, M.denY);
+      pos[f.bar] = {x, y:M.barY, barW:e.w};
+    }else{
+      pos[e.id] = {x, y: e.sup ? yLine - LH*0.12 : yLine};
+    }
+    x += e.w;
+  });
+  return pos;
+}
+function place(el, p){ el.style.transform = `translate(${p.x}px, ${p.y}px)`; }
+function makeTok(html, sup){
+  const s = document.createElement('span');
+  s.className = 'tok' + (sup ? ' sup' : '');
+  s.innerHTML = '<span class="in">'+html+'</span>';
+  return s;
+}
+function render(tokens, frac){
+  clearAll();
+  stage.querySelectorAll('.tok').forEach(n=>{ if(n.id!=='measurerSup') n.remove(); });
+  els = new Map();
+  const pos = layout(tokens, frac);
+  for(const t of tokens){
+    let s;
+    if(t.bar){
+      s = document.createElement('span');
+      s.className = 'tok fbar';
+      s.style.width = pos[t.id].barW + 'px';
+    }else{
+      s = makeTok(t.html, t.sup);
+    }
+    place(s, pos[t.id]);
+    stage.appendChild(s);
+    els.set(t.id, s);
+  }
+}
+
+/* ---------------- timeline helpers ---------------- */
+function clearAll(){
+  stopClock();
+  anims.forEach(a=>{ try{a.cancel();}catch(e){} }); anims = [];
+}
+function after(ms, fn){ clock.events.push({t: clock.elapsed + ms, fn, fired:false}); }
+function animate(el, kf, opt){ const a = el.animate(kf, opt); anims.push(a); return a; }
+function pulse(el, scale=1.28, ms=170){
+  const inner = el.querySelector('.in') || el;
+  animate(inner, [
+    {transform:'scale(1)'},
+    {transform:'scale('+scale+')', offset:.4},
+    {transform:'scale(1)'},
+  ], {duration:Math.max(1,ms), easing:EASE_OUT});
+}
+function fadeOut(el, ms, shrink=0.6){
+  animate(el, [
+    {opacity:1, transform:el.style.transform+' scale(1)'},
+    {opacity:0, transform:el.style.transform+' scale('+shrink+')'},
+  ], {duration:Math.max(1,ms), easing:EASE_OUT, fill:'forwards'});
+}
+
+/* ---------------- phase strip ---------------- */
+function mergeSpanMs(S){
+  if(S.merge) return S.phases.merge;
+  if(S.hops && !S.hopsWithTravel) return S.phases.merge;
+  return 0;
+}
+function buildTrack(){
+  track.innerHTML = '';
+  if(mode === 'natural'){
+    const S = SCENARIOS[scenarioIdx];
+    const names = {
+      emphasis:['emphasis','lock the eye'],
+      travel:['travel','one motion, arc'],
+      land:['land','settle in place'],
+      merge:['merge','combine into result'],
+      reflow:['reflow','close gaps'],
+    };
+    if(S.trackLabels) Object.entries(S.trackLabels).forEach(([k,v])=>{ names[k]=v; });
+    const keys = ['emphasis','travel','land'];
+    if(mergeSpanMs(S) > 0) keys.push('merge');
+    keys.push('reflow');
+    keys.forEach(k=>{
+      const ms = k==='merge' ? mergeSpanMs(S) : S.phases[k];
+      const d = document.createElement('div');
+      d.className = 'ph'; d.dataset.k = k;
+      d.style.flexGrow = Math.max(ms, 60);
+      d.innerHTML = names[k][0]+'<small>'+ms+'ms · '+names[k][1]+'</small>';
+      track.appendChild(d);
+    });
+  }else{
+    const d = document.createElement('div');
+    d.className = 'ph'; d.dataset.k = 'all';
+    d.innerHTML = 'everything at once<small>'+CROSSFADE_MS+'ms · opacity blend — ghosting</small>';
+    track.appendChild(d);
+  }
+}
+function lightPhase(k, on){
+  const el = track.querySelector(`[data-k="${k}"]`);
+  if(el) el.classList.toggle(mode==='natural'?'active':'bad-active', on);
+}
+function darkenTrack(){ track.querySelectorAll('.ph').forEach(p=>p.classList.remove('active','bad-active')); }
+
+/* ---------------- natural playback ---------------- */
+function playNatural(S){
+  const m = 1/speed;
+  const P = S.phases;
+  const LH = lineH();
+  const oldPos = layout(S.step0, S.frac0);
+  const newPos = layout(S.step1, S.frac1);
+  const widths = {}; S.step0.forEach(t=>{ widths[t.id] = t.bar ? 0 : measure(t.html, t.sup); });
+  const supOf = {}; S.step0.forEach(t=>{ supOf[t.id] = !!t.sup; });
+
+  const survivors = S.step1.filter(t => els.has(t.id));
+  const created   = S.step1.filter(t => !S.step0.some(u=>u.id===t.id));
+  const mergeIds  = S.merge
+    ? [...S.merge.remove, ...(S.merge.resultHtml==null ? [S.merge.sink] : [])]
+    : [];
+  const ontoIds   = S.landPlan
+    ? Object.entries(S.landPlan).filter(([,v])=>v.onto).map(([k])=>k)
+    : [];
+  const holdDiss  = S.holdDissolve || [];
+  const fissionSrc = S.fission ? [S.fission.source] : [];
+  const dissolved = S.step0.filter(t =>
+    !S.step1.some(u=>u.id===t.id) &&
+    !mergeIds.includes(t.id) && !ontoIds.includes(t.id) &&
+    !holdDiss.includes(t.id) && !fissionSrc.includes(t.id));
+
+  const cur = {}; S.step0.forEach(t=>{ cur[t.id] = {...oldPos[t.id]}; });
+  let barEl = null;
+  const traveled = {};
+
+  /* intermediate landing spots */
+  const inter = {};
+  if(S.landTo === 'final'){
+    S.actors.forEach(id=>{ inter[id] = {...newPos[id]}; });
+  }else if(S.landAfter){
+    let x = oldPos[S.landAfter].x + widths[S.landAfter] + GAP;
+    const y = oldPos[S.landAfter].y;
+    S.actors.forEach(id=>{ inter[id] = {x, y}; x += widths[id] + GAP; });
+  }else if(S.landBefore){
+    let x = oldPos[S.landBefore].x;
+    const y = oldPos[S.landBefore].y;
+    [...S.actors].reverse().forEach(id=>{ x -= widths[id] + GAP; inter[id] = {x, y}; });
+  }else if(S.division){
+    const nid = S.division.num;
+    S.actors.forEach(id=>{
+      inter[id] = {
+        x: oldPos[nid].x + (widths[nid]-widths[id])/2,
+        y: oldPos[nid].y + LH*0.30 + 12,
+      };
+    });
+  }else{
+    S.actors.forEach(id=>{ inter[id] = {...oldPos[id]}; });
+  }
+  /* per-actor overrides */
+  if(S.landPlan){
+    const base = S.reflowEarly ? newPos : oldPos;   // anchors that are gliding are met at their destination
+    Object.entries(S.landPlan).forEach(([id, plan])=>{
+      if(plan.onto){
+        inter[id] = {...base[plan.onto]};
+      }else if(plan.after){
+        const wVia = plan.viaPlus ? measure(plan.viaPlus, false) : 0;
+        inter[id] = {
+          x: base[plan.after].x + widths[plan.after] + GAP + (plan.viaPlus ? wVia + GAP : 0),
+          y: base[plan.after].y,
+        };
+      }else if(plan.supAfter){
+        const anchor = plan.supAfter;
+        const wPlus = plan.viaPlus ? measure(plan.viaPlus, true) : 0;
+        inter[id] = {
+          x: base[anchor].x + widths[anchor] + SUPGAP + (plan.viaPlus ? wPlus + SUPGAP : 0),
+          y: base[anchor].y,
+        };
+      }
+    });
+  }
+  S.actors.forEach(id=>{
+    const a = oldPos[id], b = inter[id];
+    traveled[id] = Math.abs(a.x-b.x) > 0.5 || Math.abs(a.y-b.y) > 0.5;
+  });
+
+  const tTravel = P.emphasis*m;
+  const tLand   = tTravel + P.travel*m;
+  const tMerge  = tLand + P.land*0.55*m;
+  const tReflow = tMerge + mergeSpanMs(S)*m;
+  const tEnd    = tReflow + P.reflow*m;
+
+  /* ---- phase 1: emphasis ---- */
+  lightPhase('emphasis', true);
+  S.actors.forEach(id=>{
+    const el = els.get(id);
+    el.classList.add('actor');
+    animate(el, [
+      {transform:`translate(${oldPos[id].x}px,${oldPos[id].y}px) scale(1)`},
+      {transform:`translate(${oldPos[id].x}px,${oldPos[id].y}px) scale(1.07)`},
+    ], {duration:P.emphasis*m, easing:EASE_OUT, fill:'forwards'});
+  });
+  (S.emphasisAlso||[]).forEach(id=>{
+    const el = els.get(id);
+    if(el) el.classList.add('coHl');    // color only, and only the .co glyphs
+  });
+
+  /* ---- phase 2: travel ---- */
+  after(tTravel, ()=>{
+    lightPhase('emphasis', false); lightPhase('travel', true);
+
+    S.actors.forEach(id=>{
+      const el = els.get(id), a = oldPos[id], b = inter[id];
+      const arc = (S.actorArcs && id in S.actorArcs) ? S.actorArcs[id] : S.arc;
+      const arcX = (S.actorArcsX && id in S.actorArcsX) ? S.actorArcsX[id] : 0;
+      const isOnto = ontoIds.includes(id);
+      if(traveled[id]){
+        const midX = (a.x+b.x)/2 + arcX, midY = (a.y+b.y)/2 + arc;
+        if(isOnto){
+          /* fly-and-fuse: this token merges into its target on arrival */
+          animate(el, [
+            {transform:`translate(${a.x}px,${a.y}px) scale(1.07)`, opacity:1},
+            {transform:`translate(${midX}px,${midY}px) scale(1)`, opacity:1, offset:.5},
+            {transform:`translate(${b.x}px,${b.y}px) scale(0.85)`, opacity:1, offset:.82},
+            {transform:`translate(${b.x}px,${b.y}px) scale(0.45)`, opacity:0},
+          ], {duration:P.travel*m, easing:EASE_TRAVEL, fill:'forwards'});
+          const tgt = S.landPlan[id].onto;
+          after(P.travel*0.82*m, ()=>{ pulse(els.get(tgt), 1.3, 200*m); });
+          after(P.travel*m, ()=>{
+            const e = els.get(id); if(e){ e.remove(); els.delete(id); }
+          });
+        }else{
+          animate(el, [
+            {transform:`translate(${a.x}px,${a.y}px) scale(1.07)`},
+            {transform:`translate(${midX}px,${midY}px) scale(1.07)`, offset:.5},
+            {transform:`translate(${b.x}px,${b.y}px) scale(1.03)`},
+          ], {duration:P.travel*m, easing:EASE_TRAVEL, fill:'forwards'});
+          el.style.transform = `translate(${b.x}px,${b.y}px)`;
+          cur[id] = {...b};
+        }
+      }
+    });
+
+    /* transient connective ('+' in the sup row, '·' on the line) pops in as
+       the traveler approaches its anchor */
+    if(S.landPlan){
+      Object.entries(S.landPlan).forEach(([id, plan])=>{
+        if(!plan.viaPlus) return;
+        after(P.travel*0.6*m, ()=>{
+          const anchor = plan.supAfter || plan.after;
+          const isSup = !!plan.supAfter;
+          const base = S.reflowEarly ? newPos : oldPos;
+          const px = base[anchor].x + widths[anchor] + (isSup ? SUPGAP : GAP);
+          const py = base[anchor].y;
+          const t = makeTok(plan.viaPlus, isSup);
+          place(t, {x:px, y:py});
+          stage.appendChild(t);
+          els.set(S.transientId, t);
+          cur[S.transientId] = {x:px, y:py};
+          animate(t, [
+            {opacity:0, transform:t.style.transform+' scale(0.6)'},
+            {opacity:1, transform:t.style.transform+' scale(1)'},
+          ], {duration:P.travel*0.25*m, easing:EASE_OUT, fill:'forwards'});
+        });
+      });
+    }
+
+    /* dissolving tokens (only when apply is already done) */
+    if(!S.hopsWithTravel){
+      dissolved.forEach(t=>{ fadeOut(els.get(t.id), P.travel*0.7*m); });
+    }
+
+    /* the opening paren slides into the actor's vacated slot */
+    if(S.openParen){
+      const pe = els.get(S.openParen);
+      const a = cur[S.openParen];
+      const shift = widths[S.actors[0]] + GAP;
+      const b = {x: a.x - shift, y: a.y};
+      after(P.travel*0.25*m, ()=>{
+        animate(pe, [
+          {transform:`translate(${a.x}px,${a.y}px)`},
+          {transform:`translate(${b.x}px,${b.y}px)`},
+        ], {duration:P.travel*0.5*m, easing:EASE_OUT, fill:'forwards'});
+        pe.style.transform = `translate(${b.x}px,${b.y}px)`;
+        cur[S.openParen] = {...b};
+      });
+    }
+
+    /* distribution: original + copies fly together; one impact chord at 82% */
+    if(S.hops && S.hopsWithTravel){
+      S.hops.forEach(hp=>{
+        const a = cur[hp.cloneOf], b = cur[hp.to];
+        const srcEl = els.get(hp.cloneOf);
+        const clone = makeTok(srcEl.querySelector('.in').innerHTML);
+        clone.classList.add('actor');
+        place(clone, a);
+        stage.appendChild(clone);
+        const midX = (a.x+b.x)/2, midY = (a.y+b.y)/2 + S.arc;
+        animate(clone, [
+          {transform:`translate(${a.x}px,${a.y}px) scale(1)`, opacity:1},
+          {transform:`translate(${midX}px,${midY}px) scale(0.98)`, opacity:1, offset:.5},
+          {transform:`translate(${b.x}px,${b.y}px) scale(0.85)`, opacity:1, offset:.82},
+          {transform:`translate(${b.x}px,${b.y}px) scale(0.45)`, opacity:0},
+        ], {duration:P.travel*m, easing:EASE_TRAVEL, fill:'forwards'});
+        after(P.travel*0.82*m, ()=>{
+          const sink = els.get(hp.to), inner = sink.querySelector('.in');
+          if(inner.innerHTML !== hp.result) inner.innerHTML = hp.result;
+          pulse(sink, 1.35, 200*m);
+        });
+        after(P.travel*m, ()=>clone.remove());
+      });
+      /* impact chord: every term resolves identically, at one instant */
+      after(P.travel*0.82*m, ()=>{
+        S.actors.forEach(id=>{
+          const el = els.get(id);
+          if(el){ pulse(el, 1.25, 200*m); el.classList.remove('actor'); }
+        });
+      });
+    }
+
+    /* factoring: copies converge OUT of every term onto the factor.
+       Launch chord (sources mutate as the factor leaves) → convergence →
+       receive chord (the factor pulses once as all copies arrive). */
+    if(S.revHops){
+      /* the shared convergence slot: just left of where the paren rises */
+      let target = null;
+      if(S.factorResult){
+        const wpo = measure('(');
+        const wF  = measure(S.factorResult.html);
+        const openX = cur[S.enclose.from].x - wpo - 8;
+        target = {x: openX - GAP - wF, y: cur[S.enclose.from].y};
+      }
+      S.revHops.forEach(rh=>{
+        const a = cur[rh.from];
+        const b = target || cur[rh.to];
+        /* the source transforms the moment its coefficient has separated —
+           early in the flight, while the copies are still moving */
+        after(P.travel*0.22*m, ()=>{
+          const src = els.get(rh.from), inner = src.querySelector('.in');
+          if(inner.innerHTML !== rh.mutateTo) inner.innerHTML = rh.mutateTo;
+          pulse(src, 1.25, 180*m);
+          src.classList.remove('coHl');   // its highlight resolves as it transforms
+        });
+        const clone = makeTok(rh.clone);
+        clone.classList.add('actor');
+        place(clone, a); clone.style.opacity = 0;
+        stage.appendChild(clone);
+        const midX = (a.x+b.x)/2, midY = (a.y+b.y)/2 + S.arc;
+        /* fully opaque all the way — the clones don't fade, they FUSE:
+           removed in the same instant the factor is born */
+        animate(clone, [
+          {transform:`translate(${a.x}px,${a.y}px) scale(0.8)`, opacity:0},
+          {transform:`translate(${a.x}px,${a.y}px) scale(1)`, opacity:1, offset:.18},
+          {transform:`translate(${midX}px,${midY}px) scale(1)`, opacity:1, offset:.6},
+          {transform:`translate(${b.x}px,${b.y}px) scale(0.98)`, opacity:1},
+        ], {duration:P.travel*0.85*m, easing:EASE_TRAVEL, fill:'forwards'});
+        after(P.travel*0.85*m, ()=>clone.remove());
+      });
+      /* the landing chord: as every copy arrives, the factored-out
+         coefficient comes into existence at the slot — with one pulse */
+      after(P.travel*0.85*m, ()=>{
+        if(S.factorResult && target){
+          const t = makeTok(S.factorResult.html);
+          place(t, target);
+          stage.appendChild(t);
+          els.set(S.factorResult.id, t);
+          cur[S.factorResult.id] = {...target};
+          animate(t, [
+            {opacity:0, transform:`translate(${target.x}px,${target.y}px) scale(0.55)`},
+            {opacity:1, transform:`translate(${target.x}px,${target.y}px) scale(1)`},
+          ], {duration:180*m, easing:EASE_OUT, fill:'forwards'});
+          pulse(t, 1.3, 220*m);
+        }
+        S.actors.forEach(id=>{
+          const el = els.get(id);
+          if(el){ pulse(el, 1.3, 200*m); el.classList.remove('actor'); }
+        });
+      });
+    }
+
+    /* early reflow: the rest of the expression converges on the final layout
+       WHILE the actors fly — the destination assembles itself under them */
+    if(S.reflowEarly){
+      after(P.travel*0.22*m, ()=>{
+        survivors.forEach(t=>{
+          if(S.actors.includes(t.id)) return;
+          const el = els.get(t.id); if(!el) return;
+          const a = cur[t.id], b = newPos[t.id];
+          if(Math.abs(a.x-b.x)<0.5 && Math.abs(a.y-b.y)<0.5) return;
+          animate(el, [
+            {transform:`translate(${a.x}px,${a.y}px)`},
+            {transform:`translate(${b.x}px,${b.y}px)`},
+          ], {duration:P.travel*0.62*m, easing:EASE_OUT, fill:'forwards'});
+          el.style.transform = `translate(${b.x}px,${b.y}px)`;
+          cur[t.id] = {...b};
+        });
+      });
+    }
+
+    /* fission: at the fission beat the source is REPLACED by its children,
+       fully opaque, flying outward from its position to their slots */
+    if(S.fission){
+      after(P.travel*0.15*m, ()=>{
+        const sPos = cur[S.fission.source];
+        const sW = widths[S.fission.source];
+        const srcEl = els.get(S.fission.source);
+        if(srcEl){ srcEl.remove(); els.delete(S.fission.source); }
+        S.fission.fly.forEach(id=>{
+          const def = S.step1.find(u=>u.id===id);
+          const w = measure(def.html, def.sup);
+          const a = {x: sPos.x + (sW - w)/2, y: sPos.y};
+          const b = newPos[id];
+          const t = makeTok(def.html, def.sup);
+          place(t, a);
+          stage.appendChild(t);
+          els.set(id, t);
+          const arc2 = (S.actorArcs && id in S.actorArcs) ? S.actorArcs[id] : 0;
+          const midX = (a.x+b.x)/2, midY = (a.y+b.y)/2 + arc2;
+          animate(t, [
+            {transform:`translate(${a.x}px,${a.y}px) scale(0.9)`},
+            {transform:`translate(${midX}px,${midY}px) scale(1)`, offset:.5},
+            {transform:`translate(${b.x}px,${b.y}px) scale(1)`},
+          ], {duration:P.travel*0.85*m, easing:EASE_TRAVEL, fill:'forwards'});
+          t.style.transform = `translate(${b.x}px,${b.y}px)`;
+          cur[id] = {...b};
+        });
+        S.fission.popIn.forEach(id=>{
+          after(P.travel*0.4*m, ()=>{
+            const def = S.step1.find(u=>u.id===id);
+            const t = makeTok(def.html, def.sup);
+            place(t, newPos[id]);
+            stage.appendChild(t);
+            els.set(id, t);
+            cur[id] = {...newPos[id]};
+            animate(t, [
+              {opacity:0, transform:t.style.transform+' scale(0.6)'},
+              {opacity:1, transform:t.style.transform+' scale(1)'},
+            ], {duration:P.travel*0.3*m, easing:EASE_OUT, fill:'forwards'});
+          });
+        });
+      });
+    }
+
+    /* factoring: parens rise SIMULTANEOUSLY with the extraction, drawing in
+       around the group's current extent */
+    if(S.enclose){
+      after(P.travel*0.12*m, ()=>{
+        const wpo = measure('(');
+        const openX  = cur[S.enclose.from].x - wpo - 8;
+        const closeX = cur[S.enclose.to].x
+          + measure(els.get(S.enclose.to).querySelector('.in').innerHTML) + 8;
+        const y = cur[S.enclose.from].y;
+        [[S.enclose.open, openX, -14], [S.enclose.close, closeX, 14]].forEach(([id, x, slide])=>{
+          const t = makeTok(id===S.enclose.open ? '(' : ')');
+          place(t, {x, y});
+          stage.appendChild(t);
+          els.set(id, t);
+          cur[id] = {x, y};
+          animate(t, [
+            {opacity:0, transform:`translate(${x+slide}px,${y}px)`},
+            {opacity:1, transform:`translate(${x}px,${y}px)`},
+          ], {duration:P.travel*0.45*m, easing:EASE_OUT, fill:'forwards'});
+        });
+      });
+    }
+
+    /* division: fraction forms mid-flight */
+    if(S.division){
+      after(P.travel*0.28*m, ()=>{
+        const nid = S.division.num;
+        const numEl = els.get(nid);
+        const a = cur[nid];
+        const ny = a.y - LH*0.33 - 8;
+        animate(numEl, [
+          {transform:`translate(${a.x}px,${a.y}px)`},
+          {transform:`translate(${a.x}px,${ny}px)`},
+        ], {duration:P.travel*0.5*m, easing:EASE_OUT, fill:'forwards'});
+        numEl.style.transform = `translate(${a.x}px,${ny}px)`;
+        cur[nid] = {x:a.x, y:ny};
+        const wN = widths[nid], wD = widths[S.actors[0]];
+        const barW = Math.max(wN, wD) + 12;
+        const bx = a.x + (wN - barW)/2, by = a.y + LH*0.52;
+        barEl = document.createElement('span');
+        barEl.className = 'tok fbar';
+        barEl.style.width = barW+'px';
+        barEl.style.transform = `translate(${bx}px,${by}px)`;
+        stage.appendChild(barEl);
+        animate(barEl, [
+          {transform:`translate(${bx}px,${by}px) scaleX(0)`, opacity:0},
+          {transform:`translate(${bx}px,${by}px) scaleX(1)`, opacity:1},
+        ], {duration:P.travel*0.5*m, easing:EASE_OUT, fill:'forwards'});
+      });
+    }
+
+    /* mutations morph WHILE traveling: squash — swap — spring back */
+    S.mutations.forEach(mu=>{
+      const w = P.travel*0.24*m;
+      const ax = mu.morph === 'flipX' ? 'scaleX' : 'scaleY';   // mirror vs squash
+      after(Math.max(0, P.travel*mu.at*m - w/2), ()=>{
+        const el = els.get(mu.id), inner = el.querySelector('.in');
+        animate(inner, [
+          {transform:ax+'(1)'},
+          {transform:ax+'(0.05)'},
+        ], {duration:w/2, easing:'ease-in', fill:'forwards'});
+        after(w/2, ()=>{
+          if(inner.innerHTML !== mu.html) inner.innerHTML = mu.html;
+          animate(inner, [
+            {transform:ax+'(0.05)'},
+            {transform:ax+'(1.15)', offset:.7},
+            {transform:ax+'(1)'},
+          ], {duration:w/2 + 60*m, easing:EASE_OUT, fill:'forwards'});
+        });
+      });
+    });
+  });
+
+  /* ---- phase 3: land ---- */
+  after(tLand, ()=>{
+    lightPhase('travel', false); lightPhase('land', true);
+    S.actors.forEach(id=>{
+      if(ontoIds.includes(id)) return;                    // already fused away
+      const el = els.get(id); if(!el) return;
+      animate(el, [
+        {transform:el.style.transform+' scale(1.03)'},
+        {transform:el.style.transform+' scale(1)'},
+      ], {duration:Math.max(1,P.land*m), easing:EASE_OUT, fill:'forwards'});
+      /* emphasis retires at first CONTACT: at landing if the actor traveled,
+         otherwise it stays lit until its merge contact */
+      const contactsAtMerge = S.merge && S.merge.remove.includes(id) && !traveled[id];
+      if(!contactsAtMerge) el.classList.remove('actor');
+    });
+    if(S.hopsWithTravel){
+      dissolved.forEach(t=>{ fadeOut(els.get(t.id), P.land*0.8*m); });
+    }
+  });
+
+  /* ---- phase 3.5: merge / cancel ---- */
+  if(S.merge){
+    after(tMerge, ()=>{
+      lightPhase('land', false); lightPhase('merge', true);
+      const sinkEl = els.get(S.merge.sink);
+      const b = cur[S.merge.sink];
+      S.merge.remove.forEach(id=>{
+        const el = els.get(id); if(!el) return;
+        const a = cur[id];
+        animate(el, [
+          {transform:`translate(${a.x}px,${a.y}px) scale(1)`, opacity:1},
+          {transform:`translate(${(a.x+b.x)/2}px,${(a.y+b.y)/2}px) scale(0.9)`, opacity:1, offset:.55},
+          {transform:`translate(${b.x}px,${b.y}px) scale(0.45)`, opacity:0},
+        ], {duration:P.merge*m, easing:EASE_TRAVEL, fill:'forwards'});
+      });
+      if(S.division && barEl){
+        animate(barEl, [
+          {opacity:1, transform:barEl.style.transform+' scaleX(1)'},
+          {opacity:0, transform:barEl.style.transform+' scaleX(0.2)'},
+        ], {duration:P.merge*0.75*m, easing:EASE_OUT, fill:'forwards'});
+      }
+      holdDiss.forEach(id=>{
+        const el = els.get(id);
+        if(el) after(P.merge*0.45*m, ()=>fadeOut(el, P.merge*0.5*m, 0.4));
+      });
+      after(P.merge*0.6*m, ()=>{
+        S.merge.remove.forEach(id=>{ const el = els.get(id); if(el) el.classList.remove('actor'); });
+        if(S.merge.resultHtml == null){
+          /* annihilation: the pair cancels to nothing */
+          pulse(sinkEl, 1.3, 180*m);
+          after(P.merge*0.12*m, ()=>fadeOut(sinkEl, P.merge*0.28*m, 0.5));
+        }else{
+          const inner = sinkEl.querySelector('.in');
+          if(inner.innerHTML !== S.merge.resultHtml) inner.innerHTML = S.merge.resultHtml;
+          pulse(sinkEl, 1.35, 200*m);
+          if(S.division){
+            const b2 = cur[S.merge.sink];
+            const oy = oldPos[S.merge.sink].y;
+            animate(sinkEl, [
+              {transform:`translate(${b2.x}px,${b2.y}px)`},
+              {transform:`translate(${b2.x}px,${oy}px)`},
+            ], {duration:P.merge*0.4*m, easing:EASE_OUT, fill:'forwards'});
+            sinkEl.style.transform = `translate(${b2.x}px,${oy}px)`;
+            cur[S.merge.sink] = {x:b2.x, y:oy};
+          }
+        }
+      });
+      after(P.merge*m, ()=>{
+        S.merge.remove.forEach(id=>{
+          const el = els.get(id);
+          if(el){ el.remove(); els.delete(id); }
+        });
+        if(S.merge.resultHtml == null){
+          const el = els.get(S.merge.sink);
+          if(el){ el.remove(); els.delete(S.merge.sink); }
+        }
+        holdDiss.forEach(id=>{
+          const el = els.get(id);
+          if(el){ el.remove(); els.delete(id); }
+        });
+        if(barEl){ barEl.remove(); barEl = null; }
+      });
+    });
+  }
+
+  /* legacy path: hops as a separate phase (unused by current scenarios) */
+  if(S.hops && !S.hopsWithTravel){
+    S.hops.forEach(hp=>{
+      after(tMerge, ()=>{
+        lightPhase('land', false); lightPhase('merge', true);
+        const srcEl = els.get(hp.cloneOf);
+        const a = cur[hp.cloneOf], b = cur[hp.to];
+        const clone = makeTok(srcEl.querySelector('.in').innerHTML);
+        clone.classList.add('actor');
+        place(clone, a);
+        stage.appendChild(clone);
+        const midX = (a.x+b.x)/2, midY = (a.y+b.y)/2 - 30;
+        animate(clone, [
+          {transform:`translate(${a.x}px,${a.y}px) scale(1)`, opacity:1},
+          {transform:`translate(${midX}px,${midY}px) scale(0.95)`, opacity:1, offset:.55},
+          {transform:`translate(${b.x}px,${b.y}px) scale(0.5)`, opacity:0},
+        ], {duration:P.merge*m, easing:EASE_TRAVEL, fill:'forwards'});
+        after(P.merge*0.62*m, ()=>{
+          const sink = els.get(hp.to), inner = sink.querySelector('.in');
+          if(inner.innerHTML !== hp.result) inner.innerHTML = hp.result;
+          pulse(sink, 1.35, 200*m);
+        });
+        after(P.merge*m, ()=>clone.remove());
+      });
+    });
+  }
+
+  /* ---- phase 4: reflow ---- */
+  after(tReflow, ()=>{
+    lightPhase('land', false); lightPhase('merge', false); lightPhase('reflow', true);
+    survivors.forEach(t=>{
+      const el = els.get(t.id); if(!el) return;
+      const a = cur[t.id], b = newPos[t.id];
+      if(Math.abs(a.x-b.x)<0.5 && Math.abs(a.y-b.y)<0.5) return;
+      animate(el, [
+        {transform:`translate(${a.x}px,${a.y}px)`},
+        {transform:`translate(${b.x}px,${b.y}px)`},
+      ], {duration:P.reflow*m, easing:EASE_OUT, fill:'forwards'});
+      el.style.transform = `translate(${b.x}px,${b.y}px)`;
+      cur[t.id] = {...b};
+    });
+    created.forEach(t=>{
+      if(els.has(t.id)){
+        /* created earlier (enclose) — just reflow it */
+        const el = els.get(t.id);
+        const a = cur[t.id], b = newPos[t.id];
+        if(Math.abs(a.x-b.x)<0.5 && Math.abs(a.y-b.y)<0.5) return;
+        animate(el, [
+          {transform:`translate(${a.x}px,${a.y}px)`, opacity:1},
+          {transform:`translate(${b.x}px,${b.y}px)`, opacity:1},
+        ], {duration:P.reflow*m, easing:EASE_OUT, fill:'forwards'});
+        el.style.transform = `translate(${b.x}px,${b.y}px)`;
+        cur[t.id] = {...b};
+        return;
+      }
+      const s = makeTok(t.html, t.sup);
+      place(s, newPos[t.id]); stage.appendChild(s); els.set(t.id, s);
+      animate(s, [
+        {opacity:0, transform:s.style.transform+' scale(0.7)'},
+        {opacity:1, transform:s.style.transform+' scale(1)'},
+      ], {duration:P.reflow*0.8*m, easing:EASE_OUT, fill:'forwards'});
+    });
+    dissolved.forEach(t=>{ const el=els.get(t.id); if(el){el.remove(); els.delete(t.id);} });
+  });
+
+  after(tEnd + 60*m, ()=>{
+    [...S.actors, ...(S.emphasisAlso||[])].forEach(id=>{
+      const el = els.get(id);
+      if(el){ el.classList.remove('actor'); el.classList.remove('coHl'); }
+    });
+    darkenTrack();
+    finish();
+  });
+}
+
+/* ---------------- crossfade playback (the anti-pattern) ---------------- */
+function playCrossfade(S){
+  const m = 1/speed;
+  lightPhase('all', true);
+  const newPos = layout(S.step1, S.frac1);
+  els.forEach(el=>{
+    animate(el, [{opacity:1},{opacity:0}], {duration:CROSSFADE_MS*m, easing:'linear', fill:'forwards'});
+  });
+  const fresh = new Map();
+  S.step1.forEach(t=>{
+    const s = t.bar ? (()=>{ const b=document.createElement('span'); b.className='tok fbar'; b.style.width=newPos[t.id].barW+'px'; return b; })() : makeTok(t.html, t.sup);
+    place(s, newPos[t.id]); s.style.opacity = 0;
+    stage.appendChild(s); fresh.set(t.id, s);
+    animate(s, [{opacity:0},{opacity:1}], {duration:CROSSFADE_MS*m, easing:'linear', fill:'forwards'});
+  });
+  after(CROSSFADE_MS*m + 40, ()=>{
+    els.forEach(el=>el.remove());
+    els = fresh;
+    darkenTrack();
+    finish();
+  });
+}
+
+/* ---------------- control flow ---------------- */
+function finish(){
+  playing = false; atStep = 1;
+  stopClock();
+  playBtn.textContent = 'Replay';
+  playBtn.disabled = false;
+  pauseBtn.textContent = 'Pause';
+  pauseBtn.disabled = true;
+}
+function play(){
+  if(playing) return;
+  const S = SCENARIOS[scenarioIdx];
+  if(atStep === 1) reset();
+  playing = true;
+  playBtn.disabled = true;
+  pauseBtn.disabled = false;
+  startClock();
+  if(REDUCED){
+    render(S.step1, S.frac1);
+    S.actors.forEach(id=>{ const el = els.get(id); if(el) el.classList.add('actor'); });
+    after(600, ()=>{
+      S.actors.forEach(id=>{ const el = els.get(id); if(el) el.classList.remove('actor'); });
+      finish();
+    });
+    return;
+  }
+  if(mode === 'natural') playNatural(S); else playCrossfade(S);
+}
+function reset(){
+  playing = false; atStep = 0;
+  pauseBtn.textContent = 'Pause';
+  pauseBtn.disabled = true;
+  darkenTrack();
+  render(SCENARIOS[scenarioIdx].step0, SCENARIOS[scenarioIdx].frac0);
+  playBtn.textContent = 'Play step';
+  playBtn.disabled = false;
+}
+
+function setScenario(i){
+  scenarioIdx = i;
+  descEl.innerHTML = SCENARIOS[i].desc;
+  buildTrack(); reset();
+}
+function setMode(mo){
+  mode = mo;
+  modeTag.textContent = mo==='natural' ? 'natural · flip' : 'crossfade · anti-pattern';
+  modeTag.className = 'mode-tag ' + (mo==='natural'?'natural':'crossfade');
+  buildTrack(); reset();
+}
+
+function wireSeg(id, attr, fn){
+  const seg = document.getElementById(id);
+  seg.addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    seg.querySelectorAll('button').forEach(x=>x.classList.remove('on','bad'));
+    b.classList.add('on');
+    if(b.dataset.m==='crossfade') b.classList.add('bad');
+    fn(b.dataset[attr]);
+  });
+}
+wireSeg('scenarioSeg','s', v=>setScenario(+v));
+wireSeg('modeSeg','m',    v=>setMode(v));
+wireSeg('speedSeg','v',   v=>{speed = +v;});
+
+playBtn.addEventListener('click', play);
+pauseBtn.addEventListener('click', ()=>{ clock.paused ? resumePlayback() : pausePlayback(); });
+resetBtn.addEventListener('click', reset);
+window.addEventListener('resize', ()=>{
+  if(!playing) render(SCENARIOS[scenarioIdx][atStep?'step1':'step0'],
+                      SCENARIOS[scenarioIdx][atStep?'frac1':'frac0']);
+});
+
+setScenario(0);
+</script>
+</body>
+</html>
