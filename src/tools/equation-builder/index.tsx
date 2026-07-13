@@ -741,21 +741,28 @@ const EquationBuilderTool = () => {
           }
 
           let sinkTermId: string | null = null;
-          if (!divideDest && consumedActors.length > 0 && actorUnion && mutatedTermIds.length > 0) {
-            const eqOld = clones.find((c) => c.g.key === "=");
-            const eqX = eqOld ? rcenter(eqOld.g.rect).x : actorUnion.left;
-            const actorSideRight = rcenter(actorUnion).x > eqX;
-            const candidates = mutatedTermIds
-              .map((id) => ({
-                id,
-                rect: unionRect(clones.filter((c) => c.g.term === id).map((c) => c.g.rect)),
-              }))
-              .filter((cand) => cand.rect.width > 0);
-            const oppositeSide = candidates.filter(
-              (cand) => rcenter(cand.rect).x > eqX !== actorSideRight
-            );
-            const pick = (oppositeSide.length ? oppositeSide : candidates)[0];
-            sinkTermId = pick ? pick.id : null;
+          if (!divideDest && consumedActors.length > 0 && actorUnion) {
+            if (story?.sink && oldTermText.has(story.sink) && newTermText.has(story.sink)) {
+              // the script NAMES its sink — recorded by the operation itself
+              sinkTermId = story.sink;
+            } else if (mutatedTermIds.length > 0) {
+              // old share links carry no sink: fall back to the
+              // survived-with-changed-glyphs heuristic
+              const eqOld = clones.find((c) => c.g.key === "=");
+              const eqX = eqOld ? rcenter(eqOld.g.rect).x : actorUnion.left;
+              const actorSideRight = rcenter(actorUnion).x > eqX;
+              const candidates = mutatedTermIds
+                .map((id) => ({
+                  id,
+                  rect: unionRect(clones.filter((c) => c.g.term === id).map((c) => c.g.rect)),
+                }))
+                .filter((cand) => cand.rect.width > 0);
+              const oppositeSide = candidates.filter(
+                (cand) => rcenter(cand.rect).x > eqX !== actorSideRight
+              );
+              const pick = (oppositeSide.length ? oppositeSide : candidates)[0];
+              sinkTermId = pick ? pick.id : null;
+            }
           }
           const sinkUnion = sinkTermId
             ? unionRect(clones.filter((c) => c.g.term === sinkTermId).map((c) => c.g.rect))
@@ -807,13 +814,20 @@ const EquationBuilderTool = () => {
             // it when a fraction is forming (the divisor dives under)
             let landDX = 0;
             let landDY = 0;
-            const numeratorLift =
-              divisionForm && sinkUnion ? Math.min(22, sinkUnion.height * 0.32) : 0;
+            let numeratorLift = 0;
             let barY = 0;
+            // the denominator renders smaller than line-level glyphs
+            const DEN_SCALE = 0.85;
             if (divisionForm && sinkUnion && actorUnion) {
-              barY = sinkUnion.bottom - numeratorLift + 8;
+              // §10: the fraction centers on the MATH AXIS — the bar aligns
+              // with the ='s crossbar (the sink's vertical center), numerator
+              // above it, denominator below. Never a fraction dangling under
+              // the baseline.
+              const axisY = rcenter(sinkUnion).y;
+              numeratorLift = Math.max(0, sinkUnion.bottom - (axisY - 6));
+              barY = axisY + 2;
               landDX = rcenter(sinkUnion).x - rcenter(actorUnion).x;
-              landDY = barY + 10 + actorUnion.height / 2 - rcenter(actorUnion).y;
+              landDY = barY + 10 + (actorUnion.height * DEN_SCALE) / 2 - rcenter(actorUnion).y;
             } else if (hasMerge && sinkUnion && actorUnion) {
               const gap = Math.min(18, Math.max(8, sinkUnion.height * 0.25));
               landDX = sinkUnion.right + gap - actorUnion.left;
@@ -821,65 +835,6 @@ const EquationBuilderTool = () => {
             } else if (legacySite && siteCenter && actorUnion) {
               landDX = siteCenter.x - rcenter(actorUnion).x;
               landDY = siteCenter.y - rcenter(actorUnion).y;
-            }
-
-            // division formation: the numerator lifts and the bar draws in
-            // MID-FLIGHT — the slot assembles under the incoming term (§8)
-            if (divisionForm && sinkUnion && actorUnion) {
-              const sinkCloneList = clones.filter((c) => c.g.term === sinkTermId);
-              for (const c of sinkCloneList) {
-                const lift = c.node.animate(
-                  [{ transform: "translate(0,0)" }, { transform: `translate(0, ${-numeratorLift}px)` }],
-                  {
-                    duration: TRAVEL_MS * 0.5,
-                    delay: T_TRAVEL_START + TRAVEL_MS * 0.28,
-                    easing: SETTLE,
-                    composite: "add",
-                    fill: "forwards",
-                  }
-                );
-                (lift as { persist?: () => void }).persist?.();
-                // ...and drops back to the line as the result simplifies
-                const drop = c.node.animate(
-                  [{ transform: "translate(0,0)" }, { transform: `translate(0, ${numeratorLift}px)` }],
-                  {
-                    duration: MERGE_MS * 0.4,
-                    delay: T_MERGE + MERGE_MS * 0.6,
-                    easing: SETTLE,
-                    composite: "add",
-                    fill: "forwards",
-                  }
-                );
-                (drop as { persist?: () => void }).persist?.();
-              }
-              const barW = Math.max(sinkUnion.width, actorUnion.width) + 10;
-              const barLeft = rcenter(sinkUnion).x - barW / 2;
-              const bar = document.createElement("div");
-              bar.style.cssText =
-                `position:fixed;left:${barLeft}px;top:${barY}px;width:${barW}px;height:3px;` +
-                `margin:0;padding:0;background:${clones.find((c) => c.g.term === sinkTermId)?.g.color ?? "currentColor"};` +
-                `border-radius:2px;transform-origin:50% 50%;will-change:transform,opacity;`;
-              overlay.appendChild(bar);
-              bar.animate(
-                [
-                  { transform: "scaleX(0)", opacity: 0 },
-                  { transform: "scaleX(1)", opacity: 1 },
-                ],
-                {
-                  duration: TRAVEL_MS * 0.5,
-                  delay: T_TRAVEL_START + TRAVEL_MS * 0.28,
-                  easing: "ease-out",
-                  fill: "both",
-                }
-              );
-              // the bar dissolves at the simplify beat — its fraction is gone
-              bar.animate(
-                [
-                  { transform: "scaleX(1)", opacity: 1 },
-                  { transform: "scaleX(0.2)", opacity: 0 },
-                ],
-                { duration: MERGE_MS * 0.5, delay: T_MERGE + MERGE_MS * 0.5, easing: "ease-out", fill: "forwards" }
-              );
             }
 
             // mode B survivors land at an intermediate spot anchored to a
@@ -909,7 +864,12 @@ const EquationBuilderTool = () => {
             const flipOf = (k: string) => (k === "\u2212" ? "+" : k === "+" ? "\u2212" : null);
 
             // ---- phase 1+2: emphasis, then the actor travels ALONE --------
-            const launch = (c: Clone, dx: number, dy: number, opts: { toFinal?: boolean; morphTo?: string | null }) => {
+            const launch = (
+              c: Clone,
+              dx: number,
+              dy: number,
+              opts: { toFinal?: boolean; morphTo?: string | null; endScale?: number }
+            ) => {
               const dist = Math.hypot(dx, dy);
               const lift = Math.min(34, Math.max(10, dist * 0.16));
               c.node.style.transformOrigin = "50% 50%";
@@ -924,7 +884,7 @@ const EquationBuilderTool = () => {
                 [
                   { transform: "translate(0,0) scale(1.07)", offset: 0 },
                   { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - lift}px) scale(1.05)`, offset: 0.55 },
-                  { transform: `translate(${dx}px, ${dy}px) scale(1)`, offset: 1 },
+                  { transform: `translate(${dx}px, ${dy}px) scale(${opts.endScale ?? 1})`, offset: 1 },
                 ],
                 // forwards, not both: a "both" fill would snap the clone to
                 // this first keyframe during the emphasis delay
@@ -964,6 +924,8 @@ const EquationBuilderTool = () => {
                 const to = rcenter(divideDest.rect);
                 const from = center(c.g.rect);
                 launch(c, to.x - from.x, to.y - from.y, { toFinal: true, morphTo: null });
+              } else if (divisionForm) {
+                launch(c, landDX, landDY, { morphTo: null, endScale: DEN_SCALE });
               } else if (hasMerge || legacySite) {
                 launch(c, landDX, landDY, { morphTo: flipOf(c.g.key) });
               } else {
@@ -1009,15 +971,16 @@ const EquationBuilderTool = () => {
               // the divisor fuses UP into the (lifted) numerator when a
               // synthesized fraction simplifies; plain merges aim at rest
               const sinkC = { x: rcenter(sinkUnion).x, y: rcenter(sinkUnion).y - numeratorLift };
+              const s0 = divisionForm ? DEN_SCALE : 1; // fuse-up starts at the dive scale
               for (const { c } of consumedActors) {
                 const from = center(c.g.rect);
                 const mx = sinkC.x - from.x;
                 const my = sinkC.y - from.y;
                 c.node.animate(
                   [
-                    { transform: `translate(${landDX}px, ${landDY}px) scale(1)`, opacity: 1 },
+                    { transform: `translate(${landDX}px, ${landDY}px) scale(${s0})`, opacity: 1 },
                     {
-                      transform: `translate(${(landDX + mx) / 2}px, ${(landDY + my) / 2}px) scale(0.9)`,
+                      transform: `translate(${(landDX + mx) / 2}px, ${(landDY + my) / 2}px) scale(${s0 * 0.9})`,
                       opacity: 1,
                       offset: 0.55,
                     },
@@ -1099,6 +1062,66 @@ const EquationBuilderTool = () => {
                   : { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, fill: "both" }
               );
             }
+            // division formation — created AFTER the reflow glides so the
+            // additive lift/drop sit HIGHER in composite order (a replace-mode
+            // glide created later would wipe an additive lift from t=0)
+            if (divisionForm && sinkUnion && actorUnion) {
+              const sinkCloneList = clones.filter((c) => c.g.term === sinkTermId);
+              for (const c of sinkCloneList) {
+                const lift = c.node.animate(
+                  [{ transform: "translate(0,0)" }, { transform: `translate(0, ${-numeratorLift}px)` }],
+                  {
+                    duration: TRAVEL_MS * 0.5,
+                    delay: T_TRAVEL_START + TRAVEL_MS * 0.28,
+                    easing: SETTLE,
+                    composite: "add",
+                    fill: "forwards",
+                  }
+                );
+                (lift as { persist?: () => void }).persist?.();
+                // ...and drops back to the line as the result simplifies
+                const drop = c.node.animate(
+                  [{ transform: "translate(0,0)" }, { transform: `translate(0, ${numeratorLift}px)` }],
+                  {
+                    duration: MERGE_MS * 0.4,
+                    delay: T_MERGE + MERGE_MS * 0.6,
+                    easing: SETTLE,
+                    composite: "add",
+                    fill: "forwards",
+                  }
+                );
+                (drop as { persist?: () => void }).persist?.();
+              }
+              const barW = Math.max(sinkUnion.width, actorUnion.width * DEN_SCALE) + 10;
+              const barLeft = rcenter(sinkUnion).x - barW / 2;
+              const bar = document.createElement("div");
+              bar.style.cssText =
+                `position:fixed;left:${barLeft}px;top:${barY}px;width:${barW}px;height:3px;` +
+                `margin:0;padding:0;background:${clones.find((c) => c.g.term === sinkTermId)?.g.color ?? "currentColor"};` +
+                `border-radius:2px;transform-origin:50% 50%;will-change:transform,opacity;`;
+              overlay.appendChild(bar);
+              bar.animate(
+                [
+                  { transform: "scaleX(0)", opacity: 0 },
+                  { transform: "scaleX(1)", opacity: 1 },
+                ],
+                {
+                  duration: TRAVEL_MS * 0.5,
+                  delay: T_TRAVEL_START + TRAVEL_MS * 0.28,
+                  easing: "ease-out",
+                  fill: "both",
+                }
+              );
+              // the bar dissolves at the simplify beat — its fraction is gone
+              bar.animate(
+                [
+                  { transform: "scaleX(1)", opacity: 1 },
+                  { transform: "scaleX(0.2)", opacity: 0 },
+                ],
+                { duration: MERGE_MS * 0.5, delay: T_MERGE + MERGE_MS * 0.5, easing: "ease-out", fill: "forwards" }
+              );
+            }
+
             for (const c of deaths) {
               c.node.style.transformOrigin = "50% 50%";
               c.node.animate(
@@ -1612,7 +1635,14 @@ const EquationBuilderTool = () => {
     const born = Array.from(newTargetIds).filter(
       (id) => !oldTargetIds.has(id) && !real.some((m) => m.id === id)
     );
-    const story: MoveStory = { actors: real.map((m) => ({ term: m.id })), site, born };
+    // the sink is KNOWN here, not inferred at replay: the resident whose id
+    // survived combine() with a changed value absorbed the movers
+    const before = new Map(equation[to].map((t) => [t.id, t]));
+    const sink = next[to].find((t) => {
+      const old = before.get(t.id);
+      return old && (old.num !== t.num || old.den !== t.den);
+    })?.id;
+    const story: MoveStory = { actors: real.map((m) => ({ term: m.id })), site, born, kind: "cross", sink };
     return { next, label: `moved ${real.map((m) => termText(m, true).trim()).join(", ")} across`, story };
   };
 
@@ -1629,9 +1659,15 @@ const EquationBuilderTool = () => {
     return {
       next,
       label: `divided both sides by ${v}`,
-      // the dragged numeral is the actor; every term it divides keeps its id,
-      // so their value changes morph in place via id-pairing
-      story: { actors: [{ term: termId, role: isFactor ? "factor" : "coef" }], site: [], born: [] },
+      // the dragged numeral is the actor; the fraction forms under the term
+      // on the opposite side (named here — the replay executes, not infers)
+      story: {
+        actors: [{ term: termId, role: isFactor ? "factor" : "coef" }],
+        site: [],
+        born: [],
+        kind: "divide",
+        sink: equation[to].length === 1 ? equation[to][0].id : undefined,
+      },
     };
   };
 

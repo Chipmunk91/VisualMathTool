@@ -8,10 +8,10 @@ import type { EquationState } from "./model";
 import type { TreeEq } from "./tree";
 
 /**
- * A move's provenance, recorded by the move function itself — it knows what
- * interacted with what. The replay animator turns this into choreography:
- * actors converge on the site, consumed glyphs annihilate, and results are
- * born where the interaction happened.
+ * A move's TRANSITION SCRIPT, recorded by the move function itself at the
+ * moment it runs — it knows exactly what interacted with what, so the replay
+ * animator executes a named primitive with a named cast instead of inferring
+ * the choreography from before/after diffs.
  */
 export interface MoveStory {
   /** old-state terms (optionally one glyph role) that travel and get consumed */
@@ -20,6 +20,10 @@ export interface MoveStory {
   site: string[];
   /** new-state terms created by the interaction */
   born: string[];
+  /** which primitive plays: a term crossing =, or a divisor forming a fraction */
+  kind?: "cross" | "divide";
+  /** the term the actors merge into / dive under — its id SURVIVES the step */
+  sink?: string;
 }
 
 export interface SharedStep {
