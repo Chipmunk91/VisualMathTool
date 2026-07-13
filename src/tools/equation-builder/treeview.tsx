@@ -251,6 +251,10 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
     }
     case "fn": {
       if (node.fn === "exp") {
+        // e^1 is plain e — no dangling superscript 1
+        if (node.arg.kind === "const" && node.arg.num === 1 && node.arg.den === 1) {
+          return <TSym ctx={ctx} role={role} className="italic">e</TSym>;
+        }
         return (
           <span className="inline-flex items-start">
             <TSym ctx={ctx} role={role} className="italic">e</TSym>

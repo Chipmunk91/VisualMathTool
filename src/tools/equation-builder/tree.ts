@@ -215,6 +215,11 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
       if (base.kind === "mul" && exp.kind === "const" && exp.den === 1) {
         return simplify({ kind: "mul", factors: base.factors.map((f) => tpow(f, exp)) }, assume);
       }
+      // (e^u)^v = e^(uv) — e^u is positive for every real u, so this holds
+      // unconditionally (no domain fine print like variable bases)
+      if (base.kind === "fn" && base.fn === "exp") {
+        return simplify({ kind: "fn", fn: "exp", arg: tmul(exp, base.arg) }, assume);
+      }
       return { kind: "pow", base, exp };
     }
     case "mul": {
@@ -232,6 +237,28 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
         } else rest.push(f);
       }
       if (num === 0) return tc(0);
+      // e^a · e^b · (e^c)^k … = e^(a + b + kc …): exponentials merge by
+      // ADDING arguments. e^u is never zero or negative, so this needs no
+      // sign-class guard — it's how e³/e² becomes plain e.
+      {
+        const expArgs: TNode[] = [];
+        const kept: TNode[] = [];
+        for (const f of rest) {
+          if (f.kind === "fn" && f.fn === "exp") expArgs.push(f.arg);
+          else if (f.kind === "pow" && f.base.kind === "fn" && f.base.fn === "exp") {
+            expArgs.push(tmul(f.exp, f.base.arg));
+          } else kept.push(f);
+        }
+        if (expArgs.length > 0) {
+          const merged = simplify(
+            { kind: "fn", fn: "exp", arg: expArgs.length === 1 ? expArgs[0] : { kind: "add", terms: expArgs } },
+            assume
+          );
+          if (!isNum(merged, 1)) kept.push(merged);
+          rest.length = 0;
+          rest.push(...kept);
+        }
+      }
       // same-base powers: merge only within a sign class (the x/x guard)
       const byBase = new Map<string, { base: TNode; pos: { n: number; d: number }; neg: { n: number; d: number }; other: TNode[] }>();
       const order: string[] = [];
@@ -417,6 +444,7 @@ export function printNode(n: TNode): string {
       return `${base}^${bare ? e : `(${e})`}`;
     }
     case "fn":
+      if (n.fn === "exp" && isNum(n.arg, 1)) return "e"; // e^1 is just e
       if (n.fn === "exp") return `e^${n.arg.kind === "var" || n.arg.kind === "const" ? printNode(n.arg) : `(${printNode(n.arg)})`}`;
       if (n.fn === "sqrt") return `√(${printNode(n.arg)})`;
       return `${n.fn}(${printNode(n.arg)})`;
