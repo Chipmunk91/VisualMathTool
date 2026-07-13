@@ -761,16 +761,25 @@ const EquationBuilderTool = () => {
             ? unionRect(clones.filter((c) => c.g.term === sinkTermId).map((c) => c.g.rect))
             : null;
           const hasMerge = consumedActors.length > 0 && !!sinkUnion;
+          // dividing when the result REDUCES: no denominator survives into the
+          // final layout, so the fraction is SYNTHESIZED on the overlay — the
+          // coefficient dives under the sink, a bar rises mid-flight, the
+          // paper state (−4/2) holds, then it simplifies (testbed: divide sides)
+          const divisionForm = !!coefActor && hasMerge && !divideDest;
           // legacy share links carry site/born ids instead of surviving sinks
           const legacySite = !hasMerge && !divideDest && (siteClones.length > 0 || bornGlyphs.length > 0);
           const earlyReflow = !!divideDest;
 
+          // phase times straight from the approved testbed scenarios:
+          //   move across =    170 / 460 / 260 / 320 / 240
+          //   divide sides     170 / 520 / 260 / 360 / 240
+          const isDivide = divisionForm || earlyReflow;
           const EMPH_MS = hasActor ? 170 : 0;
-          const TRAVEL_MS = hasActor ? 420 : 0;
+          const TRAVEL_MS = hasActor ? (isDivide ? 520 : 460) : 0;
           const T_TRAVEL_START = EMPH_MS;
           const T_LAND = T_TRAVEL_START + TRAVEL_MS;
-          const HOLD_MS = hasMerge || legacySite ? 240 : hasActor ? 60 : 0;
-          const MERGE_MS = hasMerge || legacySite ? 300 : 0;
+          const HOLD_MS = hasMerge || legacySite ? 260 : hasActor ? 60 : 0;
+          const MERGE_MS = hasMerge || legacySite ? (isDivide ? 360 : 320) : 0;
           const T_MERGE = T_LAND + HOLD_MS;
           const REFLOW_MS = 240;
           const T_REFLOW = earlyReflow ? T_TRAVEL_START : T_MERGE + MERGE_MS + (hasMerge || legacySite ? 30 : 0);
@@ -794,16 +803,83 @@ const EquationBuilderTool = () => {
 
           if (!reduced) {
             // the intermediate landing offset for consumed movers: AFTER the
-            // sink's current right edge, centers aligned (paper: appended)
+            // sink's current right edge (a term joining the side), or BELOW
+            // it when a fraction is forming (the divisor dives under)
             let landDX = 0;
             let landDY = 0;
-            if (hasMerge && sinkUnion && actorUnion) {
+            const numeratorLift =
+              divisionForm && sinkUnion ? Math.min(22, sinkUnion.height * 0.32) : 0;
+            let barY = 0;
+            if (divisionForm && sinkUnion && actorUnion) {
+              barY = sinkUnion.bottom - numeratorLift + 8;
+              landDX = rcenter(sinkUnion).x - rcenter(actorUnion).x;
+              landDY = barY + 10 + actorUnion.height / 2 - rcenter(actorUnion).y;
+            } else if (hasMerge && sinkUnion && actorUnion) {
               const gap = Math.min(18, Math.max(8, sinkUnion.height * 0.25));
               landDX = sinkUnion.right + gap - actorUnion.left;
               landDY = rcenter(sinkUnion).y - rcenter(actorUnion).y;
             } else if (legacySite && siteCenter && actorUnion) {
               landDX = siteCenter.x - rcenter(actorUnion).x;
               landDY = siteCenter.y - rcenter(actorUnion).y;
+            }
+
+            // division formation: the numerator lifts and the bar draws in
+            // MID-FLIGHT — the slot assembles under the incoming term (§8)
+            if (divisionForm && sinkUnion && actorUnion) {
+              const sinkCloneList = clones.filter((c) => c.g.term === sinkTermId);
+              for (const c of sinkCloneList) {
+                const lift = c.node.animate(
+                  [{ transform: "translate(0,0)" }, { transform: `translate(0, ${-numeratorLift}px)` }],
+                  {
+                    duration: TRAVEL_MS * 0.5,
+                    delay: T_TRAVEL_START + TRAVEL_MS * 0.28,
+                    easing: SETTLE,
+                    composite: "add",
+                    fill: "forwards",
+                  }
+                );
+                (lift as { persist?: () => void }).persist?.();
+                // ...and drops back to the line as the result simplifies
+                const drop = c.node.animate(
+                  [{ transform: "translate(0,0)" }, { transform: `translate(0, ${numeratorLift}px)` }],
+                  {
+                    duration: MERGE_MS * 0.4,
+                    delay: T_MERGE + MERGE_MS * 0.6,
+                    easing: SETTLE,
+                    composite: "add",
+                    fill: "forwards",
+                  }
+                );
+                (drop as { persist?: () => void }).persist?.();
+              }
+              const barW = Math.max(sinkUnion.width, actorUnion.width) + 10;
+              const barLeft = rcenter(sinkUnion).x - barW / 2;
+              const bar = document.createElement("div");
+              bar.style.cssText =
+                `position:fixed;left:${barLeft}px;top:${barY}px;width:${barW}px;height:3px;` +
+                `margin:0;padding:0;background:${clones.find((c) => c.g.term === sinkTermId)?.g.color ?? "currentColor"};` +
+                `border-radius:2px;transform-origin:50% 50%;will-change:transform,opacity;`;
+              overlay.appendChild(bar);
+              bar.animate(
+                [
+                  { transform: "scaleX(0)", opacity: 0 },
+                  { transform: "scaleX(1)", opacity: 1 },
+                ],
+                {
+                  duration: TRAVEL_MS * 0.5,
+                  delay: T_TRAVEL_START + TRAVEL_MS * 0.28,
+                  easing: "ease-out",
+                  fill: "both",
+                }
+              );
+              // the bar dissolves at the simplify beat — its fraction is gone
+              bar.animate(
+                [
+                  { transform: "scaleX(1)", opacity: 1 },
+                  { transform: "scaleX(0.2)", opacity: 0 },
+                ],
+                { duration: MERGE_MS * 0.5, delay: T_MERGE + MERGE_MS * 0.5, easing: "ease-out", fill: "forwards" }
+              );
             }
 
             // mode B survivors land at an intermediate spot anchored to a
@@ -930,7 +1006,9 @@ const EquationBuilderTool = () => {
 
             // ---- phase 3: hold, then merge into the sink -------------------
             if (hasMerge && sinkUnion) {
-              const sinkC = rcenter(sinkUnion);
+              // the divisor fuses UP into the (lifted) numerator when a
+              // synthesized fraction simplifies; plain merges aim at rest
+              const sinkC = { x: rcenter(sinkUnion).x, y: rcenter(sinkUnion).y - numeratorLift };
               for (const { c } of consumedActors) {
                 const from = center(c.g.rect);
                 const mx = sinkC.x - from.x;
@@ -1082,11 +1160,13 @@ const EquationBuilderTool = () => {
         setPlayIndex(i);
         retarget?.();
         if (i >= h.length - 1) {
-          playTimer.current = setTimeout(stopPlayback, 1900);
+          playTimer.current = setTimeout(stopPlayback, 2200);
           return;
         }
         i++;
-        playTimer.current = setTimeout(showStep, 1750);
+        // the longest transition (divide, ~1660ms) plus a ~500ms breath
+        // between steps — replay pacing per spec §13
+        playTimer.current = setTimeout(showStep, 2200);
       };
       showStep();
       return h;
