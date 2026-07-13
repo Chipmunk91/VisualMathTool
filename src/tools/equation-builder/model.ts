@@ -112,6 +112,8 @@ export const func = (fn: FuncName, num: number, inner: EqTerm[], den = 1): FuncT
 // Scale a term's value: identical on leaves and group/function coefficients.
 // Terminal leaves (±/√/arc values) hold a VALUE in num/den, not a coefficient:
 // only sign flips are meaningful — ± absorbs them, others toggle `neg`.
+// IDENTITY: scaling is a 1:1 mutation of a SURVIVING term, so the id is
+// preserved — the animation layer keys on it to move the term, not remint it.
 export const scaleNum = (t: EqTerm, k: number): EqTerm => {
   if (t.kind === "leaf" && (t.pm || t.radical || t.fnVal)) {
     if (k === 1) return { ...t };
@@ -119,17 +121,13 @@ export const scaleNum = (t: EqTerm, k: number): EqTerm => {
     return { ...t }; // guarded upstream; never scale a frozen value silently
   }
   return t.kind === "leaf"
-    ? leaf(t.num * k, t.power, t.den, varOf(t))
-    : t.kind === "group"
-      ? group(t.num * k, t.inner, t.den)
-      : func(t.fn, t.num * k, t.inner, t.den);
+    ? { ...t, ...reduce(t.num * k, t.den) }
+    : { ...t, ...reduce(t.num * k, t.den), inner: t.inner.map(cloneTerm) };
 };
 export const scaleDen = (t: EqTerm, k: number): EqTerm =>
   t.kind === "leaf"
-    ? leaf(t.num, t.power, t.den * k, varOf(t))
-    : t.kind === "group"
-      ? group(t.num, t.inner, t.den * k)
-      : func(t.fn, t.num, t.inner, t.den * k);
+    ? { ...t, ...reduce(t.num, t.den * k) }
+    : { ...t, ...reduce(t.num, t.den * k), inner: t.inner.map(cloneTerm) };
 
 export const cloneTerm = (t: EqTerm): EqTerm =>
   t.kind === "leaf" ? { ...t } : { ...t, inner: t.inner.map(cloneTerm) };
@@ -143,6 +141,11 @@ export const cloneState = (state: EquationState): EquationState => ({
  * Normalize a side: unwrap groups whose factor became 1, drop zero terms,
  * and merge like leaf terms (grouped by power) with exact rational arithmetic.
  * Groups/functions and terminal values pass through — those are the player's moves.
+ *
+ * IDENTITY: every surviving term keeps its id. A merge bucket keeps the id of
+ * its FIRST contributor — list order puts residents before arrivals, so the
+ * resident is the sink the animation layer merges the movers into. Only a
+ * genuinely born term (the lone 0 of an emptied side) mints a fresh id.
  */
 export function combine(terms: EqTerm[]): EqTerm[] {
   const passthrough: EqTerm[] = [];
@@ -150,10 +153,10 @@ export function combine(terms: EqTerm[]): EqTerm[] {
   const consume = (t: EqTerm) => {
     if (t.kind === "group") {
       if (t.num === 0) return;
-      if (t.num === 1 && t.den === 1) t.inner.forEach((i) => consume(reTerm(i)));
-      else passthrough.push(group(t.num, t.inner, t.den));
+      if (t.num === 1 && t.den === 1) t.inner.forEach((i) => consume(cloneTerm(i)));
+      else passthrough.push({ ...t, ...reduce(t.num, t.den), inner: t.inner.map(cloneTerm) });
     } else if (t.kind === "func") {
-      if (t.num !== 0) passthrough.push(func(t.fn, t.num, t.inner, t.den));
+      if (t.num !== 0) passthrough.push({ ...t, ...reduce(t.num, t.den), inner: t.inner.map(cloneTerm) });
     } else if (t.pm || t.radical || t.fnVal) {
       passthrough.push({ ...t }); // terminal values never merge
     } else {
@@ -164,20 +167,21 @@ export function combine(terms: EqTerm[]): EqTerm[] {
   const sum = (list: LeafTerm[]) =>
     list.reduce((acc, t) => reduce(acc.num * t.den + t.num * acc.den, acc.den * t.den), { num: 0, den: 1 });
   const merged: LeafTerm[] = [];
+  const bucket = (list: LeafTerm[], power: Power, variable?: Variable) => {
+    if (!list.length) return;
+    const s = sum(list);
+    if (s.num !== 0) merged.push({ ...leaf(s.num, power, s.den, variable), id: list[0].id });
+  };
   // like terms merge per variable and power; constants merge regardless of variable
   for (const variable of ["y", "x"] as Variable[]) {
     const powers = Array.from(
       new Set(leaves.filter((t) => t.power !== 0 && varOf(t) === variable).map((t) => t.power))
     ).sort((a, b) => b - a);
     for (const power of powers) {
-      const s = sum(leaves.filter((t) => t.power === power && varOf(t) === variable));
-      if (s.num !== 0) merged.push(leaf(s.num, power, s.den, variable));
+      bucket(leaves.filter((t) => t.power === power && varOf(t) === variable), power, variable);
     }
   }
-  {
-    const s = sum(leaves.filter((t) => t.power === 0));
-    if (s.num !== 0) merged.push(leaf(s.num, 0, s.den));
-  }
+  bucket(leaves.filter((t) => t.power === 0), 0);
   const result: EqTerm[] = [...passthrough, ...merged];
   if (result.length === 0) result.push(leaf(0));
   return result;

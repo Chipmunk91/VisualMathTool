@@ -480,7 +480,7 @@ const EquationBuilderTool = () => {
       `width:${g.rect.width}px;height:${g.rect.height}px;margin:0;padding:0;` +
       `display:flex;align-items:center;justify-content:center;white-space:pre;` +
       `font:${g.font};color:${g.color};line-height:1;transform-origin:0 0;` +
-      `will-change:transform,opacity;` +
+      `will-change:transform,opacity;transition:color .25s ease;` +
       (g.isBar ? `background:${g.color};border-radius:2px;` : "");
     overlay.appendChild(clone);
     return clone;
@@ -548,10 +548,12 @@ const EquationBuilderTool = () => {
           const bornGlyphSet = new Set(bornGlyphs);
           const restNews = news.filter((g) => !bornGlyphSet.has(g));
 
-          // pair actor glyphs with their own new home (a surviving traveler)
+          // pair actor glyphs with their own new home (a surviving traveler).
+          // The ROLE filter matters: when only the coefficient acts (divide),
+          // the term's surviving x is a follower, not the actor's home.
           const actorNewByTerm = new Map<string, Glyph[]>();
           restNews.forEach((g) => {
-            if (g.term && actorRole.has(g.term)) {
+            if (g.term && isActorGlyph(g)) {
               if (!actorNewByTerm.has(g.term)) actorNewByTerm.set(g.term, []);
               actorNewByTerm.get(g.term)!.push(g);
             }
@@ -681,14 +683,102 @@ const EquationBuilderTool = () => {
             });
           });
 
-          // ---- the timeline ------------------------------------------------
+          // ---- the timeline: the v2 choreography ---------------------------
+          // emphasis (orange + 1.07) → travel alone (arc, in-flight sign
+          // morph) → INTERMEDIATE landing anchored to the sink's CURRENT
+          // rect → HOLD the paper state → merge into the sink (content swap
+          // + pulse at 60%) → reflow last. Divide-style ops instead aim at
+          // the final layout while everything early-reflows beneath (§4).
+          // Opacity animates only on true births and deaths.
+          const EMPH = "#e0740c";
+          const unionRect = (rects: DOMRect[]): DOMRect => {
+            const left = Math.min(...rects.map((r) => r.left));
+            const right = Math.max(...rects.map((r) => r.right));
+            const top = Math.min(...rects.map((r) => r.top));
+            const bottom = Math.max(...rects.map((r) => r.bottom));
+            return new DOMRect(left, top, right - left, bottom - top);
+          };
+          const rcenter = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+
+          const consumedActors = actorTravels.filter((t) => t.n === null);
           const hasActor = actorTravels.length > 0 || actorMutations.length > 0;
-          const T_TRAVEL_START = hasActor ? 110 : 0;
-          const TRAVEL_MS = hasActor ? 380 : 0;
+
+          // The sink: a resident term whose id SURVIVED with changed glyphs.
+          // Stable ids make this exact — no landing-on-heuristics.
+          const oldTermText = new Map<string, string>();
+          clones.forEach(({ g }) => {
+            if (g.term) oldTermText.set(g.term, (oldTermText.get(g.term) ?? "") + g.key);
+          });
+          const newTermText = new Map<string, string>();
+          news.forEach((g) => {
+            if (g.term) newTermText.set(g.term, (newTermText.get(g.term) ?? "") + g.key);
+          });
+          const mutatedTermIds = Array.from(oldTermText.keys()).filter(
+            (id) => !actorRole.has(id) && newTermText.has(id) && newTermText.get(id) !== oldTermText.get(id)
+          );
+          const actorUnion =
+            actorClones.length > 0 ? unionRect(actorClones.map((c) => c.g.rect)) : null;
+
+          // divide/factor: the coefficient dives below a bar — its home is the
+          // matching glyph in denominator position of the FINAL layout
+          let divideDest: Glyph | null = null;
+          const coefActor = (story?.actors ?? []).find((a) => a.role === "coef" || a.role === "factor");
+          if (coefActor && consumedActors.length > 0 && actorUnion) {
+            const key0 = consumedActors[0].c.g.key;
+            const midY = rcenter(actorUnion).y;
+            divideDest =
+              news.find(
+                (g) =>
+                  !claimedNew.has(g) &&
+                  g.key === key0 &&
+                  (g.role === "den" || g.role === "xdiv" || g.rect.top > midY + 8)
+              ) ?? null;
+            if (divideDest) {
+              claimedNew.add(divideDest);
+              const bi = births.indexOf(divideDest);
+              if (bi >= 0) births.splice(bi, 1);
+            }
+          }
+
+          let sinkTermId: string | null = null;
+          if (!divideDest && consumedActors.length > 0 && actorUnion && mutatedTermIds.length > 0) {
+            const eqOld = clones.find((c) => c.g.key === "=");
+            const eqX = eqOld ? rcenter(eqOld.g.rect).x : actorUnion.left;
+            const actorSideRight = rcenter(actorUnion).x > eqX;
+            const candidates = mutatedTermIds
+              .map((id) => ({
+                id,
+                rect: unionRect(clones.filter((c) => c.g.term === id).map((c) => c.g.rect)),
+              }))
+              .filter((cand) => cand.rect.width > 0);
+            const oppositeSide = candidates.filter(
+              (cand) => rcenter(cand.rect).x > eqX !== actorSideRight
+            );
+            const pick = (oppositeSide.length ? oppositeSide : candidates)[0];
+            sinkTermId = pick ? pick.id : null;
+          }
+          const sinkUnion = sinkTermId
+            ? unionRect(clones.filter((c) => c.g.term === sinkTermId).map((c) => c.g.rect))
+            : null;
+          const hasMerge = consumedActors.length > 0 && !!sinkUnion;
+          // legacy share links carry site/born ids instead of surviving sinks
+          const legacySite = !hasMerge && !divideDest && (siteClones.length > 0 || bornGlyphs.length > 0);
+          const earlyReflow = !!divideDest;
+
+          const EMPH_MS = hasActor ? 170 : 0;
+          const TRAVEL_MS = hasActor ? 420 : 0;
+          const T_TRAVEL_START = EMPH_MS;
           const T_LAND = T_TRAVEL_START + TRAVEL_MS;
-          const T_REFLOW = hasActor ? T_LAND + 40 : 0;
+          const HOLD_MS = hasMerge || legacySite ? 240 : hasActor ? 60 : 0;
+          const MERGE_MS = hasMerge || legacySite ? 300 : 0;
+          const T_MERGE = T_LAND + HOLD_MS;
           const REFLOW_MS = 240;
-          const CURTAIN = reduced ? 120 : T_REFLOW + REFLOW_MS + 80;
+          const T_REFLOW = earlyReflow ? T_TRAVEL_START : T_MERGE + MERGE_MS + (hasMerge || legacySite ? 30 : 0);
+          const CURTAIN = reduced
+            ? 120
+            : earlyReflow
+              ? T_LAND + 220
+              : T_REFLOW + REFLOW_MS + 80;
 
           const siteCenter =
             siteClones.length > 0
@@ -696,8 +786,6 @@ const EquationBuilderTool = () => {
               : bornGlyphs.length > 0
                 ? unionCenter(bornGlyphs.map((g) => g.rect))
                 : null;
-          const actorCenter =
-            actorClones.length > 0 ? unionCenter(actorClones.map((c) => c.g.rect)) : null;
 
           const later = (fn: () => void, ms: number) =>
             setTimeout(() => {
@@ -705,99 +793,218 @@ const EquationBuilderTool = () => {
             }, ms);
 
           if (!reduced) {
-            // phase 1+2: the actor pulses, then travels — ALONE, along an arc
-            const travel = (c: Clone, toCenter: { x: number; y: number }, consumed: boolean, swap?: Glyph) => {
-              const from = center(c.g.rect);
-              const dx = toCenter.x - from.x;
-              const dy = toCenter.y - from.y;
-              const lift = Math.min(30, Math.hypot(dx, dy) * 0.16);
+            // the intermediate landing offset for consumed movers: AFTER the
+            // sink's current right edge, centers aligned (paper: appended)
+            let landDX = 0;
+            let landDY = 0;
+            if (hasMerge && sinkUnion && actorUnion) {
+              const gap = Math.min(18, Math.max(8, sinkUnion.height * 0.25));
+              landDX = sinkUnion.right + gap - actorUnion.left;
+              landDY = rcenter(sinkUnion).y - rcenter(actorUnion).y;
+            } else if (legacySite && siteCenter && actorUnion) {
+              landDX = siteCenter.x - rcenter(actorUnion).x;
+              landDY = siteCenter.y - rcenter(actorUnion).y;
+            }
+
+            // mode B survivors land at an intermediate spot anchored to a
+            // frozen neighbor, not the final layout (§4): shift the final
+            // rect by the anchor's not-yet-happened reflow delta
+            let anchorDX = 0;
+            let anchorDY = 0;
+            if (pairs.length > 0 && actorTravels.some((t) => t.n)) {
+              const target = actorTravels.find((t) => t.n)!.n!;
+              let best: { c: Clone; n: Glyph } | null = null;
+              let bestD = Infinity;
+              for (const p of pairs) {
+                const d =
+                  Math.abs(p.n.rect.left - target.rect.left) +
+                  Math.abs(p.n.rect.top - target.rect.top);
+                if (d < bestD) {
+                  bestD = d;
+                  best = p;
+                }
+              }
+              if (best) {
+                anchorDX = best.c.g.rect.left - best.n.rect.left;
+                anchorDY = best.c.g.rect.top - best.n.rect.top;
+              }
+            }
+
+            const flipOf = (k: string) => (k === "\u2212" ? "+" : k === "+" ? "\u2212" : null);
+
+            // ---- phase 1+2: emphasis, then the actor travels ALONE --------
+            const launch = (c: Clone, dx: number, dy: number, opts: { toFinal?: boolean; morphTo?: string | null }) => {
+              const dist = Math.hypot(dx, dy);
+              const lift = Math.min(34, Math.max(10, dist * 0.16));
               c.node.style.transformOrigin = "50% 50%";
               c.node.style.zIndex = "10";
-              c.node.animate(
+              c.node.style.color = EMPH; // emphasis: orange + slight scale
+              c.node.animate([{ transform: "scale(1)" }, { transform: "scale(1.07)" }], {
+                duration: EMPH_MS,
+                easing: "ease-out",
+                fill: "forwards",
+              });
+              const travelAnim = c.node.animate(
                 [
-                  { transform: "translate(0,0) scale(1)", offset: 0 },
-                  { transform: "translate(0,0) scale(1.08)", offset: 0.18 },
-                  { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - lift}px) scale(1.05)`, offset: 0.6 },
+                  { transform: "translate(0,0) scale(1.07)", offset: 0 },
+                  { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - lift}px) scale(1.05)`, offset: 0.55 },
                   { transform: `translate(${dx}px, ${dy}px) scale(1)`, offset: 1 },
                 ],
-                { duration: T_LAND, easing: TRAVEL, fill: "both" }
+                // forwards, not both: a "both" fill would snap the clone to
+                // this first keyframe during the emphasis delay
+                { duration: TRAVEL_MS, delay: T_TRAVEL_START, easing: TRAVEL, fill: "forwards" }
               );
-              if (consumed) {
-                // a true death — but only AT the landing instant
+              // Chrome auto-removes a finished fill:forwards animation once a
+              // later animation covers the same property — which would snap
+              // the traveler back to its origin. Pin it.
+              (travelAnim as { persist?: () => void }).persist?.();
+              // the sign flips exactly as it crosses: squash — swap — spring,
+              // one self-neutralizing additive animation
+              if (opts.morphTo) {
+                later(() => {
+                  c.node.animate(
+                    [
+                      { transform: "scaleY(1)" },
+                      { transform: "scaleY(0.08)", offset: 0.4 },
+                      { transform: "scaleY(1.15)", offset: 0.75 },
+                      { transform: "scaleY(1)" },
+                    ],
+                    { duration: 170, easing: "ease-in-out", composite: "add" }
+                  );
+                  later(() => {
+                    c.node.textContent = opts.morphTo!;
+                  }, 68); // at full squash
+                }, T_TRAVEL_START + TRAVEL_MS * 0.46);
+              }
+              // emphasis retires at first contact: the landing (§3)
+              later(() => {
+                c.node.style.color = c.g.color;
+              }, T_LAND);
+            };
+
+            // consumed movers: to the intermediate landing (or divide home)
+            for (const { c } of consumedActors) {
+              if (divideDest) {
+                const to = rcenter(divideDest.rect);
+                const from = center(c.g.rect);
+                launch(c, to.x - from.x, to.y - from.y, { toFinal: true, morphTo: null });
+              } else if (hasMerge || legacySite) {
+                launch(c, landDX, landDY, { morphTo: flipOf(c.g.key) });
+              } else {
+                // no destination at all: a true death, at the travel beat
+                c.node.animate(
+                  [
+                    { transform: "scale(1)", opacity: 1 },
+                    { transform: "scale(0.7)", opacity: 0 },
+                  ],
+                  { duration: 200, delay: T_TRAVEL_START + 60, easing: "ease-in", fill: "both" }
+                );
+              }
+            }
+            // surviving movers: to their final rect shifted by the anchor
+            for (const { c, n } of actorTravels) {
+              if (!n) continue;
+              const dx = n.rect.left - c.g.rect.left + anchorDX;
+              const dy = n.rect.top - c.g.rect.top + anchorDY;
+              launch(c, dx, dy, { morphTo: null });
+              // ride the reflow home with everyone else
+              if (Math.abs(anchorDX) + Math.abs(anchorDY) > 0.5) {
+                c.node.animate(
+                  [{ transform: "translate(0,0)" }, { transform: `translate(${-anchorDX}px, ${-anchorDY}px)` }],
+                  { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, composite: "add", fill: "both" }
+                );
+              }
+            }
+            // the mover's own morphing glyph (a sign with a changed home)
+            for (const { c, n } of actorMutations) {
+              const dx = n.rect.left - c.g.rect.left + anchorDX;
+              const dy = n.rect.top - c.g.rect.top + anchorDY;
+              launch(c, dx, dy, { morphTo: n.text });
+              if (Math.abs(anchorDX) + Math.abs(anchorDY) > 0.5) {
+                c.node.animate(
+                  [{ transform: "translate(0,0)" }, { transform: `translate(${-anchorDX}px, ${-anchorDY}px)` }],
+                  { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, composite: "add", fill: "both" }
+                );
+              }
+            }
+
+            // ---- phase 3: hold, then merge into the sink -------------------
+            if (hasMerge && sinkUnion) {
+              const sinkC = rcenter(sinkUnion);
+              for (const { c } of consumedActors) {
+                const from = center(c.g.rect);
+                const mx = sinkC.x - from.x;
+                const my = sinkC.y - from.y;
+                c.node.animate(
+                  [
+                    { transform: `translate(${landDX}px, ${landDY}px) scale(1)`, opacity: 1 },
+                    {
+                      transform: `translate(${(landDX + mx) / 2}px, ${(landDY + my) / 2}px) scale(0.9)`,
+                      opacity: 1,
+                      offset: 0.55,
+                    },
+                    { transform: `translate(${mx}px, ${my}px) scale(0.45)`, opacity: 0 },
+                  ],
+                  { duration: MERGE_MS, delay: T_MERGE, easing: TRAVEL, fill: "forwards" }
+                );
+              }
+            }
+            if (legacySite) {
+              for (const c of siteClones) {
+                c.node.style.transformOrigin = "50% 50%";
+                c.node.animate(
+                  [
+                    { transform: "scale(1)", opacity: 1 },
+                    { transform: "scale(0.7)", opacity: 0 },
+                  ],
+                  { duration: 180, delay: T_MERGE + MERGE_MS * 0.4, easing: "ease-in", fill: "both" }
+                );
+              }
+              for (const { c } of consumedActors) {
                 c.node.animate([{ opacity: 1 }, { opacity: 0 }], {
-                  duration: 140,
-                  delay: T_LAND,
+                  duration: 160,
+                  delay: T_MERGE + MERGE_MS * 0.5,
                   easing: "ease-in",
                   fill: "both",
                 });
               }
-              if (swap) {
-                // the sign flips exactly as it crosses the equals sign
-                later(() => {
-                  c.node.textContent = swap.text;
-                  c.node.animate(
-                    [{ transform: "scale(1)" }, { transform: "scale(1.18)" }, { transform: "scale(1)" }],
-                    { duration: 160, easing: "ease-out", composite: "add" }
-                  );
-                }, T_TRAVEL_START + TRAVEL_MS * 0.5);
+              for (const n of bornGlyphs) {
+                const born = makeClone(n, overlay);
+                born.style.transformOrigin = "50% 50%";
+                born.animate(
+                  [
+                    { transform: "scale(0.6)", opacity: 0 },
+                    { transform: "scale(1.12)", opacity: 1, offset: 0.6 },
+                    { transform: "scale(1)", opacity: 1 },
+                  ],
+                  { duration: 220, delay: T_MERGE + MERGE_MS * 0.55, easing: "ease-out", fill: "both" }
+                );
               }
-            };
-            for (const { c, n } of actorTravels) {
-              if (n) travel(c, center(n.rect), false);
-              else travel(c, siteCenter ?? center(c.g.rect), true);
             }
-            for (const { c, n } of actorMutations) travel(c, center(n.rect), false, n);
 
-            // phase 3: consequences at the landing instant
-            for (const c of siteClones) {
-              c.node.style.transformOrigin = "50% 50%";
-              c.node.animate(
-                [
-                  { transform: "scale(1)", opacity: 1 },
-                  { transform: "scale(0.7)", opacity: 0 },
-                ],
-                { duration: 150, delay: T_LAND - 30, easing: "ease-in", fill: "both" }
-              );
-            }
-            for (const n of bornGlyphs) {
-              const to = center(n.rect);
-              const fromX = siteCenter ? siteCenter.x - to.x : 0;
-              const fromY = siteCenter ? siteCenter.y - to.y : 0;
-              const born = makeClone(n, overlay);
-              born.style.transformOrigin = "50% 50%";
-              born.animate(
-                [
-                  { transform: `translate(${fromX}px, ${fromY}px) scale(0.6)`, opacity: 0, offset: 0 },
-                  { transform: `translate(${fromX}px, ${fromY}px) scale(1.12)`, opacity: 1, offset: 0.35 },
-                  { transform: `translate(${fromX}px, ${fromY}px) scale(1)`, opacity: 1, offset: 0.5 },
-                  { transform: "translate(0,0) scale(1)", opacity: 1, offset: 1 },
-                ],
-                { duration: 150 + REFLOW_MS + 40, delay: T_LAND - 20, easing: SETTLE, fill: "both" }
-              );
-            }
-            // mutations in resident terms swap AT the landing instant, then
-            // ride the reflow to their new slot — one node, no crossfade
+            // resident mutations: one node, text swap + pulse at the
+            // meaningful instant — the merge beat if there is one
+            const T_SWAP = hasMerge ? T_MERGE + MERGE_MS * 0.6 : Math.max(0, T_LAND - 20);
             for (const { c, n } of mutations) {
               const dx = n.rect.left - c.g.rect.left;
               const dy = n.rect.top - c.g.rect.top;
+              const swapAt = hasMerge && c.g.term === sinkTermId ? T_SWAP : Math.max(0, T_LAND - 20);
               later(() => {
                 c.node.textContent = n.text;
                 c.node.animate(
-                  [{ transform: "scale(1)" }, { transform: "scale(1.18)" }, { transform: "scale(1)" }],
-                  { duration: 160, easing: "ease-out", composite: "add" }
+                  [{ transform: "scale(1)" }, { transform: "scale(1.3)" }, { transform: "scale(1)" }],
+                  { duration: 180, easing: "ease-out", composite: "add" }
                 );
-              }, Math.max(0, T_LAND - 20));
+              }, swapAt);
               c.node.animate(
-                [
-                  { transform: "translate(0,0)" },
-                  { transform: `translate(${dx}px, ${dy}px)` },
-                ],
-                { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, fill: "both" }
+                [{ transform: "translate(0,0)" }, { transform: `translate(${dx}px, ${dy}px)` }],
+                earlyReflow
+                  ? { duration: TRAVEL_MS * 0.62, delay: T_TRAVEL_START + TRAVEL_MS * 0.22, easing: SETTLE, fill: "both" }
+                  : { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, fill: "both" }
               );
             }
 
-            // phase 4: reflow — followers (the = included) glide to the new
-            // layout, frozen until now; deaths fade; births scale in
+            // ---- phase 4: reflow — followers (the = included) glide --------
             for (const { c, n } of pairs) {
               const dx = n.rect.left - c.g.rect.left;
               const dy = n.rect.top - c.g.rect.top;
@@ -809,7 +1016,9 @@ const EquationBuilderTool = () => {
                   { transform: "translate(0,0) scale(1,1)" },
                   { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
                 ],
-                { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, fill: "both" }
+                earlyReflow
+                  ? { duration: TRAVEL_MS * 0.62, delay: T_TRAVEL_START + TRAVEL_MS * 0.22, easing: SETTLE, fill: "both" }
+                  : { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, fill: "both" }
               );
             }
             for (const c of deaths) {
@@ -830,7 +1039,14 @@ const EquationBuilderTool = () => {
                   { transform: "scale(0.7)", opacity: 0 },
                   { transform: "scale(1)", opacity: 1 },
                 ],
-                { duration: 200, delay: T_REFLOW + 40, easing: "ease-out", fill: "both" }
+                {
+                  duration: 200,
+                  // a forming structure (a fraction bar) rises mid-flight (§8);
+                  // ordinary births wait for the reflow
+                  delay: earlyReflow ? T_TRAVEL_START + TRAVEL_MS * 0.4 : T_REFLOW + 40,
+                  easing: "ease-out",
+                  fill: "both",
+                }
               );
             }
           }
