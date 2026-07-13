@@ -148,6 +148,12 @@
       <button data-s="12">exp quotient</button>
       <button data-s="13">inequality</button>
       <button data-s="14">multiply sides</button>
+      <button data-s="15">cancel +pair</button>
+      <button data-s="16">evaluate chain</button>
+      <button data-s="17">power rule</button>
+      <button data-s="18">absorb 0</button>
+      <button data-s="19">absorb 1</button>
+      <button data-s="20">substitute</button>
     </div>
     <div class="spacer"></div>
     <div class="seg" id="modeSeg">
@@ -612,6 +618,137 @@ const SCENARIOS = [
     phases: {emphasis:170, travel:520, land:260, merge:360, reflow:240},
     trackLabels: {travel:['travel','the 2 rises past =; the bar falls'], land:['hold','read 4·2']},
   },
+  { /* 15 — annihilation on the line (backlog warm-up #2) */
+    name: 'cancel +pair',
+    desc: '<b>x + 3 − 3</b> → <b>x</b> · the −3 slides onto its partner; the pair annihilates',
+    step0: [
+      {id:'vx',  html:'<i>x</i>'},
+      {id:'p1',  html:'+'},
+      {id:'n3a', html:'3'},
+      {id:'m1',  html:'−'},
+      {id:'n3b', html:'3'},
+    ],
+    step1: [
+      {id:'vx', html:'<i>x</i>'},
+    ],
+    actors: ['m1','n3b'],
+    mutations: [],
+    merge: {sink:'n3a', remove:['m1','n3b'], resultHtml:null},   // annihilation
+    holdDissolve: ['p1'],           // the connective + falls with the pair (§8)
+    arc: 0,
+    phases: {emphasis:170, travel:120, land:120, merge:420, reflow:260},
+    trackLabels: {merge:['cancel','the pair annihilates']},
+  },
+  { /* 16 — chained merges in paper order (backlog warm-up #3).
+       CHOICE FLAGGED FOR OWNER: sequential paper-order (each partial result
+       written and held, §9) — the alternative is one simultaneous chord. */
+    name: 'evaluate chain',
+    desc: '<b>35 − 14 + 8</b> → <b>21 + 8</b> → <b>29</b> · each partial result is written before the next merge',
+    step0: [
+      {id:'n35', html:'35'},
+      {id:'m1',  html:'−'},
+      {id:'n14', html:'14'},
+      {id:'p1',  html:'+'},
+      {id:'n8',  html:'8'},
+    ],
+    step1: [
+      {id:'n35', html:'29'},
+    ],
+    actors: ['m1','n14'],
+    mutations: [],
+    chain: [
+      {sink:'n35', remove:['m1','n14'], resultHtml:'21'},
+      {sink:'n35', remove:['p1','n8'],  resultHtml:'29'},
+    ],
+    chainHold: 260,                 // the approved hold (§9: 420 was rejected)
+    arc: 0,
+    phases: {emphasis:170, travel:120, land:120, merge:340, reflow:240},
+    trackLabels: {merge:['evaluate','merge · hold · merge']},
+  },
+  { /* 17 — exponent power rule (backlog warm-up #4a) */
+    name: 'power rule',
+    desc: '<b>(a³)²</b> → <b>a³·²</b> → <b>a⁶</b> · the outer exponent climbs in; the parens fall as it commits',
+    step0: [
+      {id:'po', html:'('},
+      {id:'ba', html:'<i>a</i>'},
+      {id:'e3', html:'3', sup:true},
+      {id:'pc', html:')'},
+      {id:'e2', html:'2', sup:true},
+    ],
+    step1: [
+      {id:'ba', html:'<i>a</i>'},
+      {id:'e3', html:'6', sup:true},
+    ],
+    actors: ['e2'],
+    mutations: [],
+    /* the parens are plain `dissolved`: they fade during the flight, gone by
+       the time ·2 lands where the ) stood — on paper a³·² has no parens */
+    landPlan: {e2: {supAfter:'e3', viaPlus:'·'}},
+    transientId: 'tdot',
+    merge: {sink:'e3', remove:['tdot','e2'], resultHtml:'6'},
+    arc: -30,
+    phases: {emphasis:170, travel:480, land:340, merge:340, reflow:240},
+    trackLabels: {travel:['rise','the 2 climbs past the paren'], land:['hold','read 3·2'], merge:['merge','product becomes 6']},
+  },
+  { /* 18 — zero absorption (backlog warm-up #4b) */
+    name: 'absorb 0',
+    desc: '<b>x + 0</b> → <b>x</b> · adding nothing: the + folds onto the 0 and the pair vanishes',
+    step0: [
+      {id:'vx', html:'<i>x</i>'},
+      {id:'p1', html:'+'},
+      {id:'n0', html:'0'},
+    ],
+    step1: [
+      {id:'vx', html:'<i>x</i>'},
+    ],
+    actors: ['n0'],
+    mutations: [],
+    merge: {sink:'n0', remove:['p1'], resultHtml:null},   // + 0 is nothing
+    arc: 0,
+    phases: {emphasis:170, travel:120, land:120, merge:380, reflow:240},
+    trackLabels: {merge:['absorb','+ 0 is nothing']},
+  },
+  { /* 19 — identity absorption: the SAME gesture as zero (§12) */
+    name: 'absorb 1',
+    desc: '<b>1 · x</b> → <b>x</b> · multiplying by one: the · folds onto the 1 and the pair vanishes',
+    step0: [
+      {id:'c1',  html:'1'},
+      {id:'dot', html:'·'},
+      {id:'vx',  html:'<i>x</i>'},
+    ],
+    step1: [
+      {id:'vx', html:'<i>x</i>'},
+    ],
+    actors: ['c1'],
+    mutations: [],
+    merge: {sink:'c1', remove:['dot'], resultHtml:null},   // 1 · is nothing
+    arc: 0,
+    phases: {emphasis:170, travel:120, land:120, merge:380, reflow:240},
+    trackLabels: {merge:['absorb','1 · is nothing']},
+  },
+  { /* 20 — substitution of a value (backlog warm-up #4c) */
+    name: 'substitute',
+    desc: 'substitute <b>x = 2</b> into <b>x² + 1</b> → <b>2² + 1</b> → <b>4 + 1</b> → <b>5</b> · the value drops into the slot, then the chain evaluates',
+    step0: [
+      {id:'bx', html:'<i>x</i>'},
+      {id:'e2', html:'2', sup:true},
+      {id:'p1', html:'+'},
+      {id:'n1', html:'1'},
+    ],
+    step1: [
+      {id:'bx', html:'5'},
+    ],
+    actors: ['bx'],
+    mutations: [{id:'bx', at:0.5, html:'2'}],   // the substitution beat: squash-swap in place
+    chain: [
+      {sink:'bx', remove:['e2'], resultHtml:'4'},
+      {sink:'bx', remove:['p1','n1'], resultHtml:'5'},
+    ],
+    chainHold: 260,
+    arc: 0,
+    phases: {emphasis:200, travel:300, land:260, merge:340, reflow:240},
+    trackLabels: {travel:['substitute','x becomes 2 in place'], land:['hold','read 2² + 1'], merge:['evaluate','square · hold · add']},
+  },
 ];
 
 const CROSSFADE_MS = 430;
@@ -812,6 +949,7 @@ function fadeOut(el, ms, shrink=0.6){
 
 /* ---------------- phase strip ---------------- */
 function mergeSpanMs(S){
+  if(S.chain) return S.chain.length*S.phases.merge + (S.chain.length-1)*(S.chainHold ?? 260);
   if(S.merge) return S.phases.merge;
   if(S.hops && !S.hopsWithTravel) return S.phases.merge;
   return 0;
@@ -867,6 +1005,7 @@ function playNatural(S){
   const mergeIds  = S.merge
     ? [...S.merge.remove, ...(S.merge.resultHtml==null ? [S.merge.sink] : [])]
     : [];
+  const chainIds  = S.chain ? S.chain.flatMap(c=>c.remove) : [];
   const ontoIds   = S.landPlan
     ? Object.entries(S.landPlan).filter(([,v])=>v.onto).map(([k])=>k)
     : [];
@@ -874,7 +1013,7 @@ function playNatural(S){
   const fissionSrc = S.fission ? [S.fission.source] : [];
   const dissolved = S.step0.filter(t =>
     !S.step1.some(u=>u.id===t.id) &&
-    !mergeIds.includes(t.id) && !ontoIds.includes(t.id) &&
+    !mergeIds.includes(t.id) && !chainIds.includes(t.id) && !ontoIds.includes(t.id) &&
     !holdDiss.includes(t.id) && !fissionSrc.includes(t.id));
 
   const cur = {}; S.step0.forEach(t=>{ cur[t.id] = {...oldPos[t.id]}; });
@@ -1272,8 +1411,12 @@ function playNatural(S){
         {transform:el.style.transform+' scale(1)'},
       ], {duration:Math.max(1,P.land*m), easing:EASE_OUT, fill:'forwards'});
       /* emphasis retires at first CONTACT: at landing if the actor traveled,
-         otherwise it stays lit until its merge contact */
-      const contactsAtMerge = S.merge && S.merge.remove.includes(id) && !traveled[id];
+         otherwise it stays lit until its merge contact — including a
+         null-result sink (it IS half the annihilating pair) and chain movers */
+      const contactsAtMerge =
+        (S.merge && (S.merge.remove.includes(id) ||
+                     (S.merge.resultHtml==null && S.merge.sink===id)) && !traveled[id]) ||
+        (S.chain && S.chain.some(c=>c.remove.includes(id)) && !traveled[id]);
       if(!contactsAtMerge) el.classList.remove('actor');
     });
     if(S.hopsWithTravel){
@@ -1310,6 +1453,7 @@ function playNatural(S){
         S.merge.remove.forEach(id=>{ const el = els.get(id); if(el) el.classList.remove('actor'); });
         if(S.merge.resultHtml == null){
           /* annihilation: the pair cancels to nothing */
+          sinkEl.classList.remove('actor');   // its contact beat: emphasis retires
           pulse(sinkEl, 1.3, 180*m);
           after(P.merge*0.12*m, ()=>fadeOut(sinkEl, P.merge*0.28*m, 0.5));
         }else{
@@ -1343,6 +1487,44 @@ function playNatural(S){
         });
         if(barEl){ barEl.remove(); barEl = null; }
       });
+    });
+  }
+
+  /* ---- chained merges: paper order (§9) ----
+     Each partial result is written and HELD before the next merge fires:
+     35 − 14 + 8 → 21 + 8 (hold) → 29. Every step is the same merge gesture
+     (§12); movers light at their own step and retire at their contact. */
+  if(S.chain){
+    let tc0 = tMerge;
+    S.chain.forEach((mg, ci)=>{
+      after(tc0, ()=>{
+        lightPhase('land', false); lightPhase('merge', true);
+        const sinkEl = els.get(mg.sink);
+        const b = cur[mg.sink];
+        mg.remove.forEach(id=>{
+          const el = els.get(id); if(!el) return;
+          el.classList.add('actor');   // this step's movers are the cause now
+          const a = cur[id];
+          animate(el, [
+            {transform:`translate(${a.x}px,${a.y}px) scale(1)`, opacity:1},
+            {transform:`translate(${(a.x+b.x)/2}px,${(a.y+b.y)/2}px) scale(0.9)`, opacity:1, offset:.55},
+            {transform:`translate(${b.x}px,${b.y}px) scale(0.45)`, opacity:0},
+          ], {duration:P.merge*m, easing:EASE_TRAVEL, fill:'forwards'});
+        });
+        after(P.merge*0.6*m, ()=>{
+          mg.remove.forEach(id=>{ const el = els.get(id); if(el) el.classList.remove('actor'); });
+          const inner = sinkEl.querySelector('.in');
+          if(inner.innerHTML !== mg.resultHtml) inner.innerHTML = mg.resultHtml;
+          pulse(sinkEl, 1.35, 200*m);
+        });
+        after(P.merge*m, ()=>{
+          mg.remove.forEach(id=>{
+            const el = els.get(id);
+            if(el){ el.remove(); els.delete(id); }
+          });
+        });
+      });
+      tc0 += P.merge*m + (ci < S.chain.length-1 ? (S.chainHold ?? 260)*m : 0);
     });
   }
 
