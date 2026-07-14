@@ -157,6 +157,30 @@ export function rootBothT(te: TreeEq, n: number): TreeMoveResult {
   });
 }
 
+/**
+ * Raise both sides to the n-th power — the fractional exponent handle's move
+ * (dragging the 1/n across the equals sign), the root's inverse. Odd powers
+ * are unconditional; even powers can introduce extraneous solutions.
+ */
+export function raiseBothT(te: TreeEq, n: number): TreeMoveResult {
+  if (!Number.isInteger(n) || n < 2) return null;
+  const raise = (side: TNode): TNode => {
+    const s = simplify(side);
+    // (b^(1/n))ⁿ folds to b outright — for even n this is the move's
+    // business (it carries the check-roots pill), not the simplifier's
+    if (s.kind === "pow" && s.exp.kind === "const" && s.exp.num === 1 && s.exp.den === n) {
+      return simplify(s.base);
+    }
+    return simplify(tpow(s, tc(n)));
+  };
+  const even = n % 2 === 0;
+  return finalize(raise(te.left), raise(te.right), `raised both sides to the power ${n}`, {
+    dangerous: even,
+    note: even ? "an even power can introduce extraneous solutions — check any answer in the original equation" : undefined,
+    pill: even ? "check roots" : undefined,
+  });
+}
+
 /* --- toolbox operations on tree equations -------------------------------- */
 
 type SideResult = { node: TNode; pill?: string; dangerous?: boolean; note?: string } | string;

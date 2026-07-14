@@ -345,6 +345,20 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
               </RootHandle>
             ) : expInt ? (
               <TSym ctx={ctx}>{supInt((node.exp as { num: number }).num)}</TSym>
+            ) : !ctx.inert && node.exp.kind === "const" && node.exp.num === 1 && node.exp.den > 1 ? (
+              // a fractional exponent 1/n is the root's handle in reverse:
+              // dragging it across raises both sides to the n-th power
+              <span
+                data-symbol
+                data-term-id={ctx.id}
+                data-side={ctx.side}
+                data-role="raise"
+                data-raise-n={node.exp.den}
+                title={`Drag across the equals sign — raises both sides to the power ${node.exp.den}`}
+                className="-m-[0.14em] cursor-grab select-none p-[0.14em] transition-colors duration-150 hover:text-amber-500 active:cursor-grabbing"
+              >
+                <TN node={node.exp} ctx={{ ...ctx, inert: true }} />
+              </span>
             ) : (
               <TermRegion ctx={ctx}>
                 <TN node={node.exp} ctx={inner} />

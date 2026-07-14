@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { ChevronDown, History, Play, Search, Square, TriangleAlert } from "lucide-react";
 import {
   Power,
@@ -60,6 +60,7 @@ import {
   finalize,
   moveTermsT,
   multiplyBothT,
+  raiseBothT,
   rootBothT,
   type TreeMoveResult,
   type TreeOutcome,
@@ -187,7 +188,7 @@ const makeTreeStep = (label: string, tree: TreeEq, dangerous?: boolean, note?: s
   text: printTreeEq(tree),
 });
 
-type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn" | "lnbase" | "root";
+type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn" | "lnbase" | "root" | "raise";
 
 /** Toolbox operations that apply to both sides of the equation */
 type ToolKind = "ln" | "exp" | "sin" | "cos" | "tan" | "sqrt" | "square" | "recip";
@@ -2100,6 +2101,7 @@ const EquationBuilderTool = () => {
     | { kind: "numer"; termId: string; from: Side }
     | { kind: "lnbase"; termId: string; from: Side }
     | { kind: "root"; termId: string; n: number; from: Side }
+    | { kind: "raise"; termId: string; n: number; from: Side }
     | { kind: "tool"; tool: ToolKind };
 
   // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
@@ -2476,6 +2478,8 @@ const EquationBuilderTool = () => {
         return { kind: "lnbase", termId, from: side };
       case "root":
         return { kind: "root", termId, n: Number(el.dataset.rootN ?? 0), from: side };
+      case "raise":
+        return { kind: "raise", termId, n: Number(el.dataset.raiseN ?? 0), from: side };
       default:
         return { kind: "terms", ids: [termId], from: side };
     }
@@ -2509,7 +2513,7 @@ const EquationBuilderTool = () => {
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
     // tree-only handles (the e of e^u, an exponent) never reach flat mode
-    if (payload.kind === "lnbase" || payload.kind === "root") return null;
+    if (payload.kind === "lnbase" || payload.kind === "root" || payload.kind === "raise") return null;
     // Toolbox symbols: dropped ON a term they rebuild that term (a building
     // move — new equation, trail restarts); dropped anywhere else they apply
     // to both sides as a legal move (and some, like squaring a ±√ value, are
@@ -2709,6 +2713,12 @@ const EquationBuilderTool = () => {
       if (target.kind === "under" || target.kind === "side") return rootBothT(treeEq, payload.n);
       return null;
     }
+    if (payload.kind === "raise") {
+      // the exponent 1/n dragged across: raise both sides to the n-th power
+      if (payload.n < 2) return null;
+      if (target.kind === "under" || target.kind === "side") return raiseBothT(treeEq, payload.n);
+      return null;
+    }
     if (payload.kind === "den") {
       // a denominator factor multiplies both sides — its nonzero-ness is
       // already part of the equation's own domain
@@ -2900,8 +2910,13 @@ const EquationBuilderTool = () => {
     setTermHover(termHoverRef.current);
     setExpHover(target?.kind === "onexp" ? target.termId : null);
     setParenHover(target?.kind === "parens" || target?.kind === "funcparens" ? target.termId : null);
+    // both-sides operations (roots, powers, ln) don't need to cross the
+    // equals sign — any side is a valid stage for them
+    const bothSides = payload.kind === "lnbase" || payload.kind === "root" || payload.kind === "raise";
     setDragOver(
-      target?.kind === "side" && payload.kind !== "tool" && payload.from !== target.side ? target.side : null
+      target?.kind === "side" && payload.kind !== "tool" && (bothSides || payload.from !== target.side)
+        ? target.side
+        : null
     );
     if (target) {
       updatePreview(payload, target);
@@ -3087,6 +3102,7 @@ const EquationBuilderTool = () => {
       }
       if (p.kind === "lnbase") return "ln";
       if (p.kind === "root") return p.n === 2 ? "√" : p.n === 3 ? "∛" : `${p.n}√`;
+      if (p.kind === "raise") return `( )${supText(p.n)}`;
       return "?";
     }
     const findTerm = (id: string) => equation[p.from].find((t) => t.id === id);
@@ -3124,6 +3140,8 @@ const EquationBuilderTool = () => {
         return "ln";
       case "root":
         return p.n === 2 ? "√" : p.n === 3 ? "∛" : `${p.n}√`;
+      case "raise":
+        return `( )${supText(p.n)}`;
     }
   };
 
@@ -3132,6 +3150,36 @@ const EquationBuilderTool = () => {
     const p = dragPayloadRef.current;
     if (!p || p.kind === "tool" || p.from === side) return null;
     let text: string | null = null;
+    if (treeEq) {
+      // tree units read their ghost from the tree, not the flat terms
+      if (p.kind === "terms") {
+        const a = treeAddend(p.ids[0]);
+        if (a) text = printNode(simplifyTree(tmul(tc(-1), a)));
+      } else if (p.kind === "coef") {
+        const expr = coefExprOf(p.termId);
+        if (expr) text = `÷${printNode(expr)}`;
+      } else if (p.kind === "numer") {
+        const f = treeFactorOf(p.termId);
+        if (f) text = `÷${printNode(f.expr)}`;
+      } else if (p.kind === "xdiv") {
+        text = `÷${p.termId.split("@")[1] ?? "x"}`;
+      } else if (p.kind === "den") {
+        const f = treeFactorOf(p.termId);
+        if (f) text = `×${printNode(f.expr)}`;
+      } else if (p.kind === "lnbase") {
+        text = "ln( )";
+      } else if (p.kind === "root") {
+        text = p.n === 2 ? "√( )" : p.n === 3 ? "∛( )" : `${p.n}√( )`;
+      } else if (p.kind === "raise") {
+        text = `( )${supText(p.n)}`;
+      }
+      if (!text) return null;
+      return (
+        <span className="ml-4 self-center rounded-md border-2 border-dashed border-amber-400 px-2 py-1 text-[0.45em] leading-none text-amber-500">
+          {text}
+        </span>
+      );
+    }
     if (p.kind === "terms") {
       const ts = equation[p.from].filter((t) => p.ids.includes(t.id));
       text = ts.map((t, i) => termText(scaleNum(t, -1), i === 0)).join("").trim();
@@ -3194,6 +3242,34 @@ const EquationBuilderTool = () => {
       // hovering one term = the building move: the wrap embraces just that term
       if (termHover) return { kind: "wrapTerm", termId: termHover, before, after };
       return { kind: "wrap", before, after };
+    }
+    if (treeEq) {
+      // tree units: the same both-sides vocabulary, resolved from the tree
+      if (!underHover && !dragOver) return null;
+      switch (p.kind) {
+        case "coef": {
+          const expr = coefExprOf(p.termId);
+          return expr ? { kind: "divide", text: printNode(expr) } : null;
+        }
+        case "numer": {
+          const f = treeFactorOf(p.termId);
+          return f ? { kind: "divide", text: printNode(f.expr) } : null;
+        }
+        case "xdiv":
+          return { kind: "divide", text: p.termId.split("@")[1] ?? "x" };
+        case "den": {
+          const f = treeFactorOf(p.termId);
+          return f ? { kind: "multiply", text: printNode(f.expr) } : null;
+        }
+        case "lnbase":
+          return { kind: "wrap", before: "ln(", after: ")" };
+        case "root":
+          return { kind: "wrap", before: p.n === 2 ? "√(" : p.n === 3 ? "∛(" : `${p.n}√(`, after: ")" };
+        case "raise":
+          return { kind: "wrap", before: "(", after: `)${supText(p.n)}` };
+        default:
+          return null; // a plain term move shows the side ghost instead
+      }
     }
     const findTermBy = (id: string) => equation[p.from].find((t) => t.id === id);
     // denominator position: divide both sides
@@ -4208,21 +4284,47 @@ const EquationBuilderTool = () => {
       >
         {treeEq ? (
           <>
-            <TreeSideView
-              node={treeEq.left}
-              side="left"
-              hoveredTermId={hoveredTermId}
-              selectedIds={selection?.side === "left" ? selection.termIds : null}
-              onHover={symHandlers.hover}
-            />
-            <span className="mx-5 select-none" data-equals>=</span>
-            <TreeSideView
-              node={treeEq.right}
-              side="right"
-              hoveredTermId={hoveredTermId}
-              selectedIds={selection?.side === "right" ? selection.termIds : null}
-              onHover={symHandlers.hover}
-            />
+            {(["left", "right"] as const).map((side, i) => (
+              <Fragment key={side}>
+                {i === 1 && <span className="mx-5 select-none" data-equals>=</span>}
+                {/* the same drop shell the flat sides get: the target ring,
+                    both-sides spread previews, and the landing ghost */}
+                <span
+                  className={`inline-flex items-center rounded-xl px-2 py-1 transition-shadow ${
+                    dragOver === side ? "ring-2 ring-amber-300" : ""
+                  }`}
+                >
+                  {spread?.kind === "wrap" && (
+                    <span className="mr-1 self-center whitespace-nowrap text-[0.6em] leading-none text-amber-500/90">
+                      {spread.before}
+                    </span>
+                  )}
+                  <TreeSideView
+                    node={treeEq[side]}
+                    side={side}
+                    hoveredTermId={hoveredTermId}
+                    selectedIds={selection?.side === side ? selection.termIds : null}
+                    onHover={symHandlers.hover}
+                  />
+                  {spread?.kind === "wrap" && (
+                    <span className="ml-1 self-center whitespace-nowrap text-[0.6em] leading-none text-amber-500/90">
+                      {spread.after}
+                    </span>
+                  )}
+                  {spread?.kind === "divide" && (
+                    <span className="ml-1 self-center whitespace-nowrap text-[0.5em] leading-none text-amber-500/90">
+                      /{spread.text}
+                    </span>
+                  )}
+                  {spread?.kind === "multiply" && (
+                    <span className="ml-1 self-center whitespace-nowrap text-[0.5em] leading-none text-amber-500/90">
+                      ·{spread.text}
+                    </span>
+                  )}
+                  {dragActive && dragOver === side && !underHover && !spread && sideGhost(side)}
+                </span>
+              </Fragment>
+            ))}
           </>
         ) : (
           <>

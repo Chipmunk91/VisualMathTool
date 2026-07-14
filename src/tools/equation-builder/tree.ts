@@ -251,6 +251,18 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
       ) {
         return simplify(tpow(base.base, tc(base.exp.num, exp.den)), assume);
       }
+      // …and the reverse: an integer power of an odd-root power multiplies
+      // exponents — (b^(1/3))³ = b. Odd roots preserve sign, domains match.
+      if (
+        base.kind === "pow" &&
+        base.exp.kind === "const" &&
+        base.exp.den > 1 &&
+        base.exp.den % 2 === 1 &&
+        exp.kind === "const" &&
+        exp.den === 1
+      ) {
+        return simplify(tpow(base.base, tc(base.exp.num * exp.num, base.exp.den)), assume);
+      }
       // (e^u)^v = e^(uv) — e^u is positive for every real u, so this holds
       // unconditionally (no domain fine print like variable bases)
       if (base.kind === "fn" && base.fn === "exp") {
