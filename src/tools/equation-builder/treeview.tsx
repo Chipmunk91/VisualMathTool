@@ -101,6 +101,28 @@ const FactorHandle = ({
   </span>
 );
 
+/** A structure's interior (a pow base, a fn argument) grabs the WHOLE term:
+ *  factors in there aren't directly movable — the enclosing power or function
+ *  must come apart first — so no unit handles are minted inside (their ids
+ *  couldn't be resolved to legal moves) and the region reads as the term. */
+const TermRegion = ({ ctx, children }: { ctx: Ctx; children: ReactNode }) => {
+  if (ctx.inert) return <>{children}</>;
+  return (
+    <span
+      data-symbol
+      data-term-id={ctx.id}
+      data-side={ctx.side}
+      data-role="term"
+      onPointerEnter={() => ctx.onHover(ctx.id)}
+      onPointerLeave={() => ctx.onHover(null)}
+      title="Drag across the equals sign — the whole term moves"
+      className="inline-flex cursor-grab select-none items-center active:cursor-grabbing"
+    >
+      {children}
+    </span>
+  );
+};
+
 /** The exponent as its own unit: dragging the n across takes the n-th root */
 const RootHandle = ({ ctx, n, children }: { ctx: Ctx; n: number; children: ReactNode }) => (
   <span
@@ -300,16 +322,21 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
       // add renders its own parens; mul/pow bases need explicit ones
       const wrapBase = node.base.kind === "mul" || node.base.kind === "pow";
       const expInt = node.exp.kind === "const" && node.exp.den === 1;
+      const inner = { ...ctx, inert: true };
       return (
         <span className="inline-flex items-start">
           {wrapBase ? (
             <span className="inline-flex items-center">
               <span className="select-none">(</span>
-              <TN node={node.base} ctx={ctx} />
+              <TermRegion ctx={ctx}>
+                <TN node={node.base} ctx={inner} />
+              </TermRegion>
               <span className="select-none">)</span>
             </span>
           ) : (
-            <TN node={node.base} ctx={ctx} coefZone={coefZone} />
+            <TermRegion ctx={ctx}>
+              <TN node={node.base} ctx={inner} coefZone={coefZone} />
+            </TermRegion>
           )}
           <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
             {expInt && !ctx.inert && (node.exp as { num: number }).num >= 2 ? (
@@ -319,7 +346,9 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
             ) : expInt ? (
               <TSym ctx={ctx}>{supInt((node.exp as { num: number }).num)}</TSym>
             ) : (
-              <TN node={node.exp} ctx={ctx} />
+              <TermRegion ctx={ctx}>
+                <TN node={node.exp} ctx={inner} />
+              </TermRegion>
             )}
           </span>
         </span>
@@ -358,7 +387,9 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
               {rootN !== null ? (
                 <RootHandle ctx={ctx} n={rootN}>{constText(rootN, 1)}</RootHandle>
               ) : (
-                <TN node={node.arg} ctx={ctx} coefZone={coefZone} />
+                <TermRegion ctx={ctx}>
+                  <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
+                </TermRegion>
               )}
             </span>
           </span>
@@ -369,7 +400,9 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
           <span className="inline-flex items-baseline">
             <TSym ctx={ctx} role={role}>√</TSym>
             <span className="border-t-[0.06em] border-current pt-[0.02em]">
-              <TN node={node.arg} ctx={ctx} coefZone={coefZone} />
+              <TermRegion ctx={ctx}>
+                <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
+              </TermRegion>
             </span>
           </span>
         );
@@ -378,7 +411,9 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
         <span className="inline-flex items-center">
           <TSym ctx={ctx} role={role} className="mr-0.5">{node.fn}</TSym>
           <span className="select-none">(</span>
-          <TN node={node.arg} ctx={ctx} coefZone={coefZone} />
+          <TermRegion ctx={ctx}>
+            <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
+          </TermRegion>
           <span className="select-none">)</span>
         </span>
       );

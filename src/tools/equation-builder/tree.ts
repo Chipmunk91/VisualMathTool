@@ -215,6 +215,42 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
       if (base.kind === "mul" && exp.kind === "const" && exp.den === 1) {
         return simplify({ kind: "mul", factors: base.factors.map((f) => tpow(f, exp)) }, assume);
       }
+      // roots distribute where SIGNS allow: an odd root of a product splits
+      // freely (odd roots preserve sign — (ab)^(1/3) = a^(1/3)·b^(1/3) for
+      // all reals); an even root pulls out only the provably nonnegative
+      // factors (e^u, √, nonnegative constants, even powers) and leaves the
+      // rest wrapped. This is what folds ((e³·x)/sin(x))^(1/3) down to
+      // e · x^(1/3)/sin(x)^(1/3).
+      if (base.kind === "mul" && exp.kind === "const" && exp.num === 1 && exp.den > 1) {
+        const oddRoot = exp.den % 2 === 1;
+        const nonneg = (f: TNode): boolean =>
+          (f.kind === "fn" && (f.fn === "exp" || f.fn === "sqrt")) ||
+          (f.kind === "const" && f.num >= 0) ||
+          (f.kind === "pow" && f.exp.kind === "const" && f.exp.den === 1 && f.exp.num % 2 === 0);
+        const pulled = base.factors.filter((f) => oddRoot || nonneg(f));
+        const kept = base.factors.filter((f) => !(oddRoot || nonneg(f)));
+        if (pulled.length > 0) {
+          const factors = [
+            ...pulled.map((f) => tpow(f, exp)),
+            ...(kept.length > 0 ? [tpow(kept.length === 1 ? kept[0] : tmul(...kept), exp)] : []),
+          ];
+          return simplify({ kind: "mul", factors }, assume);
+        }
+      }
+      // an odd root of an ODD integer power folds by dividing exponents —
+      // both operations preserve sign, so domains match: (b⁻¹)^(1/3) = b^(−1/3)
+      if (
+        base.kind === "pow" &&
+        base.exp.kind === "const" &&
+        base.exp.den === 1 &&
+        Math.abs(base.exp.num) % 2 === 1 &&
+        exp.kind === "const" &&
+        exp.num === 1 &&
+        exp.den > 1 &&
+        exp.den % 2 === 1
+      ) {
+        return simplify(tpow(base.base, tc(base.exp.num, exp.den)), assume);
+      }
       // (e^u)^v = e^(uv) — e^u is positive for every real u, so this holds
       // unconditionally (no domain fine print like variable bases)
       if (base.kind === "fn" && base.fn === "exp") {
