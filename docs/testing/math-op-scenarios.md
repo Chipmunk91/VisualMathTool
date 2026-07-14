@@ -50,6 +50,9 @@ browser suite · 📐 = honest refusal by design · ❌ = known gap (candidate w
 | C2 | `2(x + 3) = 8` | drag the `2` across | `x + 3 = 4` — factor divides both sides | 🖱 test-pointer |
 | C3 | two same-side terms | drop coefficient on sibling | common factor pulled out (group forms) | 🖱 test-pointer |
 | C4 | factor becomes 1 | — | group unwraps, inner terms released with their identity | ✅ A9 |
+| C5 | `2(x+3) = 10` | drag the parens `( )` across | `2 = 10/(x+3)` **with pill `x + 3 ≠ 0`** — escapes to the tree engine (the result isn't flat-representable) | ✅ F-family, 🖱 test-cancel |
+| C6 | `(x+2)/(x+2) = y` | typed input | 📐 loads UNSIMPLIFIED — cancelling silently would erase the x = −2 domain gap (same guard as `x³/x²`) | ✅ I1 |
+| C7 | `(x+2)/(x+2) = y` | drop the numerator `(x+2)` onto the denominator | `1 = y` **with pill `x + 2 ≠ 0`** — the cancel GESTURE declares what the simplifier refuses to assume | ✅ I2–I4, 🖱 test-cancel |
 
 ## D. Powers and roots
 

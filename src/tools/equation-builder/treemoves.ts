@@ -158,6 +158,27 @@ export function rootBothT(te: TreeEq, n: number): TreeMoveResult {
 }
 
 /**
+ * Cancel a factor against its own reciprocal inside ONE addend — the gesture
+ * of dropping a numerator unit onto the matching denominator (or the
+ * reverse). This is exactly the conditional identity the simplifier refuses
+ * silently: (x+2)/(x+2) is 1 only where x+2 ≠ 0, so the MOVE declares it.
+ */
+export function cancelFactorT(te: TreeEq, addendId: string, expr: TNode, exprText: string): TreeMoveResult {
+  const at = addendAt(te, addendId);
+  if (!at) return null;
+  const cancelled = simplify(at.node, nonzeroKeys(expr));
+  if (keyOf(cancelled) === keyOf(simplify(at.node))) return "nothing cancels here — the pair must match exactly";
+  const list = addendsOf(te[at.side]).map((a, i) => (i === at.index ? cancelled : a));
+  const next: TreeEq = { ...te, [at.side]: sideFromAddends(list) };
+  const hasVars = varsIn(expr).size > 0;
+  return finalize(next.left, next.right, `cancelled ${exprText} against ${exprText}`, {
+    dangerous: hasVars,
+    note: hasVars ? `only valid where ${exprText} ≠ 0 — a solution could hide there` : undefined,
+    pill: hasVars ? `${exprText} ≠ 0` : undefined,
+  });
+}
+
+/**
  * Raise both sides to the n-th power — the fractional exponent handle's move
  * (dragging the 1/n across the equals sign), the root's inverse. Odd powers
  * are unconditional; even powers can introduce extraneous solutions.

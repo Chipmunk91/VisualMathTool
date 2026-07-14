@@ -59,6 +59,7 @@ import {
   divideBothT,
   finalize,
   moveTermsT,
+  cancelFactorT,
   multiplyBothT,
   raiseBothT,
   rootBothT,
@@ -188,7 +189,7 @@ const makeTreeStep = (label: string, tree: TreeEq, dangerous?: boolean, note?: s
   text: printTreeEq(tree),
 });
 
-type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn" | "lnbase" | "root" | "raise";
+type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn" | "lnbase" | "root" | "raise" | "group";
 
 /** Toolbox operations that apply to both sides of the equation */
 type ToolKind = "ln" | "exp" | "sin" | "cos" | "tan" | "sqrt" | "square" | "recip";
@@ -2102,6 +2103,7 @@ const EquationBuilderTool = () => {
     | { kind: "lnbase"; termId: string; from: Side }
     | { kind: "root"; termId: string; n: number; from: Side }
     | { kind: "raise"; termId: string; n: number; from: Side }
+    | { kind: "group"; termId: string; from: Side }
     | { kind: "tool"; tool: ToolKind };
 
   // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
@@ -2480,6 +2482,8 @@ const EquationBuilderTool = () => {
         return { kind: "root", termId, n: Number(el.dataset.rootN ?? 0), from: side };
       case "raise":
         return { kind: "raise", termId, n: Number(el.dataset.raiseN ?? 0), from: side };
+      case "group":
+        return { kind: "group", termId, from: side };
       default:
         return { kind: "terms", ids: [termId], from: side };
     }
@@ -2508,12 +2512,15 @@ const EquationBuilderTool = () => {
     | { kind: "onexp"; termId: string; side: Side }
     | { kind: "onterm"; termId: string; side: Side }
     | { kind: "funcparens"; termId: string; side: Side }
-    | { kind: "bound"; which: "lo" | "hi" | "at" };
+    | { kind: "bound"; which: "lo" | "hi" | "at" }
+    | { kind: "unit"; unitId: string; side: Side };
 
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
-    // tree-only handles (the e of e^u, an exponent) never reach flat mode
-    if (payload.kind === "lnbase" || payload.kind === "root" || payload.kind === "raise") return null;
+    // tree-only handles (the e of e^u, an exponent) never reach flat mode,
+    // and unit-on-unit drops plus group divides are dispatched before this
+    if (payload.kind === "lnbase" || payload.kind === "root" || payload.kind === "raise" || payload.kind === "group") return null;
+    if (target.kind === "unit") return null;
     // Toolbox symbols: dropped ON a term they rebuild that term (a building
     // move — new equation, trail restarts); dropped anywhere else they apply
     // to both sides as a legal move (and some, like squaring a ±√ value, are
@@ -2680,6 +2687,19 @@ const EquationBuilderTool = () => {
         return "rebuilding single terms arrives with the full tree grammar — click the symbol to apply it to both sides";
       return applyToolT(payload.tool, treeEq);
     }
+    if (target.kind === "unit" && (payload.kind === "numer" || payload.kind === "den" || payload.kind === "coef")) {
+      // dropping a factor onto its reciprocal counterpart cancels the pair
+      const mine = treeFactorOf(payload.termId);
+      const theirs = treeFactorOf(target.unitId);
+      if (!mine || !theirs) return null;
+      if (keyOf(simplifyTree(mine.expr)) !== keyOf(simplifyTree(theirs.expr))) {
+        return "only an identical pair cancels — these factors don't match";
+      }
+      if (payload.termId.split("@")[0] !== target.unitId.split("@")[0]) {
+        return "cancel within one term — these factors live in different terms";
+      }
+      return cancelFactorT(treeEq, payload.termId.split("@")[0], mine.expr, printNode(mine.expr));
+    }
     if (payload.kind === "coef") {
       const expr = coefExprOf(payload.termId);
       if (!expr) return null;
@@ -2770,9 +2790,11 @@ const EquationBuilderTool = () => {
     const result =
       oddRootPayload(payload) && payload.kind === "exp" && target.kind === "side"
         ? tryOddRoot(payload.termId, payload.from)
-        : treeEq
-          ? computeTreeDrop(payload, target)
-          : computeDrop(payload, target);
+        : !treeEq && payload.kind === "group" && (target.kind === "side" || target.kind === "under")
+          ? tryDivideByGroup(payload.termId, payload.from)
+          : treeEq
+            ? computeTreeDrop(payload, target)
+            : computeDrop(payload, target);
     if (result === null) setDragPreview({ kind: "cancel", text: "" });
     else if (typeof result === "string") setDragPreview({ kind: "reject", text: result });
     else {
@@ -2842,6 +2864,25 @@ const EquationBuilderTool = () => {
               side: paren.dataset.side as Side,
             };
           }
+        }
+      }
+    }
+    // Unit-on-unit cancellation (tree): a numerator factor dropped onto the
+    // matching denominator factor (or the reverse) cancels the pair — the
+    // gesture that carries the "expr ≠ 0" pill the simplifier refuses to
+    // assume silently
+    if (treeEq && (payload.kind === "numer" || payload.kind === "den" || payload.kind === "coef")) {
+      const zoneOfRole = (role: string | undefined) => (role === "den" ? "d" : "n");
+      const myZone = payload.kind === "den" ? "d" : "n";
+      for (const el of Array.from(
+        eq.querySelectorAll<HTMLElement>("[data-symbol][data-role='numer'],[data-symbol][data-role='den'],[data-symbol][data-role='coef']")
+      )) {
+        const id = el.dataset.termId ?? "";
+        if (!id.includes("@") || id === payload.termId) continue;
+        if (zoneOfRole(el.dataset.role) === myZone) continue; // cancellation crosses the bar
+        const r = el.getBoundingClientRect();
+        if (x >= r.left - 4 && x <= r.right + 4 && y >= r.top - 4 && y <= r.bottom + 4) {
+          return { kind: "unit", unitId: id, side: el.dataset.side as Side };
         }
       }
     }
@@ -3000,6 +3041,19 @@ const EquationBuilderTool = () => {
     return !!t && t.kind === "leaf" && t.power >= 3 && t.power % 2 === 1;
   };
 
+  /**
+   * Divide both sides by a PARENTHESIZED SUM — grabbing the parens of
+   * 2(x+3) = 10. The result (10/(x+3)) isn't flat-representable, so the
+   * equation escapes to the tree engine, pill and all.
+   */
+  const tryDivideByGroup = (termId: string, from: Side): TreeMoveResult => {
+    const t = equation[from].find((x) => x.id === termId);
+    if (!t || t.kind !== "group") return null;
+    const te: TreeEq = { left: flatToTree(equation.left), right: flatToTree(equation.right) };
+    const expr = simplifyTree(flatToTree(t.inner.map(reTerm)));
+    return divideBothT(te, expr, printNode(expr));
+  };
+
   /** The numeric value of a dragged constant term, for setting a bound */
   const boundValueOf = (payload: DragPayload): number | null => {
     if (payload.kind !== "terms" || payload.ids.length !== 1) return null;
@@ -3033,6 +3087,16 @@ const EquationBuilderTool = () => {
     }
     if (oddRootPayload(payload) && payload.kind === "exp" && target.kind === "side") {
       const result = tryOddRoot(payload.termId, payload.from);
+      if (result === null) return;
+      if (typeof result === "string") {
+        flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+        return;
+      }
+      commitTreeOutcome(result);
+      return;
+    }
+    if (!treeEq && payload.kind === "group" && (target.kind === "side" || target.kind === "under")) {
+      const result = tryDivideByGroup(payload.termId, payload.from);
       if (result === null) return;
       if (typeof result === "string") {
         flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
@@ -3142,6 +3206,11 @@ const EquationBuilderTool = () => {
         return p.n === 2 ? "√" : p.n === 3 ? "∛" : `${p.n}√`;
       case "raise":
         return `( )${supText(p.n)}`;
+      case "group": {
+        const t = findTerm(p.termId);
+        const inner = t && t.kind === "group" ? t.inner.map((l, i) => termText(l, i === 0)).join("").trim() : "…";
+        return `÷(${inner})`;
+      }
     }
   };
 
@@ -3196,6 +3265,9 @@ const EquationBuilderTool = () => {
       if (t) text = `×${t.den}`;
     } else if (p.kind === "xmul") {
       text = "×x";
+    } else if (p.kind === "group") {
+      const t = equation[p.from].find((x) => x.id === p.termId);
+      if (t && t.kind === "group") text = `÷(${t.inner.map((l, i) => termText(l, i === 0)).join("").trim()})`;
     } else if (p.kind === "fn") {
       const t = equation[p.from].find((t) => t.id === p.termId);
       if (t && t.kind === "func") {
@@ -3321,6 +3393,13 @@ const EquationBuilderTool = () => {
       case "xmul": {
         const t = findTermBy(p.termId);
         return { kind: "multiply", text: t && t.kind === "leaf" ? varOf(t) : "x" };
+      }
+      case "group": {
+        const t = findTermBy(p.termId);
+        if (t && t.kind === "group") {
+          return { kind: "divide", text: `(${t.inner.map((l, i) => termText(l, i === 0)).join("").trim()})` };
+        }
+        return null;
       }
       case "neg":
         return { kind: "wrap", before: "−(", after: ")" };
@@ -3796,7 +3875,15 @@ const EquationBuilderTool = () => {
                 data-parens-kind="group"
                 data-side={side}
               >
-                <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+                <Sym
+                  termId={t.id}
+                  side={side}
+                  role="group"
+                  highlighted={highlighted}
+                  blue
+                  title="Drag across the equals sign to divide both sides by this parenthesis"
+                  handlers={symHandlers}
+                >
                   (
                 </Sym>
                 {t.inner.map((l, j) => (
@@ -3816,7 +3903,15 @@ const EquationBuilderTool = () => {
                     {renderInertTerm(l, side, highlighted, t.id, "term")}
                   </span>
                 ))}
-                <Sym termId={t.id} side={side} role="term" highlighted={highlighted} handlers={symHandlers}>
+                <Sym
+                  termId={t.id}
+                  side={side}
+                  role="group"
+                  highlighted={highlighted}
+                  blue
+                  title="Drag across the equals sign to divide both sides by this parenthesis"
+                  handlers={symHandlers}
+                >
                   )
                 </Sym>
               </span>

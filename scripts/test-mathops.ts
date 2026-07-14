@@ -24,6 +24,7 @@ import {
 } from "../src/tools/equation-builder/tree";
 import {
   applyToolT,
+  cancelFactorT,
   divideBothT,
   moveTermsT,
   multiplyBothT,
@@ -160,6 +161,22 @@ console.log("\n== G. tree moves: roots and powers ==");
   } else {
     check("G7 raise round-trips to the original", false, "no tree state to raise");
   }
+}
+
+console.log("\n== I. cancellation: the gesture the simplifier refuses silently ==");
+{
+  const xp2 = tadd(tv("x"), tc(2));
+  const redundant: TreeEq = { left: tmul(xp2, tpow(xp2, -1)), right: tv("y") };
+  simp("I1 (x+2)/(x+2) honestly STAYS in the simplifier", tmul(xp2, tpow(xp2, -1)), "((x + 2))/((x + 2))");
+  const cancelled = cancelFactorT(redundant, "L0", xp2, "x + 2");
+  move("I2 the cancel gesture resolves it, pilled", cancelled, "1 = y", "x + 2 ≠ 0");
+  const mismatch = cancelFactorT({ left: tmul(xp2, tpow(tfn("sin", tv("x")), -1)), right: tv("y") }, "L0", xp2, "x + 2");
+  check("I3 a non-matching pair refuses", typeof mismatch === "string", String(mismatch));
+  // constants (3/3) never persist — combine folds them — so the gesture
+  // only ever fires on var-bearing pairs, always pilled
+  const sinPair: TreeEq = { left: tmul(tfn("sin", tv("x")), tv("y"), tpow(tfn("sin", tv("x")), -1)), right: tc(2) };
+  const sinCancel = cancelFactorT(sinPair, "L0", tfn("sin", tv("x")), "sin(x)");
+  move("I4 sin(x)/sin(x) cancels with its pill", sinCancel, "y = 2", "sin(x) ≠ 0");
 }
 
 console.log("\n== H. tree tools: functions ==");
