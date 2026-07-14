@@ -38,14 +38,18 @@ const TSym = ({
   if (ctx.inert) {
     return <span className={`select-none ${className}`}>{children}</span>;
   }
+  // sub-term units (a variable factor, a coefficient) highlight THEMSELVES
+  // on hover instead of lighting the whole addend — the region the eye sees
+  // is exactly the unit the hand would grab
+  const isUnit = role !== "term";
   return (
     <span
       data-symbol
       data-term-id={id ?? ctx.id}
       data-side={ctx.side}
       data-role={role}
-      onPointerEnter={() => ctx.onHover(ctx.id)}
-      onPointerLeave={() => ctx.onHover(null)}
+      onPointerEnter={isUnit ? undefined : () => ctx.onHover(ctx.id)}
+      onPointerLeave={isUnit ? undefined : () => ctx.onHover(null)}
       title={
         title ??
         (role === "coef"
@@ -54,23 +58,28 @@ const TSym = ({
             ? "Drag under the other side to divide both sides by this variable"
             : "Drag across the equals sign — the whole term moves")
       }
-      className={`-my-[0.16em] cursor-grab select-none py-[0.16em] active:cursor-grabbing ${className}`}
+      className={`-my-[0.16em] cursor-grab select-none py-[0.16em] active:cursor-grabbing ${
+        isUnit ? "transition-colors duration-150 hover:text-amber-500 " : ""
+      }${className}`}
     >
       {children}
     </span>
   );
 };
 
-/** A fraction part as one grab box: numerators divide, denominators multiply */
+/** One sub-term unit as one grab box: its own hitbox, its own hover glow,
+ *  its own move — numerators/coefficients divide, denominators multiply */
 const FactorHandle = ({
   ctx,
   id,
   role,
+  title,
   children,
 }: {
   ctx: Ctx;
   id: string;
-  role: "numer" | "den";
+  role: "numer" | "den" | "coef";
+  title?: string;
   children: ReactNode;
 }) => (
   <span
@@ -78,14 +87,15 @@ const FactorHandle = ({
     data-term-id={id}
     data-side={ctx.side}
     data-role={role}
-    onPointerEnter={() => ctx.onHover(ctx.id)}
-    onPointerLeave={() => ctx.onHover(null)}
     title={
-      role === "numer"
+      title ??
+      (role === "numer"
         ? "Drag under the other side to divide both sides by this"
-        : "Drag beside the other side to multiply both sides by this"
+        : role === "coef"
+          ? "Drag across the equals sign to divide both sides by this"
+          : "Drag beside the other side to multiply both sides by this")
     }
-    className="-my-[0.16em] inline-flex cursor-grab select-none items-center py-[0.16em] active:cursor-grabbing"
+    className="-my-[0.16em] inline-flex cursor-grab select-none items-center py-[0.16em] transition-colors duration-150 hover:text-amber-500 active:cursor-grabbing"
   >
     {children}
   </span>
@@ -163,9 +173,10 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
           <span className="inline-flex items-center">
             {fs.map((f, i) => {
               const dot = i > 0 && !(fs[i - 1].kind === "const" && f.kind !== "const");
-              // denominator factors multiply both sides; compound numerator
-              // factors divide; bare variables keep their flat-style handle;
-              // constants stay coefficient handles
+              // every factor is its OWN unit: denominators multiply both
+              // sides; constant-valued numerator factors (3, e³, ln 2) divide
+              // by exactly themselves; bare variables keep their flat-style
+              // handle; compound factors divide
               const body =
                 ctx.inert ? (
                   <TN node={f} ctx={ctx} />
@@ -178,8 +189,9 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
                     {f.name}
                   </TSym>
                 ) : varsIn(f).size === 0 ? (
-                  // constant-valued factors (ln 2, √2) are coefficient handles
-                  <TN node={f} ctx={ctx} coefZone />
+                  <FactorHandle ctx={ctx} id={`${ctx.id}@n${i}`} role="coef">
+                    <TN node={f} ctx={{ ...ctx, inert: true }} />
+                  </FactorHandle>
                 ) : f.kind === "fn" || f.kind === "pow" || f.kind === "add" ? (
                   <FactorHandle ctx={ctx} id={`${ctx.id}@n${i}`} role="numer">
                     <TN node={f} ctx={{ ...ctx, inert: true }} />
@@ -189,7 +201,21 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
                 );
               return (
                 <Fragment key={i}>
-                  {dot && <TSym ctx={ctx} className="mx-0.5">·</TSym>}
+                  {dot &&
+                    // in a fraction, the · between numerator factors grabs the
+                    // whole numerator PRODUCT — the "e³·x" unit
+                    (zone === "top" && denom.length > 0 && !ctx.inert ? (
+                      <FactorHandle
+                        ctx={ctx}
+                        id={`${ctx.id}@N`}
+                        role="numer"
+                        title="Drag under the other side to divide both sides by the whole numerator"
+                      >
+                        <span className="mx-0.5 select-none">·</span>
+                      </FactorHandle>
+                    ) : (
+                      <TSym ctx={ctx} className="mx-0.5">·</TSym>
+                    ))}
                   {body}
                 </Fragment>
               );
@@ -200,7 +226,23 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
       return (
         <span className="mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
           <span className="px-[0.15em]">{row(numer, "top")}</span>
-          <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
+          {/* the bar is the FRACTION's own handle: grab it to move the whole term */}
+          {ctx.inert ? (
+            <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
+          ) : (
+            <span
+              data-symbol
+              data-term-id={ctx.id}
+              data-side={ctx.side}
+              data-role="term"
+              onPointerEnter={() => ctx.onHover(ctx.id)}
+              onPointerLeave={() => ctx.onHover(null)}
+              title="Drag across the equals sign — the whole fraction moves"
+              className="relative z-10 -my-[0.1em] w-full cursor-grab py-[0.22em] active:cursor-grabbing"
+            >
+              <span className="block h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
+            </span>
+          )}
           <span className="px-[0.15em]">{row(denom, "bottom")}</span>
         </span>
       );

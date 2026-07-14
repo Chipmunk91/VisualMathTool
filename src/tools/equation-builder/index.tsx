@@ -2619,6 +2619,11 @@ const EquationBuilderTool = () => {
 
   /** The constant part of an addend — what its coefficient handle divides by */
   const coefExprOf = (id: string): TNode | null => {
+    // a factor-precise handle (L0@n2, L0@N) divides by exactly that unit
+    if (id.includes("@")) {
+      const f = treeFactorOf(id);
+      return f ? f.expr : null;
+    }
     const a = treeAddend(id);
     if (!a) return null;
     const { num, den, core } = splitCoef(a);
@@ -2631,9 +2636,10 @@ const EquationBuilderTool = () => {
     return simplifyTree(parts.length === 1 ? parts[0] : tmul(...parts));
   };
 
-  /** The fraction part a handle id (L0@n1, R0@d0) points at */
+  /** The unit a handle id points at: one factor (L0@n1, R0@d0) or the whole
+   *  numerator product (L0@N — the "e³·x" unit, grabbed at its ·) */
   const treeFactorOf = (id: string): { expr: TNode; zone: "n" | "d" } | null => {
-    const m = id.match(/^([LR]\d+)@([nd])(\d+)$/);
+    const m = id.match(/^([LR]\d+)@(N|[nd]\d+)$/);
     if (!m) return null;
     const addend = treeAddend(m[1]);
     if (!addend) return null;
@@ -2645,9 +2651,13 @@ const EquationBuilderTool = () => {
         denom.push(simplifyTree(tpow(f.base, tc(-f.exp.num, f.exp.den))));
       } else numer.push(f);
     }
-    const list = m[2] === "n" ? numer : denom;
-    const expr = list[Number(m[3])];
-    return expr !== undefined ? { expr, zone: m[2] as "n" | "d" } : null;
+    if (m[2] === "N") {
+      if (numer.length === 0) return null;
+      return { expr: simplifyTree(numer.length === 1 ? numer[0] : tmul(...numer)), zone: "n" };
+    }
+    const list = m[2][0] === "n" ? numer : denom;
+    const expr = list[Number(m[2].slice(1))];
+    return expr !== undefined ? { expr, zone: m[2][0] as "n" | "d" } : null;
   };
 
   const computeTreeDrop = (payload: DragPayload, target: DropTarget): TreeMoveResult => {
