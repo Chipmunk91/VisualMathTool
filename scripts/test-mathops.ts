@@ -28,8 +28,10 @@ import {
   divideBothT,
   moveTermsT,
   multiplyBothT,
+  normalizeOnLoad,
   raiseBothT,
   rootBothT,
+  thawExpLn,
   type TreeMoveResult,
   type TreeOutcome,
 } from "../src/tools/equation-builder/treemoves";
@@ -191,6 +193,29 @@ console.log("\n== H. tree tools: functions ==");
   const sq2: TreeEq = { left: tfn("sqrt", tadd(tv("x"), tc(1))), right: tc(3) };
   const squared = applyToolT("square", sq2);
   move("H4 squaring resolves a radical", squared, "x + 1 = 9", "check roots");
+}
+
+console.log("\n== J. sympy-style normalization: cancel + thaw, receipts attached ==");
+{
+  const xp2 = tadd(tv("x"), tc(2));
+  const n1 = normalizeOnLoad({ left: tmul(xp2, tpow(xp2, -1)), right: tv("y") });
+  check("J1 (x+2)/(x+2)=y loads as 1 = y", printTreeEq(n1.te) === "1 = y", printTreeEq(n1.te));
+  check("J1 — pill", n1.pill === "x + 2 ≠ 0", n1.pill);
+  const n2 = normalizeOnLoad({
+    left: tfn("exp", tadd(tfn("ln", tv("x")), tc(5, 2))),
+    right: tfn("exp", tmul(tc(1, 4), tv("y"))),
+  });
+  check("J2 e^(ln x + 5/2) thaws at load", printTreeEq(n2.te) === "e^5/2·x = e^(1/4y)", printTreeEq(n2.te));
+  check("J2 — pill", n2.pill === "x > 0", n2.pill);
+  const n3 = normalizeOnLoad({ left: tmul(tc(2), tv("x")), right: tc(10) });
+  check("J3 a plain equation loads untouched", !n3.changed && printTreeEq(n3.te) === "2x = 10");
+  // the MOVE path: any finalize-produced state thaws too, with the note
+  const r = applyToolT("exp", { left: tadd(tfn("ln", tv("x")), tc(5, 2)), right: tmul(tc(1, 4), tv("y")) });
+  const ok = r !== null && typeof r !== "string" && r.treeNext !== null;
+  check("J4 exp tool thaws e^(ln x + …) via finalize", ok && printTreeEq(r.treeNext!) === "e^5/2·x = e^(1/4y)", ok ? printTreeEq((r as TreeOutcome).treeNext!) : String(r));
+  check("J4 — pill", ok && (r as TreeOutcome).pill === "x > 0");
+  const t = thawExpLn(tfn("exp", tfn("ln", tadd(tv("x"), tc(1)))));
+  check("J5 bare e^(ln u) = u, reported", printNode(simplify(t.node)) === "x + 1" && t.thawed.join() === "x + 1");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

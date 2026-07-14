@@ -61,6 +61,8 @@ import {
   moveTermsT,
   cancelFactorT,
   multiplyBothT,
+  normalizeOnLoad,
+  thawExpLn,
   raiseBothT,
   rootBothT,
   type TreeMoveResult,
@@ -1313,6 +1315,36 @@ const EquationBuilderTool = () => {
     rebuild?: boolean,
     story?: MoveStory
   ) => {
+    // e^(ln u) never survives a commit: thaw it here (with its u > 0 pill), so
+    // flat tool results match the tree engine's behavior. Thaw ONLY — pair
+    // cancellation stays a deliberate gesture, never a silent mid-game rewrite.
+    const thawL = thawExpLn(flatToTree(next.left));
+    const thawR = thawExpLn(flatToTree(next.right));
+    const thawed = Array.from(new Set([...thawL.thawed, ...thawR.thawed]));
+    if (thawed.length > 0 && !rebuild) {
+      const thawNote = `e^(ln u) = u used — ${thawed.join(", ")} > 0 assumed`;
+      const combinedNote = note ? `${note}; ${thawNote}` : thawNote;
+      const combinedPill = pill ?? `${thawed.join(", ")} > 0`;
+      const teNext: TreeEq = { left: simplifyTree(thawL.node), right: simplifyTree(thawR.node) };
+      const fl = treeSideToFlat(teNext.left);
+      const fr = treeSideToFlat(teNext.right);
+      if (fl && fr) {
+        const flatNext: EquationState = {
+          left: combine(fl.length ? fl : [leaf(0)]),
+          right: combine(fr.length ? fr : [leaf(0)]),
+        };
+        setTreeEq(null);
+        setEquation(flatNext);
+        setHistory((h) => [...h, makeStep(label, flatNext, true, combinedNote, combinedPill, story)]);
+      } else {
+        setTreeEq(teNext);
+        setEquation(TREE_DUMMY());
+        setHistory((h) => [...h, makeTreeStep(label, teNext, true, combinedNote, combinedPill)]);
+      }
+      setSelection(null);
+      setNotice(null);
+      return;
+    }
     setEquation(next);
     if (rebuild) {
       // a building move rewrites the equation itself — new problem, new trail
@@ -1962,15 +1994,30 @@ const EquationBuilderTool = () => {
   }, [searchSel]);
 
   const applyParse = (result: ParseResult & { ok: true }) => {
-    if (result.tree) {
-      // frontier mode: the flat model can't hold this — the tree can
-      setTreeEq(result.tree);
-      setEquation(TREE_DUMMY());
-      setHistory([makeTreeStep("start", result.tree)]);
-    } else {
+    // sympy-style load normalization, UNIFIED across both parser outputs:
+    // whether the equation parsed flat or into the frontier tree, route it
+    // through the tree normalizer so obvious identical-pair cancellations and
+    // e^(ln u) thaws happen NOW — each stamping its assumption on step 0,
+    // never assumed silently. The result re-enters flat mode when it can.
+    const tree: TreeEq = result.tree ?? {
+      left: flatToTree(result.state.left),
+      right: flatToTree(result.state.right),
+    };
+    const norm = normalizeOnLoad(tree);
+    const fl = treeSideToFlat(norm.te.left);
+    const fr = treeSideToFlat(norm.te.right);
+    if (fl && fr) {
+      const state: EquationState = {
+        left: combine(fl.length ? fl : [leaf(0)]),
+        right: combine(fr.length ? fr : [leaf(0)]),
+      };
       setTreeEq(null);
-      setEquation(result.state);
-      setHistory([makeStep("start", result.state)]);
+      setEquation(state);
+      setHistory([makeStep("start", state, norm.changed, norm.note, norm.pill)]);
+    } else {
+      setTreeEq(norm.te);
+      setEquation(TREE_DUMMY());
+      setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
     }
     setSelection(null);
     setNotice(null);
@@ -3868,7 +3915,7 @@ const EquationBuilderTool = () => {
                   />
                 ))}
               <span
-                className={`inline-flex items-center rounded-lg transition-colors ${
+                className={`inline-flex items-center rounded-lg transition-colors [&:has([data-role='group']:hover)]:text-amber-500 ${
                   parenHover === t.id ? "bg-amber-100 text-amber-600 dark:bg-amber-950/40" : ""
                 }`}
                 data-parens-for={t.id}

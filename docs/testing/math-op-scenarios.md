@@ -7,7 +7,7 @@ is a separate pass.
 
 **How to run:**
 
-- Pure layer (no browser): `npx tsx scripts/test-mathops.ts` — sections A–H below.
+- Pure layer (no browser): `npx tsx scripts/test-mathops.ts` — sections A–J below.
 - Gesture layer (Playwright vs `vite preview`): the scratchpad suites named
   in the Status column exercise the same operations through real drags.
 
@@ -51,8 +51,9 @@ browser suite · 📐 = honest refusal by design · ❌ = known gap (candidate w
 | C3 | two same-side terms | drop coefficient on sibling | common factor pulled out (group forms) | 🖱 test-pointer |
 | C4 | factor becomes 1 | — | group unwraps, inner terms released with their identity | ✅ A9 |
 | C5 | `2(x+3) = 10` | drag the parens `( )` across | `2 = 10/(x+3)` **with pill `x + 3 ≠ 0`** — escapes to the tree engine (the result isn't flat-representable) | ✅ F-family, 🖱 test-cancel |
-| C6 | `(x+2)/(x+2) = y` | typed input | 📐 loads UNSIMPLIFIED — cancelling silently would erase the x = −2 domain gap (same guard as `x³/x²`) | ✅ I1 |
-| C7 | `(x+2)/(x+2) = y` | drop the numerator `(x+2)` onto the denominator | `1 = y` **with pill `x + 2 ≠ 0`** — the cancel GESTURE declares what the simplifier refuses to assume | ✅ I2–I4, 🖱 test-cancel |
+| C6 | `(x+2)/(x+2) = y` | typed input | `1 = y` **with pill `x + 2 ≠ 0`** — sympy-style load normalization cancels the pair, but stamps the assumption (the receipt), never assumes it silently | ✅ J1, 🖱 test-cancel |
+| C7 | mid-derivation `(x+2)/(x+2)` (arises from a move, not typed) | drop the numerator `(x+2)` onto the denominator | `1` **with pill `x + 2 ≠ 0`** — the cancel GESTURE, for fractions the load pass didn't see | ✅ I2–I4 |
+| C8 | `x/x = 1` | typed input | `1 = 1` (**Always true**) **with pill `x ≠ 0`** — same load normalization; the receipt keeps it honest | 🖱 test-tree |
 
 ## D. Powers and roots
 
@@ -84,6 +85,9 @@ browser suite · 📐 = honest refusal by design · ❌ = known gap (candidate w
 | E9 | `2^x = 8` | ln thaws the foreign base | `ln(2)·x = ln(8)` → divide → solved ≈ 3 | 🖱 test-tree |
 | E10 | `x³/x²` | simplifier without assumptions | 📐 stays — cancelling would erase the x=0 domain gap | ✅ B5 |
 | E11 | same, after a move declaring `x ≠ 0` | simplifier with the pill's license | `x` — cancels under the declared assumption | ✅ B6 |
+| E12 | `e^(ln(x) + 5/2) = e^(y/4)` | typed input | `e^(5/2)·x = e^(y/4)` **with pill `x > 0`** — e^(ln u) thaws at load, receipt attached | ✅ J2, 🖱 test-norm |
+| E13 | `ln(x) + 5/2 = y/4` | exp tool (a MOVE) | `e^(5/2)·x = e^(y/4)` **with pill `x > 0`** — the thaw fires on every commit, flat tool or tree move | ✅ J4, 🖱 test-norm |
+| E14 | `e^(ln u)` (bare, anywhere) | any commit | `u` — never survives; the assumption `u > 0` is always reported | ✅ J5 |
 
 ## F. Trig functions and inverses
 

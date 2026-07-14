@@ -44,8 +44,20 @@ export function finalize(
   label: string,
   extra?: { dangerous?: boolean; note?: string; pill?: string }
 ): TreeOutcome {
-  const l = simplify(left);
-  const r = simplify(right);
+  // every move-produced state thaws e^(ln u) — with the assumption reported
+  const tl = thawExpLn(simplify(left));
+  const tr = thawExpLn(simplify(right));
+  const thawed = Array.from(new Set([...tl.thawed, ...tr.thawed]));
+  if (thawed.length > 0) {
+    const thawNote = `e^(ln u) = u used — ${thawed.join(", ")} > 0 assumed`;
+    extra = {
+      dangerous: true,
+      note: extra?.note ? `${extra.note}; ${thawNote}` : thawNote,
+      pill: extra?.pill ?? `${thawed.join(", ")} > 0`,
+    };
+  }
+  const l = simplify(tl.node);
+  const r = simplify(tr.node);
   const fl = treeSideToFlat(l);
   const fr = treeSideToFlat(r);
   if (fl && fr) {
@@ -155,6 +167,91 @@ export function rootBothT(te: TreeEq, n: number): TreeMoveResult {
     note: even ? "an even root keeps the principal branch — a negative branch may be lost" : undefined,
     pill: even ? "principal root" : undefined,
   });
+}
+
+/**
+ * e^(ln u + rest) → u·e^rest — the conditional identity (u > 0). It lives in
+ * the MOVE layer (never the simplifier) and reports every argument it thawed
+ * so the step can carry the assumption.
+ */
+export function thawExpLn(n: TNode): { node: TNode; thawed: string[] } {
+  const thawed: string[] = [];
+  const walk = (m: TNode): TNode => {
+    switch (m.kind) {
+      case "const":
+      case "var":
+        return m;
+      case "add":
+        return { kind: "add", terms: m.terms.map(walk) };
+      case "mul":
+        return { kind: "mul", factors: m.factors.map(walk) };
+      case "pow":
+        return { kind: "pow", base: walk(m.base), exp: walk(m.exp) };
+      case "fn": {
+        const arg = walk(m.arg);
+        if (m.fn === "exp") {
+          const addends = arg.kind === "add" ? arg.terms : [arg];
+          const lnArgs: TNode[] = [];
+          const rest: TNode[] = [];
+          for (const t of addends) {
+            if (t.kind === "fn" && t.fn === "ln") lnArgs.push(t.arg);
+            else rest.push(t);
+          }
+          if (lnArgs.length > 0) {
+            lnArgs.forEach((u) => thawed.push(printNode(u)));
+            const factors: TNode[] = [...lnArgs];
+            if (rest.length > 0) {
+              factors.push(tfn("exp", rest.length === 1 ? rest[0] : { kind: "add", terms: rest }));
+            }
+            return factors.length === 1 ? factors[0] : tmul(...factors);
+          }
+        }
+        return { kind: "fn", fn: m.fn, arg };
+      }
+    }
+  };
+  return { node: walk(n), thawed };
+}
+
+/**
+ * sympy-style input normalization — what cancel() would do, but with the
+ * assumptions RECORDED instead of assumed generically: identical var-bearing
+ * factor pairs across a fraction bar cancel at load, and e^(ln u) thaws,
+ * each stamping the step-0 pill.
+ */
+export function normalizeOnLoad(te: TreeEq): { te: TreeEq; pill?: string; note?: string; changed: boolean } {
+  const pills: string[] = [];
+  const cancelSide = (side: TNode): TNode =>
+    sideFromAddends(
+      addendsOf(side).map((a) => {
+        const factors = a.kind === "mul" ? a.factors : [a];
+        const pos = new Map<string, TNode>();
+        const neg = new Map<string, TNode>();
+        for (const f of factors) {
+          const isNeg = f.kind === "pow" && f.exp.kind === "const" && f.exp.num < 0;
+          const base = f.kind === "pow" ? f.base : f;
+          if (varsIn(base).size === 0) continue;
+          (isNeg ? neg : pos).set(keyOf(base), base);
+        }
+        const shared = Array.from(pos.keys()).filter((k) => neg.has(k));
+        if (shared.length === 0) return a;
+        const out = simplify(a, new Set(shared));
+        if (keyOf(out) === keyOf(simplify(a))) return a;
+        shared.forEach((k) => pills.push(`${printNode(pos.get(k)!)} ≠ 0`));
+        return out;
+      })
+    );
+  const tl = thawExpLn(simplify(cancelSide(te.left)));
+  const tr = thawExpLn(simplify(cancelSide(te.right)));
+  const thawed = Array.from(new Set([...tl.thawed, ...tr.thawed]));
+  if (thawed.length > 0) pills.push(`${thawed.join(", ")} > 0`);
+  const unique = Array.from(new Set(pills));
+  return {
+    te: { left: simplify(tl.node), right: simplify(tr.node) },
+    pill: unique.length ? unique.join(", ") : undefined,
+    note: unique.length ? "simplified on load — the assumptions it needs are recorded on this step" : undefined,
+    changed: unique.length > 0,
+  };
 }
 
 /**
