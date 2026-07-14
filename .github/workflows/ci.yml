@@ -17,6 +17,8 @@ jobs:
       - run: npm ci
       - name: Type check
         run: npm run check
+      - name: Math operation sanity suite
+        run: npx tsx scripts/test-mathops.ts
       - name: Build
         run: npm run build
       - name: Upload build artifact
