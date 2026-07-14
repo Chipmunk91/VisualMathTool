@@ -60,6 +60,7 @@ import {
   finalize,
   moveTermsT,
   multiplyBothT,
+  rootBothT,
   type TreeMoveResult,
   type TreeOutcome,
 } from "./treemoves";
@@ -186,7 +187,7 @@ const makeTreeStep = (label: string, tree: TreeEq, dangerous?: boolean, note?: s
   text: printTreeEq(tree),
 });
 
-type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn";
+type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn" | "lnbase" | "root";
 
 /** Toolbox operations that apply to both sides of the equation */
 type ToolKind = "ln" | "exp" | "sin" | "cos" | "tan" | "sqrt" | "square" | "recip";
@@ -2097,6 +2098,8 @@ const EquationBuilderTool = () => {
     | { kind: "exp"; termId: string; from: Side }
     | { kind: "fn"; termId: string; from: Side }
     | { kind: "numer"; termId: string; from: Side }
+    | { kind: "lnbase"; termId: string; from: Side }
+    | { kind: "root"; termId: string; n: number; from: Side }
     | { kind: "tool"; tool: ToolKind };
 
   // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
@@ -2469,6 +2472,10 @@ const EquationBuilderTool = () => {
         return { kind: "fn", termId, from: side };
       case "numer":
         return { kind: "numer", termId, from: side };
+      case "lnbase":
+        return { kind: "lnbase", termId, from: side };
+      case "root":
+        return { kind: "root", termId, n: Number(el.dataset.rootN ?? 0), from: side };
       default:
         return { kind: "terms", ids: [termId], from: side };
     }
@@ -2501,6 +2508,8 @@ const EquationBuilderTool = () => {
 
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
+    // tree-only handles (the e of e^u, an exponent) never reach flat mode
+    if (payload.kind === "lnbase" || payload.kind === "root") return null;
     // Toolbox symbols: dropped ON a term they rebuild that term (a building
     // move — new equation, trail restarts); dropped anywhere else they apply
     // to both sides as a legal move (and some, like squaring a ±√ value, are
@@ -2673,19 +2682,31 @@ const EquationBuilderTool = () => {
       return divideBothT(treeEq, expr, printNode(expr));
     }
     if (payload.kind === "xdiv") {
-      // a bare variable handle: under → divide both sides by it; beside → the term moves
+      // a bare variable factor is a multiplier: moving it anywhere across
+      // applies its inverse — divide both sides by it
       const v = payload.termId.split("@")[1] as Variable | undefined;
       if (!v) return null;
-      if (target.kind === "under") return divideBothT(treeEq, tv(v), v);
-      if (target.kind === "side") return moveTermsT(treeEq, [payload.termId], payload.from, target.side);
+      if (target.kind === "under" || target.kind === "side") return divideBothT(treeEq, tv(v), v);
       return null;
     }
     if (payload.kind === "numer") {
-      // a compound numerator factor: under → divide both sides by it
+      // a numerator factor (or the whole numerator product) is a multiplier:
+      // moving it across divides both sides by it
       const f = treeFactorOf(payload.termId);
       if (!f) return null;
-      if (target.kind === "under") return divideBothT(treeEq, f.expr, printNode(f.expr));
-      if (target.kind === "side") return moveTermsT(treeEq, [payload.termId], payload.from, target.side);
+      if (target.kind === "under" || target.kind === "side")
+        return divideBothT(treeEq, f.expr, printNode(f.expr));
+      return null;
+    }
+    if (payload.kind === "lnbase") {
+      // the e of e^u dragged across: take ln of both sides
+      if (target.kind === "under" || target.kind === "side") return applyToolT("ln", treeEq);
+      return null;
+    }
+    if (payload.kind === "root") {
+      // the exponent n dragged across: take the n-th root of both sides
+      if (payload.n < 2) return null;
+      if (target.kind === "under" || target.kind === "side") return rootBothT(treeEq, payload.n);
       return null;
     }
     if (payload.kind === "den") {
@@ -2767,13 +2788,18 @@ const EquationBuilderTool = () => {
   const nearestSymbol = (x: number, y: number): HTMLElement | null => {
     let best: HTMLElement | null = null;
     let bestDistance = GRAB_RADIUS;
+    let bestArea = Infinity;
     equationRef.current?.querySelectorAll<HTMLElement>("[data-symbol]").forEach((el) => {
       const r = el.getBoundingClientRect();
       const dx = x - Math.max(r.left, Math.min(x, r.right));
       const dy = y - Math.max(r.top, Math.min(y, r.bottom));
       const d = Math.hypot(dx, dy); // 0 when inside the box
-      if (d < bestDistance) {
+      const area = r.width * r.height;
+      // nested units tie at distance 0 — the SMALLEST box wins, so grabbing
+      // the e of e³ grabs the e, not the product row wrapped around it
+      if (d < bestDistance - 0.5 || (Math.abs(d - bestDistance) <= 0.5 && area < bestArea)) {
         bestDistance = d;
+        bestArea = area;
         best = el;
       }
     });
@@ -3059,6 +3085,8 @@ const EquationBuilderTool = () => {
         const f = treeFactorOf(p.termId);
         return f ? printNode(f.expr) : "?";
       }
+      if (p.kind === "lnbase") return "ln";
+      if (p.kind === "root") return p.n === 2 ? "√" : p.n === 3 ? "∛" : `${p.n}√`;
       return "?";
     }
     const findTerm = (id: string) => equation[p.from].find((t) => t.id === id);
@@ -3092,6 +3120,10 @@ const EquationBuilderTool = () => {
         const t = findTerm(p.termId);
         return t && t.kind === "func" ? t.fn : "fn";
       }
+      case "lnbase":
+        return "ln";
+      case "root":
+        return p.n === 2 ? "√" : p.n === 3 ? "∛" : `${p.n}√`;
     }
   };
 

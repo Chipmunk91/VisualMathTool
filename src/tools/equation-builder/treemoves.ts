@@ -131,6 +131,32 @@ export function multiplyBothT(te: TreeEq, expr: TNode, exprText: string): TreeMo
   return finalize(times(te.left), times(te.right), `multiplied both sides by ${exprText}`);
 }
 
+/**
+ * Take the n-th root of both sides — the exponent handle's move (dragging
+ * the 3 of x³ or e³ across the equals sign). Odd roots are unconditional;
+ * even roots keep only the principal branch, and say so.
+ */
+export function rootBothT(te: TreeEq, n: number): TreeMoveResult {
+  if (!Number.isInteger(n) || n < 2) return null;
+  const root = (side: TNode): TNode => {
+    const s = simplify(side);
+    // (xⁿ)^(1/n) → x directly — the fractional-exponent fold is deliberately
+    // NOT in simplify (x² → |x| territory), so the move does it here, where
+    // the even case is pilled as principal-branch
+    if (s.kind === "pow" && s.exp.kind === "const" && s.exp.den === 1 && s.exp.num === n) {
+      return simplify(s.base);
+    }
+    return simplify(tpow(s, tc(1, n)));
+  };
+  const even = n % 2 === 0;
+  const ord = n === 2 ? "square" : n === 3 ? "cube" : `${n}th`;
+  return finalize(root(te.left), root(te.right), `took the ${ord} root of both sides`, {
+    dangerous: even,
+    note: even ? "an even root keeps the principal branch — a negative branch may be lost" : undefined,
+    pill: even ? "principal root" : undefined,
+  });
+}
+
 /* --- toolbox operations on tree equations -------------------------------- */
 
 type SideResult = { node: TNode; pill?: string; dangerous?: boolean; note?: string } | string;

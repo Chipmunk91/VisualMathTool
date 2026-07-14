@@ -101,6 +101,21 @@ const FactorHandle = ({
   </span>
 );
 
+/** The exponent as its own unit: dragging the n across takes the n-th root */
+const RootHandle = ({ ctx, n, children }: { ctx: Ctx; n: number; children: ReactNode }) => (
+  <span
+    data-symbol
+    data-term-id={ctx.id}
+    data-side={ctx.side}
+    data-role="root"
+    data-root-n={n}
+    title={`Drag across the equals sign — takes the ${n === 2 ? "square" : n === 3 ? "cube" : `${n}th`} root of both sides`}
+    className="-m-[0.14em] cursor-grab select-none p-[0.14em] transition-colors duration-150 hover:text-amber-500 active:cursor-grabbing"
+  >
+    {children}
+  </span>
+);
+
 const constText = (num: number, den: number): string =>
   den === 1 ? String(num).replace("-", "−") : `${String(num).replace("-", "−")}/${den}`;
 
@@ -189,9 +204,14 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
                     {f.name}
                   </TSym>
                 ) : varsIn(f).size === 0 ? (
-                  <FactorHandle ctx={ctx} id={`${ctx.id}@n${i}`} role="coef">
-                    <TN node={f} ctx={{ ...ctx, inert: true }} />
-                  </FactorHandle>
+                  f.kind === "fn" && f.fn === "exp" ? (
+                    // e^n renders its own units — e takes ln, n takes roots
+                    <TN node={f} ctx={ctx} />
+                  ) : (
+                    <FactorHandle ctx={ctx} id={`${ctx.id}@n${i}`} role="coef">
+                      <TN node={f} ctx={{ ...ctx, inert: true }} />
+                    </FactorHandle>
+                  )
                 ) : f.kind === "fn" || f.kind === "pow" || f.kind === "add" ? (
                   <FactorHandle ctx={ctx} id={`${ctx.id}@n${i}`} role="numer">
                     <TN node={f} ctx={{ ...ctx, inert: true }} />
@@ -202,17 +222,11 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
               return (
                 <Fragment key={i}>
                   {dot &&
-                    // in a fraction, the · between numerator factors grabs the
-                    // whole numerator PRODUCT — the "e³·x" unit
+                    // in a fraction, the · belongs to the numerator-PRODUCT
+                    // handle wrapped around the whole row — transparent to the
+                    // pointer so the row receives the grab
                     (zone === "top" && denom.length > 0 && !ctx.inert ? (
-                      <FactorHandle
-                        ctx={ctx}
-                        id={`${ctx.id}@N`}
-                        role="numer"
-                        title="Drag under the other side to divide both sides by the whole numerator"
-                      >
-                        <span className="mx-0.5 select-none">·</span>
-                      </FactorHandle>
+                      <span className="pointer-events-none mx-0.5 select-none">·</span>
                     ) : (
                       <TSym ctx={ctx} className="mx-0.5">·</TSym>
                     ))}
@@ -225,7 +239,23 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
       if (denom.length === 0) return row(numer, "top");
       return (
         <span className="mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
-          <span className="px-[0.15em]">{row(numer, "top")}</span>
+          {/* the numerator ROW is the product unit ("e³·x"): its padding, the
+              gaps, and the · all grab it; the factor handles nested inside win
+              where they cover. It lights up only when no inner unit is hovered. */}
+          {ctx.inert ? (
+            <span className="px-[0.15em]">{row(numer, "top")}</span>
+          ) : (
+            <span
+              data-symbol
+              data-term-id={`${ctx.id}@N`}
+              data-side={ctx.side}
+              data-role="numer"
+              title="Drag across the equals sign to divide both sides by the whole numerator"
+              className="-mx-[0.1em] -mt-[0.14em] cursor-grab select-none px-[0.25em] pt-[0.14em] transition-colors duration-150 [&:hover:not(:has([data-symbol]:hover))]:text-amber-500 active:cursor-grabbing"
+            >
+              {row(numer, "top")}
+            </span>
+          )}
           {/* the bar is the FRACTION's own handle: grab it to move the whole term */}
           {ctx.inert ? (
             <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
@@ -282,7 +312,11 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
             <TN node={node.base} ctx={ctx} coefZone={coefZone} />
           )}
           <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
-            {expInt ? (
+            {expInt && !ctx.inert && (node.exp as { num: number }).num >= 2 ? (
+              <RootHandle ctx={ctx} n={(node.exp as { num: number }).num}>
+                {supInt((node.exp as { num: number }).num)}
+              </RootHandle>
+            ) : expInt ? (
               <TSym ctx={ctx}>{supInt((node.exp as { num: number }).num)}</TSym>
             ) : (
               <TN node={node.exp} ctx={ctx} />
@@ -297,11 +331,35 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
         if (node.arg.kind === "const" && node.arg.num === 1 && node.arg.den === 1) {
           return <TSym ctx={ctx} role={role} className="italic">e</TSym>;
         }
+        // the base and the exponent are their OWN units: dragging the e
+        // takes ln of both sides; dragging a whole exponent n takes the
+        // n-th root of both sides
+        const rootN =
+          !ctx.inert && node.arg.kind === "const" && node.arg.den === 1 && node.arg.num >= 2
+            ? node.arg.num
+            : null;
         return (
           <span className="inline-flex items-start">
-            <TSym ctx={ctx} role={role} className="italic">e</TSym>
+            {ctx.inert ? (
+              <span className="select-none italic">e</span>
+            ) : (
+              <span
+                data-symbol
+                data-term-id={ctx.id}
+                data-side={ctx.side}
+                data-role="lnbase"
+                title="Drag across the equals sign — takes ln of both sides"
+                className="-my-[0.16em] cursor-grab select-none py-[0.16em] italic transition-colors duration-150 hover:text-amber-500 active:cursor-grabbing"
+              >
+                e
+              </span>
+            )}
             <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
-              <TN node={node.arg} ctx={ctx} coefZone={coefZone} />
+              {rootN !== null ? (
+                <RootHandle ctx={ctx} n={rootN}>{constText(rootN, 1)}</RootHandle>
+              ) : (
+                <TN node={node.arg} ctx={ctx} coefZone={coefZone} />
+              )}
             </span>
           </span>
         );
