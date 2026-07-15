@@ -131,6 +131,19 @@ const decideStatus = (L: TNode, R: TNode): "identity" | "contradiction" | null =
 const negOf = (t: EqTerm): boolean =>
   t.kind === "leaf" && (t.pm || t.radical || t.fnVal) ? !!t.neg : t.num < 0;
 
+/** e^1 is just e: an exp func whose exponent is exactly the constant 1.
+ *  Arises when a divide cancels exponents (e³/e² = e^1) — display it as e,
+ *  matching the tree side (printNode / treeview both fold e^1 → e). */
+const isBareExpE = (t: EqTerm): boolean =>
+  t.kind === "func" &&
+  t.fn === "exp" &&
+  t.inner.length === 1 &&
+  t.inner[0].kind === "leaf" &&
+  t.inner[0].num === 1 &&
+  t.inner[0].den === 1 &&
+  t.inner[0].power === 0 &&
+  !t.inner[0].neg;
+
 /** Plain-text rendering of a term, for history rows and labels */
 function termText(t: EqTerm, leading: boolean): string {
   const negative = t.kind === "leaf" && (t.pm || t.radical || t.fnVal) ? !!t.neg : t.num < 0;
@@ -155,7 +168,11 @@ function termText(t: EqTerm, leading: boolean): string {
   if (t.kind === "group") {
     body = `${coefStr}(${innerText(t.inner)})`;
   } else if (t.kind === "func") {
-    body = t.fn === "exp" ? `${coefStr}e^(${innerText(t.inner)})` : `${coefStr}${t.fn}(${innerText(t.inner)})`;
+    body = isBareExpE(t)
+      ? `${coefStr}e`
+      : t.fn === "exp"
+        ? `${coefStr}e^(${innerText(t.inner)})`
+        : `${coefStr}${t.fn}(${innerText(t.inner)})`;
   } else if (t.power >= 1) {
     body = `${coefStr}${varOf(t)}${t.power > 1 ? supText(t.power) : ""}`;
   } else if (t.power === 0) {
@@ -3097,6 +3114,62 @@ const EquationBuilderTool = () => {
     return best;
   };
 
+  /**
+   * Dev: snapshot the live GRAB MAP as a lossless JSON — every hitbox's role,
+   * term-id, side, text and exact box, plus the model. The counterpart to the
+   * animation trace, but for "I can't grab X" bugs: a screenshot shows what a
+   * region looks like, this shows what it *does* (which symbol nearestSymbol
+   * picks where). Render it with scripts/layout-to-svg.cjs.
+   */
+  const captureLayout = () => {
+    const eq = equationRef.current;
+    if (!eq) return;
+    const rectOf = (el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      const round = (n: number) => Math.round(n * 10) / 10;
+      return { x: round(r.left), y: round(r.top), w: round(r.width), h: round(r.height) };
+    };
+    const symbols = Array.from(eq.querySelectorAll<HTMLElement>("[data-symbol]")).map((el) => ({
+      role: el.dataset.role ?? null,
+      termId: el.dataset.termId ?? null,
+      side: el.dataset.side ?? null,
+      text: (el.textContent ?? "").trim(),
+      rect: rectOf(el),
+    }));
+    const wraps = Array.from(eq.querySelectorAll<HTMLElement>("[data-term-wrap]")).map((el) => ({
+      termId: el.dataset.termWrap ?? null,
+      side: el.dataset.side ?? null,
+      rect: rectOf(el),
+    }));
+    const parens = Array.from(eq.querySelectorAll<HTMLElement>("[data-parens-for]")).map((el) => ({
+      parensFor: el.dataset.parensFor ?? null,
+      kind: el.dataset.parensKind ?? null,
+      side: el.dataset.side ?? null,
+      rect: rectOf(el),
+    }));
+    const data = {
+      format: "vmt-layout-capture",
+      version: 1,
+      equationText: treeEq ? printTreeEq(treeEq) : equationText(equation),
+      mode: treeEq ? "tree" : "flat",
+      model: treeEq ?? equation,
+      grabRadius: GRAB_RADIUS,
+      viewport: { w: window.innerWidth, h: window.innerHeight },
+      equationRect: rectOf(eq),
+      symbols,
+      wraps,
+      parens,
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `layout-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    flashNotice(`grab map: ${symbols.length} handles captured`);
+  };
+
   /** Where would a release at (x, y) land? Pure geometry over live rects. */
   const findTarget = (x: number, y: number, payload: DragPayload): DropTarget | null => {
     const eq = equationRef.current;
@@ -4257,14 +4330,17 @@ const EquationBuilderTool = () => {
                   >
                     e
                   </Sym>
-                  <span
-                    className={`mt-[0.08em] inline-flex items-center self-start text-[0.5em] leading-none ${
-                      parenHover === t.id ? "rounded bg-amber-100 text-amber-600 dark:bg-amber-950/40" : ""
-                    }`}
-                    {...funcParensZone}
-                  >
-                    {inner}
-                  </span>
+                  {/* e^1 is just e — no dangling superscript 1 */}
+                  {!isBareExpE(t) && (
+                    <span
+                      className={`mt-[0.08em] inline-flex items-center self-start text-[0.5em] leading-none ${
+                        parenHover === t.id ? "rounded bg-amber-100 text-amber-600 dark:bg-amber-950/40" : ""
+                      }`}
+                      {...funcParensZone}
+                    >
+                      {inner}
+                    </span>
+                  )}
                 </>
               ) : (
                 <>
@@ -4558,6 +4634,14 @@ const EquationBuilderTool = () => {
             <span className="text-muted-foreground/70">— replay downloads a lossless JSON trace of every frame</span>
           )}
         </label>
+        <button
+          onClick={captureLayout}
+          className="flex w-fit items-center gap-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+          title="Download a lossless JSON of every grab handle (role, term-id, box) — for troubleshooting 'I can't grab X' issues"
+        >
+          <span className="text-amber-500">⤓</span> grab map
+          <span className="text-muted-foreground/70">— downloads the hitbox layout as JSON</span>
+        </button>
       </div>
       )}
       {devHitboxes && (

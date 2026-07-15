@@ -12,7 +12,8 @@
     "fuzz": "tsx scripts/fuzz-algebra.ts",
     "test:rewrites": "tsx scripts/test-rewrites.ts",
     "test:anim": "node scripts/test-anim-phases.cjs",
-    "trace:film": "node scripts/trace-to-filmstrip.cjs"
+    "trace:film": "node scripts/trace-to-filmstrip.cjs",
+    "grab:svg": "node scripts/layout-to-svg.cjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.5",

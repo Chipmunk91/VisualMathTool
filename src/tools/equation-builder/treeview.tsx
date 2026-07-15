@@ -227,8 +227,21 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
                   </TSym>
                 ) : varsIn(f).size === 0 ? (
                   f.kind === "fn" && f.fn === "exp" ? (
-                    // e^n renders its own units — e takes ln, n takes roots
-                    <TN node={f} ctx={ctx} />
+                    // e^n is grabbable as a WHOLE unit (drag across → divide
+                    // both sides by e^n, just like the plain coefficient of a
+                    // product), while its inner e (ln) and n (root) handles
+                    // still win where they cover — the picker takes the
+                    // smallest box at the point.
+                    <span
+                      data-symbol
+                      data-term-id={`${ctx.id}@n${i}`}
+                      data-side={ctx.side}
+                      data-role="coef"
+                      title="Drag across the equals sign to divide both sides by this"
+                      className="-mx-[0.08em] inline-flex cursor-grab select-none px-[0.08em] transition-colors duration-150 [&:hover:not(:has([data-symbol]:hover))]:text-amber-500 active:cursor-grabbing"
+                    >
+                      <TN node={f} ctx={ctx} />
+                    </span>
                   ) : (
                     <FactorHandle ctx={ctx} id={`${ctx.id}@n${i}`} role="coef">
                       <TN node={f} ctx={{ ...ctx, inert: true }} />
