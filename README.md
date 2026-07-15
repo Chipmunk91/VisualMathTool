@@ -102,6 +102,10 @@ Keep tool-specific code (components, stores, math helpers) inside the tool's own
 - **Tailwind CSS** + shadcn-style UI primitives
 - **wouter** (tiny hash-based router)
 
+## 🧪 Sample PR
+
+This repository includes this small documentation-only change as a sample pull request for review workflow testing.
+
 ## 🤝 Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The easiest contribution: add a new tool (see above).
