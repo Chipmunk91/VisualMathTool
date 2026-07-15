@@ -508,6 +508,8 @@ const EquationBuilderTool = () => {
   const makeClone = (g: Glyph, overlay: HTMLDivElement): HTMLElement => {
     const clone = document.createElement("div");
     if (!g.isBar) clone.textContent = g.text;
+    clone.setAttribute("data-anim", g.isBar ? "bar" : "glyph");
+    clone.setAttribute("data-anim-key", g.key);
     clone.style.cssText =
       `position:fixed;left:${g.rect.left}px;top:${g.rect.top}px;` +
       `width:${g.rect.width}px;height:${g.rect.height}px;margin:0;padding:0;` +
@@ -835,6 +837,36 @@ const EquationBuilderTool = () => {
               : bornGlyphs.length > 0
                 ? unionCenter(bornGlyphs.map((g) => g.rect))
                 : null;
+
+          // ── test instrumentation: tag every clone with its animation role
+          // and publish the phase timeline. Read by the phase-verification
+          // harness (scripts/test-anim-phases.cjs); inert in normal use. ──
+          {
+            const tag = (node: HTMLElement, role: string) => node.setAttribute("data-anim-role", role);
+            restClones.forEach((c) => tag(c.node, c.g.key === "=" ? "equals" : "follower"));
+            pairs.forEach((p) => tag(p.c.node, p.c.g.key === "=" ? "equals" : "follower"));
+            mutations.forEach((m) => tag(m.c.node, m.c.g.term === sinkTermId ? "sink" : "mutate"));
+            actorTravels.forEach((t) => tag(t.c.node, t.n ? "actor" : "actor-consumed"));
+            actorMutations.forEach((m) => tag(m.c.node, "actor"));
+            actorClones.forEach((c) => { if (!c.node.getAttribute("data-anim-role")) tag(c.node, "actor"); });
+            siteClones.forEach((c) => tag(c.node, "site"));
+            clones.forEach((c) => { if (c.g.term === sinkTermId && !c.node.getAttribute("data-anim-role")) tag(c.node, "sink"); });
+            deaths.forEach((c) => tag(c.node, "died"));
+            (window as unknown as { __animPhases?: unknown }).__animPhases = {
+              start: performance.now(),
+              hasActor, hasMerge, divisionForm, earlyReflow, reduced,
+              phases: reduced
+                ? [{ name: "reduced", t0: 0, t1: CURTAIN }]
+                : [
+                    { name: "emphasis", t0: 0, t1: EMPH_MS },
+                    { name: "travel", t0: T_TRAVEL_START, t1: T_LAND },
+                    { name: "hold", t0: T_LAND, t1: T_MERGE },
+                    ...(hasMerge || legacySite ? [{ name: "merge", t0: T_MERGE, t1: T_MERGE + MERGE_MS }] : []),
+                    { name: "reflow", t0: T_REFLOW, t1: T_REFLOW + REFLOW_MS },
+                  ],
+              curtain: CURTAIN,
+            };
+          }
 
           const later = (fn: () => void, ms: number) =>
             setTimeout(() => {
