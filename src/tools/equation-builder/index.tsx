@@ -1297,6 +1297,11 @@ const EquationBuilderTool = () => {
               const barW = Math.max(sinkUnion.width, actorUnion.width * DEN_SCALE) + 10;
               const barLeft = rcenter(sinkUnion).x - barW / 2;
               const bar = document.createElement("div");
+              // tagged so the dev capture + phase harness see the synthesized
+              // fraction bar too (it is a real animating element, not a clone)
+              bar.setAttribute("data-anim", "bar");
+              bar.setAttribute("data-anim-key", "—fraction-bar—");
+              bar.setAttribute("data-anim-role", "born");
               bar.style.cssText =
                 `position:fixed;left:${barLeft}px;top:${barY}px;width:${barW}px;height:3px;` +
                 `margin:0;padding:0;background:${clones.find((c) => c.g.term === sinkTermId)?.g.color ?? "currentColor"};` +
