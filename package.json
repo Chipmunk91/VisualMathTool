@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "tsc",
-    "test:math": "tsx scripts/test-mathops.ts"
+    "test:math": "tsx scripts/test-mathops.ts",
+    "fuzz": "tsx scripts/fuzz-algebra.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.5",

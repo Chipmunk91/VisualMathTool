@@ -501,7 +501,13 @@ export function printNode(n: TNode): string {
     }
     case "fn":
       if (n.fn === "exp" && isNum(n.arg, 1)) return "e"; // e^1 is just e
-      if (n.fn === "exp") return `e^${n.arg.kind === "var" || n.arg.kind === "const" ? printNode(n.arg) : `(${printNode(n.arg)})`}`;
+      if (n.fn === "exp") {
+        // an exponent is safe bare ONLY as a variable or non-negative integer;
+        // a fraction or negative needs parens or the text re-reads wrong —
+        // e^5/2 would parse as (e^5)/2, e^−1/2 as (e^−1)/2
+        const bare = n.arg.kind === "var" || (n.arg.kind === "const" && n.arg.den === 1 && n.arg.num >= 0);
+        return `e^${bare ? printNode(n.arg) : `(${printNode(n.arg)})`}`;
+      }
       if (n.fn === "sqrt") return `√(${printNode(n.arg)})`;
       return `${n.fn}(${printNode(n.arg)})`;
   }

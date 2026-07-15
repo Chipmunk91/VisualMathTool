@@ -137,7 +137,7 @@ console.log("\n== F. tree moves: multiplicative ==");
 {
   const frac: TreeEq = { left: tmul(tfn("exp", tc(3)), tv("x"), tpow(tfn("sin", tv("x")), -1)), right: tv("y") };
   move("F1 multiply by the denominator", multiplyBothT(frac, tfn("sin", tv("x")), "sin(x)"), "e^3·x = y·sin(x)");
-  move("F2 divide by e³ exactly", divideBothT(frac, tfn("exp", tc(3)), "e^3"), "x/sin(x) = e^−3·y");
+  move("F2 divide by e³ exactly", divideBothT(frac, tfn("exp", tc(3)), "e^3"), "x/sin(x) = e^(−3)·y");
   const withPill = divideBothT(frac, tv("x"), "x");
   move("F3 divide by x carries the pill", withPill, "e^3/sin(x) = y/x", "x ≠ 0");
   check("F4 divide by zero refuses", divideBothT(frac, tc(0), "0") === "can't divide by zero");
@@ -207,21 +207,26 @@ console.log("\n== J. sympy-style normalization: cancel + thaw, receipts attached
     left: tfn("exp", tadd(tfn("ln", tv("x")), tc(5, 2))),
     right: tfn("exp", tmul(tc(1, 4), tv("y"))),
   });
-  check("J2 e^(ln x + 5/2) thaws at load", printTreeEq(n2.te) === "e^5/2·x = e^(1/4y)", printTreeEq(n2.te));
+  check("J2 e^(ln x + 5/2) thaws at load", printTreeEq(n2.te) === "e^(5/2)·x = e^(1/4y)", printTreeEq(n2.te));
   check("J2 — pill", n2.pill === "x > 0", n2.pill);
   const n3 = normalizeOnLoad({ left: tmul(tc(2), tv("x")), right: tc(10) });
   check("J3 a plain equation loads untouched", !n3.changed && printTreeEq(n3.te) === "2x = 10");
   // the MOVE path: any finalize-produced state thaws too, with the note
   const r = applyToolT("exp", { left: tadd(tfn("ln", tv("x")), tc(5, 2)), right: tmul(tc(1, 4), tv("y")) });
   const ok = r !== null && typeof r !== "string" && r.treeNext !== null;
-  check("J4 exp tool thaws e^(ln x + …) via finalize", ok && printTreeEq(r.treeNext!) === "e^5/2·x = e^(1/4y)", ok ? printTreeEq((r as TreeOutcome).treeNext!) : String(r));
+  check("J4 exp tool thaws e^(ln x + …) via finalize", ok && printTreeEq(r.treeNext!) === "e^(5/2)·x = e^(1/4y)", ok ? printTreeEq((r as TreeOutcome).treeNext!) : String(r));
   check("J4 — pill", ok && (r as TreeOutcome).pill === "x > 0");
   const t = thawExpLn(tfn("exp", tfn("ln", tadd(tv("x"), tc(1)))));
   check("J5 bare e^(ln u) = u, reported", printNode(simplify(t.node)) === "x + 1" && t.thawed.join() === "x + 1");
 }
 
-console.log("\n== K. display correctness: a negated sum keeps its parens ==");
+console.log("\n== K. display correctness: parens keep text unambiguous ==");
 simp("K1 −(x + 2) prints with parens", tmul(tc(-1), tadd(tv("x"), tc(2))), "−(x + 2)");
+simp("K1b e^(5/2) parenthesizes a fractional exponent (was e^5/2 → (e^5)/2)", tfn("exp", tc(5, 2)), "e^(5/2)");
+simp("K1c e^(−1/2) parenthesizes a negative exponent", tfn("exp", tc(-1, 2)), "e^(−1/2)");
+simp("K1d e^5 (integer) stays bare", tfn("exp", tc(5)), "e^5");
+simp("K1e e^x (variable) stays bare", tfn("exp", tv("x")), "e^x");
+simp("K1f e^(2y) (compound) keeps its parens", tfn("exp", tmul(tc(2), tv("y"))), "e^(2y)");
 simp("K2 −(x − 2) keeps the inner sign", tmul(tc(-1), tadd(tv("x"), tc(-2))), "−(x − 2)");
 simp("K3 nested: 5 − (x + 2)", tadd(tc(5), tmul(tc(-1), tadd(tv("x"), tc(2)))), "−(x + 2) + 5");
 simp("K4 a bare negated term needs no parens", tmul(tc(-2), tv("x")), "−2x");
