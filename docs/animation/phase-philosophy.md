@@ -15,11 +15,12 @@ animation has failed regardless of how smooth it looks.
 
 ---
 
-## Phase 1 — Emphasis  (~170 ms, ease-out)
+## Phase 1 — Emphasis  (~100 ms, ease-out)
 
-**Why:** before anything moves, give the eye a fixation target. The eye needs
-~150 ms to lock onto the thing about to act; if it moves first, the eye chases
-and loses the thread.
+**Why:** before anything moves, give the eye a fixation target — a brief cue
+that *this* is about to act, so the eye is already on it when motion starts.
+Long enough to register, short enough not to read as lag: a drawn-out pause
+before anything happens feels like the animation is stalling.
 
 **Rules (checked):**
 - **E1 — the actor is marked.** The acting glyph turns emphasis-colour (orange)
@@ -29,11 +30,13 @@ and loses the thread.
 - **E3 — mark the cause, not the effect.** Only glyphs the operation *touches*
   are lit; a term at rest is never lit.
 
-## Phase 2 — Travel  (~460–520 ms, ease-in-out, gentle arc)
+## Phase 2 — Travel  (~600–680 ms, ease-in-out, gentle arc)
 
 **Why:** one dominant motion. The eye can track exactly one moving object; two
 simultaneous motions split attention and nothing is followed. So the actor —
-and only the actor — moves, while everything else is frozen.
+and only the actor — moves, while everything else is frozen. The travel is
+unhurried on purpose: a term that crosses too fast reads as *flung* and the eye
+can't follow it; a slower arc reads as *picked up and placed*.
 
 **Rules (checked):**
 - **T1 — one dominant motion.** During travel, only actor clones translate;

@@ -878,12 +878,15 @@ const EquationBuilderTool = () => {
           const legacySite = !hasMerge && !divideDest && (siteClones.length > 0 || bornGlyphs.length > 0);
           const earlyReflow = !!divideDest;
 
-          // phase times straight from the approved testbed scenarios:
-          //   move across =    170 / 460 / 260 / 320 / 240
-          //   divide sides     170 / 520 / 260 / 360 / 240
+          // phase times (ms): emphasis / travel / hold / merge / reflow.
+          //   move across =    100 / 600 / 260 / 320 / 240
+          //   divide sides     100 / 680 / 260 / 360 / 240
+          // Emphasis is a brief fixation cue, not a stall — a long pause before
+          // motion reads as lag; travel is stretched so a term reads as PLACED,
+          // not flung (a slower arc is easier for the eye to track).
           const isDivide = divisionForm || earlyReflow;
-          const EMPH_MS = hasActor ? 170 : 0;
-          const TRAVEL_MS = hasActor ? (isDivide ? 520 : 460) : 0;
+          const EMPH_MS = hasActor ? 100 : 0;
+          const TRAVEL_MS = hasActor ? (isDivide ? 680 : 600) : 0;
           const T_TRAVEL_START = EMPH_MS;
           const T_LAND = T_TRAVEL_START + TRAVEL_MS;
           const HOLD_MS = hasMerge || legacySite ? 260 : hasActor ? 60 : 0;
