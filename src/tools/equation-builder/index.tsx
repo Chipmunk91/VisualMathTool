@@ -186,6 +186,47 @@ interface Step {
   text: string;
 }
 
+/**
+ * A lossless recording of ONE replay transition (dev capture mode). Screen
+ * video is the worst channel for reading an animation — lossy compression and
+ * unpredictable frame timing force positions to be reverse-engineered from
+ * pixels. This is the opposite: every animating clone's exact on-screen box,
+ * opacity, role and text, sampled every frame, with the phase windows labeled.
+ * It reconstructs the choreography precisely and renders back to a filmstrip
+ * (scripts/trace-to-filmstrip.cjs).
+ */
+interface TraceGlyphDef {
+  id: number;
+  key: string;
+  bar: boolean;
+}
+interface TraceCloneFrame {
+  id: number;
+  x: number; // on-screen box, viewport px (includes transform + scale)
+  y: number;
+  w: number;
+  h: number;
+  op: number; // computed opacity, 0..1
+  r: string; // animation role (actor / follower / equals / sink / died / born …)
+  t: string; // current text (captures the sink's mid-merge value swap)
+}
+interface TraceFrame {
+  t: number; // ms since the transition's first sampled frame
+  clones: TraceCloneFrame[];
+}
+interface TraceStep {
+  index: number;
+  label: string;
+  from: string;
+  to: string;
+  meta: Record<string, unknown>;
+  phases: { name: string; t0: number; t1: number }[];
+  curtain: number;
+  viewport: { w: number; h: number };
+  glyphs: TraceGlyphDef[];
+  frames: TraceFrame[];
+}
+
 let stepCounter = 0;
 const makeStep = (
   label: string,
@@ -412,6 +453,11 @@ const EquationBuilderTool = () => {
   const [dragPreview, setDragPreview] = useState<{ kind: "ok" | "reject" | "cancel"; text: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [devHitboxes, setDevHitboxes] = useState(false);
+  /** dev: record each replay transition as a lossless JSON trace (see below) */
+  const [devCapture, setDevCapture] = useState(false);
+  const capturingRef = useRef(false);
+  const captureStepsRef = useRef<TraceStep[]>([]);
+  const captureLabelRef = useRef<{ label: string; from: string; to: string }>({ label: "", from: "", to: "" });
   const [toolboxOpen, setToolboxOpen] = useState(false);
   const toolGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [underHover, setUnderHover] = useState<string | null>(null);
@@ -436,12 +482,32 @@ const EquationBuilderTool = () => {
   const playingRef = useRef(false);
   const playTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const downloadTrace = () => {
+    const steps = captureStepsRef.current;
+    if (steps.length === 0) return;
+    const trace = {
+      format: "vmt-anim-trace",
+      version: 1,
+      steps,
+    };
+    const blob = new Blob([JSON.stringify(trace)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.href = url;
+    a.download = `anim-trace-${stamp}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    captureStepsRef.current = [];
+  };
+
   const stopPlayback = () => {
     if (playTimer.current) clearTimeout(playTimer.current);
     playTimer.current = null;
     playingRef.current = false;
     setPlaying(false);
     clearOverlay();
+    if (capturingRef.current) downloadTrace();
     setHistory((h) => {
       const last = h[h.length - 1];
       setEquation(cloneState(last.state));
@@ -868,6 +934,77 @@ const EquationBuilderTool = () => {
             };
           }
 
+          // ── dev capture: sample every animating clone each frame into a
+          // lossless JSON trace, until the curtain. Inert unless capturing. ──
+          if (capturingRef.current) {
+            const phases = [
+              ...(reduced
+                ? [{ name: "reduced", t0: 0, t1: CURTAIN }]
+                : [
+                    { name: "emphasis", t0: 0, t1: EMPH_MS },
+                    { name: "travel", t0: T_TRAVEL_START, t1: T_LAND },
+                    { name: "hold", t0: T_LAND, t1: T_MERGE },
+                    ...(hasMerge || legacySite ? [{ name: "merge", t0: T_MERGE, t1: T_MERGE + MERGE_MS }] : []),
+                    { name: "reflow", t0: T_REFLOW, t1: T_REFLOW + REFLOW_MS },
+                  ]),
+            ];
+            const rec: TraceStep = {
+              index: captureStepsRef.current.length,
+              label: captureLabelRef.current.label,
+              from: captureLabelRef.current.from,
+              to: captureLabelRef.current.to,
+              meta: { hasActor, hasMerge, divisionForm, earlyReflow, reduced, legacySite },
+              phases,
+              curtain: CURTAIN,
+              viewport: { w: window.innerWidth, h: window.innerHeight },
+              glyphs: [],
+              frames: [],
+            };
+            const idOf = new Map<HTMLElement, number>();
+            let t0 = -1;
+            const sample = () => {
+              if (overlayRef.current !== overlay) {
+                captureStepsRef.current.push(rec);
+                return;
+              }
+              const now = performance.now();
+              if (t0 < 0) t0 = now;
+              const t = Math.round(now - t0);
+              const frame: TraceFrame = { t, clones: [] };
+              overlay.querySelectorAll<HTMLElement>("[data-anim]").forEach((node) => {
+                let id = idOf.get(node);
+                if (id === undefined) {
+                  id = rec.glyphs.length;
+                  idOf.set(node, id);
+                  rec.glyphs.push({
+                    id,
+                    key: node.getAttribute("data-anim-key") ?? "",
+                    bar: node.getAttribute("data-anim") === "bar",
+                  });
+                }
+                const r = node.getBoundingClientRect();
+                const cs = getComputedStyle(node);
+                frame.clones.push({
+                  id,
+                  x: Math.round(r.left * 10) / 10,
+                  y: Math.round(r.top * 10) / 10,
+                  w: Math.round(r.width * 10) / 10,
+                  h: Math.round(r.height * 10) / 10,
+                  op: Math.round(parseFloat(cs.opacity || "1") * 100) / 100,
+                  r: node.getAttribute("data-anim-role") ?? "born",
+                  t: node.textContent ?? "",
+                });
+              });
+              rec.frames.push(frame);
+              if (t >= CURTAIN) {
+                captureStepsRef.current.push(rec);
+                return;
+              }
+              requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+          }
+
           const later = (fn: () => void, ms: number) =>
             setTimeout(() => {
               if (overlayRef.current === overlay) fn();
@@ -1234,6 +1371,7 @@ const EquationBuilderTool = () => {
 
   const startPlayback = () => {
     if (playingRef.current) return;
+    captureStepsRef.current = [];
     setHistory((h) => {
       if (h.length < 2) return h;
       playingRef.current = true;
@@ -1241,6 +1379,13 @@ const EquationBuilderTool = () => {
       let i = 0;
       const showStep = () => {
         const step = h[i];
+        if (capturingRef.current && i > 0) {
+          captureLabelRef.current = {
+            label: step.label,
+            from: h[i - 1].text,
+            to: step.text,
+          };
+        }
         // the overlay takes the stage BEFORE the state switches — no blank frame
         const retarget = i > 0 ? beginGlyphTransition(step.story) : null;
         setEquation(cloneState(step.state));
@@ -4367,21 +4512,35 @@ const EquationBuilderTool = () => {
 
       {/* Dev: visualize grab regions and drop zones (not in embeds) */}
       {!isEmbed && (
-      <label
-        className="absolute bottom-6 left-4 flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
-        data-ui
-      >
-        <input
-          type="checkbox"
-          checked={devHitboxes}
-          onChange={(e) => setDevHitboxes(e.target.checked)}
-          className="h-3 w-3 accent-amber-500"
-        />
-        hit areas
-        {devHitboxes && (
-          <span className="text-muted-foreground/70">— grab activates on the nearest symbol within 28px</span>
-        )}
-      </label>
+      <div className="absolute bottom-6 left-4 flex flex-col gap-1" data-ui>
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={devHitboxes}
+            onChange={(e) => setDevHitboxes(e.target.checked)}
+            className="h-3 w-3 accent-amber-500"
+          />
+          hit areas
+          {devHitboxes && (
+            <span className="text-muted-foreground/70">— grab activates on the nearest symbol within 28px</span>
+          )}
+        </label>
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={devCapture}
+            onChange={(e) => {
+              setDevCapture(e.target.checked);
+              capturingRef.current = e.target.checked;
+            }}
+            className="h-3 w-3 accent-amber-500"
+          />
+          capture animation
+          {devCapture && (
+            <span className="text-muted-foreground/70">— replay downloads a lossless JSON trace of every frame</span>
+          )}
+        </label>
+      </div>
       )}
       {devHitboxes && (
         <style>{`

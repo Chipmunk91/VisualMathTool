@@ -120,6 +120,13 @@ npm run preview          # in one shell (serves the built app on :4173)
 npm run test:anim        # in another — drives the cases, prints the report
 ```
 
+To inspect a *specific* replay you dislike rather than the fixed cases, use the
+**capture animation** dev toggle to download a lossless JSON trace of it, then
+read it as a filmstrip (`npm run trace:film <trace.json>`). See
+[capture-format.md](./capture-format.md) — the trace carries the same
+`data-anim-role` tags and phase windows this harness checks, so a bad trace
+converts straight into a new case.
+
 Current cases (add more by dragging a different move before `startReplay`):
 1. **move −3 across = (merge into −7)** — the canonical travel + morph + fuse.
 2. **divide by 2 (fraction forms → simplifies)** — the §8 slot-assembles-beneath
