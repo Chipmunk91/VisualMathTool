@@ -3184,9 +3184,13 @@ const EquationBuilderTool = () => {
         return { kind: "side", side };
       }
     }
-    // Side halves within a generous band around the equation
+    // Side halves within a generous band around the equation. Horizontally the
+    // band spans the whole row: once the pointer is at the equation's height, a
+    // release ANYWHERE left/right of the "=" lands on that side. A narrow
+    // equation used to leave a dead zone past ±200px where a far throw silently
+    // did nothing (no move, no feedback) — the vertical band is the real gate.
     const band = eq.getBoundingClientRect();
-    if (y >= band.top - 60 && y <= band.bottom + 90 && x >= band.left - 200 && x <= band.right + 200) {
+    if (y >= band.top - 60 && y <= band.bottom + 90) {
       const equals = eq.querySelector<HTMLElement>("[data-equals]");
       const mid = equals ? (equals.getBoundingClientRect().left + equals.getBoundingClientRect().right) / 2 : (band.left + band.right) / 2;
       return { kind: "side", side: x < mid ? "left" : "right" };
