@@ -115,6 +115,19 @@ browser suite · 📐 = honest refusal by design · ❌ = known gap (candidate w
 | G7 | Σ view, ∞ bound | series | converges ≈ S / diverges / undefined-at-k | 🖱 test-calculus2 |
 | G8 | limit view | two-sided probe | limit / hole / left≠right / blow-up / never settles | 🖱 test-calculus2 |
 
+## K. Display correctness & verdict detection (from the algebra audit)
+
+| # | Setup | Expected | Status |
+|---|---|---|---|
+| K1 | `−(x+2)` in any label / preview / share text | prints `−(x + 2)` — a negated SUM keeps its parens (was `−x + 2`, a different expression) | ✅ K1–K3 |
+| K2 | `5 − (x + 2)` | `−(x + 2) + 5`, inner sign intact | ✅ K3 |
+| K3 | `x = x` | **Always true** — identity caught while the variable is still present | 🖱 test-status |
+| K4 | `x + 1 = x` | **No solution** — contradiction caught the same way | 🖱 test-status |
+| K5 | `2(x+1) = 2x + 2` | **Always true** — verdict sees through factored forms (sampled difference, not symbolic) | 🖱 test-status |
+| K6 | `2x + 1 = 2x + 5` | **No solution** | 🖱 test-status |
+| K7 | `2x = 3x` | 📐 no verdict — it's conditional (x = 0), the difference varies; needs a move | 🖱 test-status |
+| K8 | `2x − 3 = −7` | 📐 no premature verdict on a normal solvable equation | 🖱 test-status |
+
 ## H. System invariants (cross-cutting)
 
 | # | Invariant | Status |
@@ -129,11 +142,39 @@ browser suite · 📐 = honest refusal by design · ❌ = known gap (candidate w
 
 ## Known gaps (candidate work, in priority order)
 
-1. **F8 — arc-functions of expressions** (`tan(x) = y` → `x = arctan(y)`).
-   Needs `arcsin|arccos|arctan` in the tree grammar (`TFnName`), print/render
-   support, and the periodicity pill. Everything else (moves, simplify
-   passthrough) follows the existing fn machinery.
-2. F3 lacks an automated browser assertion (inverse-trig with a plain number).
-3. Unreduced intermediate states (`6/2` held before `3`) are modeled only in
-   the animation overlay, not the CAS — fine for now, revisit if part 2
-   needs CAS-level paper states.
+Found by an adversarial probe of ~30 edge cases (`scratchpad/probe.ts`).
+Split into *correctness* (fixed), *deliberate* (correct as-is), and
+*feature gaps* (unsupported, honest about it).
+
+**Fixed in the audit:**
+- `−(x+2)` printed as `−x + 2` — a genuine display bug in `printNode`, now
+  parenthesized. (Value was always correct; only labels/previews/share lied.)
+- `x = x` / `x + 1 = x` gave no verdict — detection was syntactic
+  (both-sides-constant). Now decided by sampling the difference, so factored
+  and variable-present forms are caught. Conditionals (`2x = 3x`) correctly
+  stay undecided.
+
+**Deliberate (correct, no change):**
+- `2(x+3)`, `(x+1)(x+2)`, `(x+1)²` stay *factored* — distribution is a
+  gesture, not an auto-simplify. (The verdict sampler still sees through them.)
+- `0^0` stays unevaluated (indeterminate — honest).
+- `x³/x²` won't cancel without a declared `x ≠ 0` (the honesty guard).
+
+**Feature gaps (unsupported; would need new machinery):**
+1. **F8 — arc-functions of expressions** (`tan(x) = y` → `x = arctan(y)`):
+   needs `arcsin|arccos|arctan` in `TFnName` + render + periodicity pill.
+2. **Polynomial expansion (FOIL)** — no operation multiplies `(x+1)(x+2)` out;
+   only `√`/roots can act on a squared binomial. An "expand" gesture would
+   close it.
+3. **Log/trig identity rewrites** — `ln(xy)→ln x+ln y`, `ln(x²)→2ln x`,
+   `sin(−x)→−sin x`, `cos(−x)→cos x`, Pythagorean. The `ln` TOOL expands
+   products (E7) but the simplifier doesn't auto-apply these.
+4. **`log` = natural log** — the parser maps `log → ln`. If base-10 is
+   expected this surprises; worth a decision (accept convention, or add `log₁₀`).
+5. **`x^0 = 1` / `1^x = 1`** — `x^0` folds to 1 without an `x ≠ 0` note
+   (`0^0` is the gap); `1^x` isn't folded at all. Both minor.
+
+**Untested-but-correct / housekeeping:**
+- F3 (inverse-trig on a plain number) lacks an automated browser assertion.
+- Unreduced paper states (`6/2` before `3`) live only in the animation
+  overlay, not the CAS — revisit only if part 2 needs CAS-level paper states.

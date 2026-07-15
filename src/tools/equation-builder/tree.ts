@@ -446,14 +446,22 @@ export function printNode(n: TNode): string {
       return n.terms
         .map((t, i) => {
           const { neg, body } = signSplit(t);
-          const text = printNode(body);
+          // a negated sum inside a sum keeps its parens: 5 − (x + 2), not
+          // 5 − x + 2 (which drops the sign on the 2)
+          const raw = printNode(body);
+          const text = body.kind === "add" ? `(${raw})` : raw;
           if (i === 0) return neg ? `−${text}` : text;
           return ` ${neg ? "−" : "+"} ${text}`;
         })
         .join("");
     case "mul": {
       const split = signSplit(n);
-      if (split.neg) return `−${printNode(split.body)}`;
+      // a negated SUM needs parens: −(x + 2), never −x + 2 (which reads as a
+      // different expression). Bare products/powers/vars need none.
+      if (split.neg) {
+        const b = printNode(split.body);
+        return split.body.kind === "add" ? `−(${b})` : `−${b}`;
+      }
       const numer: TNode[] = [];
       const denom: TNode[] = [];
       for (const f of n.factors) {

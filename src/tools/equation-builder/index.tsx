@@ -41,6 +41,7 @@ import {
   introducesLnOf,
   keyOf,
   splitCoef,
+  tadd,
   tc,
   tmul,
   tpow,
@@ -98,6 +99,33 @@ const SUP = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 /** x³ etc. in plain text */
 export const supText = (n: number): string =>
   (n < 0 ? "⁻" : "") + String(Math.abs(n)).split("").map((d) => SUP[Number(d)]).join("");
+
+/**
+ * Verdict for two whole sides: identity (Always true) when their difference is
+ * zero everywhere, contradiction (No solution) when it's a fixed nonzero
+ * constant, null when it still depends on a variable (needs a move to decide).
+ * Decided by SAMPLING the difference at several generic points — this sees
+ * through factored forms (2(x+1) vs 2x+2, a − (b+c)) that the simplifier
+ * deliberately leaves un-distributed. Enough irrational-ish points that a
+ * non-identity can't coincidentally read as zero at all of them.
+ */
+const STATUS_PTS: [number, number][] = [
+  [0.317, 1.713],
+  [2.114, -0.921],
+  [-1.437, 3.229],
+  [5.512, 0.634],
+  [1.101, 2.318],
+  [-3.246, -1.559],
+];
+const decideStatus = (L: TNode, R: TNode): "identity" | "contradiction" | null => {
+  const diffs = STATUS_PTS.map(([x, y]) => evalNode(L, { x, y }) - evalNode(R, { x, y })).filter((d) =>
+    Number.isFinite(d)
+  );
+  if (diffs.length < 4) return null; // too many undefined samples — don't claim
+  const d0 = diffs[0];
+  if (!diffs.every((d) => Math.abs(d - d0) < 1e-9)) return null; // varies → undecided
+  return Math.abs(d0) < 1e-9 ? "identity" : "contradiction";
+};
 
 /** Display sign of a term (terminal values carry theirs in `neg`) */
 const negOf = (t: EqTerm): boolean =>
@@ -1429,15 +1457,12 @@ const EquationBuilderTool = () => {
   const solvedContradiction =
     solved && solvedTerm?.kind === "leaf" && solvedTerm.num === 0 && nonZeroAssumed(solvedVar);
 
-  /** Variable-free equations are a verdict: always true, or no solution */
+  /** Always true, or no solution — decided by sampling the two sides' difference */
   const flatStatus = useMemo(() => {
     if (treeEq || solvedInfo) return null;
-    const constSide = (b: EqTerm[]) => b.length > 0 && !sideMentions(b, "x") && !sideMentions(b, "y");
-    if (!constSide(left) || !constSide(right)) return null;
-    const va = evalSide(left, 0);
-    const vb = evalSide(right, 0);
-    if (!Number.isFinite(va) || !Number.isFinite(vb)) return null;
-    return Math.abs(va - vb) < 1e-9 ? ("identity" as const) : ("contradiction" as const);
+    // Terminal values (±√, arc) have no honest tree form — skip them.
+    if ([...left, ...right].some((t) => t.kind === "leaf" && (t.pm || t.radical || t.fnVal))) return null;
+    return decideStatus(flatToTree(left), flatToTree(right));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [treeEq, solvedInfo, left, right]);
 
@@ -1488,11 +1513,7 @@ const EquationBuilderTool = () => {
   /** Tree equations get the same verdicts: identical sides, or two constants */
   const treeStatus = useMemo(() => {
     if (!treeEq || treeSolved) return null;
-    if (keyOf(treeEq.left) === keyOf(treeEq.right)) return "identity" as const;
-    const lv = constValue(treeEq.left);
-    const rv = constValue(treeEq.right);
-    if (lv === null || rv === null) return null;
-    return Math.abs(lv - rv) < 1e-9 ? ("identity" as const) : ("contradiction" as const);
+    return decideStatus(treeEq.left, treeEq.right);
   }, [treeEq, treeSolved]);
 
   const treePane = useMemo(() => {

@@ -17,6 +17,7 @@ import {
   simplify,
   printNode,
   printTreeEq,
+  evalNode,
   keyOf,
   flatToTree,
   type TreeEq,
@@ -46,6 +47,7 @@ const simp = (name: string, node: TNode, want: string) => {
   const got = printNode(simplify(node));
   check(name, got === want, `got ${got}, want ${want}`);
 };
+const simplifyEval = (node: TNode, x: number): number => evalNode(simplify(node), { x });
 const outcomeText = (r: TreeMoveResult): string => {
   if (r === null) return "(null)";
   if (typeof r === "string") return `refusal: ${r}`;
@@ -217,6 +219,13 @@ console.log("\n== J. sympy-style normalization: cancel + thaw, receipts attached
   const t = thawExpLn(tfn("exp", tfn("ln", tadd(tv("x"), tc(1)))));
   check("J5 bare e^(ln u) = u, reported", printNode(simplify(t.node)) === "x + 1" && t.thawed.join() === "x + 1");
 }
+
+console.log("\n== K. display correctness: a negated sum keeps its parens ==");
+simp("K1 −(x + 2) prints with parens", tmul(tc(-1), tadd(tv("x"), tc(2))), "−(x + 2)");
+simp("K2 −(x − 2) keeps the inner sign", tmul(tc(-1), tadd(tv("x"), tc(-2))), "−(x − 2)");
+simp("K3 nested: 5 − (x + 2)", tadd(tc(5), tmul(tc(-1), tadd(tv("x"), tc(2)))), "−(x + 2) + 5");
+simp("K4 a bare negated term needs no parens", tmul(tc(-2), tv("x")), "−2x");
+check("K5 −(x + 2) still evaluates to −(x+2)", simplifyEval(tmul(tc(-1), tadd(tv("x"), tc(2))), 3) === -5);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
