@@ -36,6 +36,8 @@ import {
   type TreeMoveResult,
   type TreeOutcome,
 } from "../src/tools/equation-builder/treemoves";
+import { CATALOG } from "../src/tools/equation-builder/catalog";
+import { parseEquation } from "../src/tools/equation-builder/parse";
 
 let pass = 0;
 let fail = 0;
@@ -231,6 +233,16 @@ simp("K2 −(x − 2) keeps the inner sign", tmul(tc(-1), tadd(tv("x"), tc(-2)))
 simp("K3 nested: 5 − (x + 2)", tadd(tc(5), tmul(tc(-1), tadd(tv("x"), tc(2)))), "−(x + 2) + 5");
 simp("K4 a bare negated term needs no parens", tmul(tc(-2), tv("x")), "−2x");
 check("K5 −(x + 2) still evaluates to −(x+2)", simplifyEval(tmul(tc(-1), tadd(tv("x"), tc(2))), 3) === -5);
+
+console.log("\n== L. search catalog integrity ==");
+{
+  const names = new Set<string>();
+  for (const entry of CATALOG) {
+    check(`L catalog entry parses: ${entry.name}`, parseEquation(entry.text).ok);
+    check(`L catalog name is unique: ${entry.name}`, !names.has(entry.name));
+    names.add(entry.name);
+  }
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
