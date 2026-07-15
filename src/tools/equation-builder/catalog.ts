@@ -25,6 +25,8 @@ export const CATALOG: CatalogEntry[] = [
   { name: "doubling", text: "y = 2^x", aliases: ["powers of two", "2^x", "binary growth"] },
   { name: "bell curve", text: "y = e^(-x^2)", aliases: ["gaussian", "normal distribution"] },
   { name: "logistic curve", text: "y = 1/(1 + e^(-x))", aliases: ["sigmoid", "s-curve", "s curve"] },
+  { name: "shifted reciprocal", text: "y = 1/(x + 1)", aliases: ["rational function", "translated hyperbola"] },
+  { name: "inverse square law", text: "y = 1/x^2", aliases: ["inverse square", "reciprocal squared"] },
   { name: "golden ratio equation", text: "x^2 = x + 1", aliases: ["golden", "fibonacci", "phi"] },
   { name: "unit circle", text: "x^2 + y^2 = 1", aliases: ["circle", "pythagorean"] },
   { name: "quadratic equation", text: "x^2 = 3*x + 10", aliases: ["second degree", "roots"] },
@@ -34,9 +36,12 @@ export const CATALOG: CatalogEntry[] = [
   { name: "reciprocal equation", text: "6/x = 2", aliases: ["x in denominator", "6/x"] },
   { name: "distribution", text: "2*(x + 3) = 8", aliases: ["parentheses", "expand", "factor out"] },
   { name: "square equation", text: "x^2 = 9", aliases: ["x squared", "both roots"] },
+  { name: "square root equation", text: "sqrt(x + 1) = 3", aliases: ["radical equation", "solve square root"] },
   { name: "sine equation", text: "2*sin(x) = 1", aliases: ["trig equation", "solve sin"] },
   { name: "log equation", text: "ln(x) = 2", aliases: ["solve ln", "natural log equation"] },
   { name: "exponential equation", text: "e^x + 1 = 4", aliases: ["solve exp", "e^x equation"] },
+  { name: "base two exponential", text: "2^x = 8", aliases: ["solve powers", "binary exponent", "power equation"] },
+  { name: "variable product", text: "x*y = 6", aliases: ["product equation", "inverse relation", "two variables"] },
   { name: "isolate y", text: "2*y - 3 = x", aliases: ["solve for y", "two variables"] },
 ];
 
