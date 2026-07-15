@@ -15,12 +15,14 @@ animation has failed regardless of how smooth it looks.
 
 ---
 
-## Phase 1 — Emphasis  (~100 ms, ease-out)
+## Phase 1 — Emphasis  (~70 ms, ease-out)
 
 **Why:** before anything moves, give the eye a fixation target — a brief cue
 that *this* is about to act, so the eye is already on it when motion starts.
 Long enough to register, short enough not to read as lag: a drawn-out pause
-before anything happens feels like the animation is stalling.
+before anything happens feels like the animation is stalling. The travel curve
+starts *without* a ramp-in, so motion flows straight out of the emphasis
+instead of a freeze-then-jump.
 
 **Rules (checked):**
 - **E1 — the actor is marked.** The acting glyph turns emphasis-colour (orange)
@@ -37,6 +39,13 @@ simultaneous motions split attention and nothing is followed. So the actor —
 and only the actor — moves, while everything else is frozen. The travel is
 unhurried on purpose: a term that crosses too fast reads as *flung* and the eye
 can't follow it; a slower arc reads as *picked up and placed*.
+
+**Even velocity matters as much as duration.** A long window doesn't help if the
+easing front-loads the motion — an ease-*out* covers ~90 % of the distance in
+the first third and then creeps, which still reads as "too fast" (the eye only
+sees the lunge). The curve here spreads the distance evenly across the window
+(≈25/50/75/90 % covered at ≈22/38/56/72 % of the time): prompt start, no ramp-in,
+steady glide, decelerate into the landing.
 
 **Rules (checked):**
 - **T1 — one dominant motion.** During travel, only actor clones translate;

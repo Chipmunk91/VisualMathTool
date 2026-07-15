@@ -620,7 +620,13 @@ const EquationBuilderTool = () => {
           type Clone = (typeof clones)[number];
 
           const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-          const TRAVEL = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+          // Travel curve: the old ease-OUT (0.2,0.8,…) front-loaded everything —
+          // ~90% of the distance was covered in the first third of the window,
+          // so the term LUNGED then crept, reading as "too fast" no matter how
+          // long the window. This spreads the motion evenly (25/50/75/90% of the
+          // distance at ~22/38/56/72% of the time): a prompt but unhurried glide
+          // that starts without a ramp-in and decelerates into the landing.
+          const TRAVEL = "cubic-bezier(0.3, 0.2, 0.5, 1)";
           const SETTLE = "cubic-bezier(0.2, 0.6, 0.3, 1)";
           const center = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
           const unionCenter = (rects: DOMRect[]) => {
@@ -879,13 +885,13 @@ const EquationBuilderTool = () => {
           const earlyReflow = !!divideDest;
 
           // phase times (ms): emphasis / travel / hold / merge / reflow.
-          //   move across =    100 / 600 / 260 / 320 / 240
-          //   divide sides     100 / 680 / 260 / 360 / 240
+          //   move across =     70 / 600 / 260 / 320 / 240
+          //   divide sides      70 / 680 / 260 / 360 / 240
           // Emphasis is a brief fixation cue, not a stall — a long pause before
           // motion reads as lag; travel is stretched so a term reads as PLACED,
           // not flung (a slower arc is easier for the eye to track).
           const isDivide = divisionForm || earlyReflow;
-          const EMPH_MS = hasActor ? 100 : 0;
+          const EMPH_MS = hasActor ? 70 : 0;
           const TRAVEL_MS = hasActor ? (isDivide ? 680 : 600) : 0;
           const T_TRAVEL_START = EMPH_MS;
           const T_LAND = T_TRAVEL_START + TRAVEL_MS;
