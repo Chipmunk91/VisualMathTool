@@ -132,6 +132,20 @@ const decideStatus = (L: TNode, R: TNode): "identity" | "contradiction" | null =
 const negOf = (t: EqTerm): boolean =>
   t.kind === "leaf" && (t.pm || t.radical || t.fnVal) ? !!t.neg : t.num < 0;
 
+/**
+ * Is old→new an honest in-place morph (a value swap), or an alias? Only equal
+ * text, a number→number change (5→3, coefficient/sink swaps), or a sign flip
+ * may morph a glyph; anything else (e→sin, 2→"(") is two different glyphs the
+ * animation must NOT fuse — it fades one out and the other in instead.
+ */
+const isValueSwap = (a: string, b: string): boolean => {
+  if (a === b) return true;
+  const isNum = (s: string) => /^\d+$/.test(s);
+  if (isNum(a) && isNum(b)) return true;
+  const isSign = (s: string) => s === "+" || s === "−" || s === "-";
+  return isSign(a) && isSign(b);
+};
+
 /** e^1 is just e: an exp func whose exponent is exactly the constant 1.
  *  Arises when a divide cancels exponents (e³/e² = e^1) — display it as e,
  *  matching the tree side (printNode / treeview both fold e^1 → e). */
@@ -772,7 +786,18 @@ const EquationBuilderTool = () => {
             const k = Math.min(leftoverOlds.length, leftoverNews.length);
             for (let i = 0; i < k; i++) {
               claimedOld.add(leftoverOlds[i]);
-              mutations.push({ c: leftoverOlds[i], n: leftoverNews[i] });
+              // A morph is only honest as a VALUE swap (exponent 5→3, a
+              // coefficient, a sign flip). Positional tree ids can alias
+              // unrelated glyphs across a restructure (e² cancels, "sin"
+              // slides into e's slot → a bogus e→sin morph). Reject those:
+              // fade the old out, the new in, instead of morphing one letter
+              // into a different word.
+              if (isValueSwap(leftoverOlds[i].g.key, leftoverNews[i].key)) {
+                mutations.push({ c: leftoverOlds[i], n: leftoverNews[i] });
+              } else {
+                deaths.push(leftoverOlds[i]);
+                births.push(leftoverNews[i]);
+              }
             }
             leftoverOlds.slice(k).forEach((c) => {
               claimedOld.add(c);
