@@ -267,12 +267,13 @@ const makeStep = (
 /** A harmless flat placeholder while the equation lives in the tree */
 const TREE_DUMMY = (): EquationState => ({ left: [leaf(0)], right: [leaf(0)] });
 
-const makeTreeStep = (label: string, tree: TreeEq, dangerous?: boolean, note?: string, pill?: string): Step => ({
+const makeTreeStep = (label: string, tree: TreeEq, dangerous?: boolean, note?: string, pill?: string, story?: MoveStory): Step => ({
   id: stepCounter++,
   label,
   note,
   dangerous,
   pill,
+  story,
   state: TREE_DUMMY(),
   tree: cloneTreeEq(tree),
   text: printTreeEq(tree),
@@ -834,6 +835,25 @@ const EquationBuilderTool = () => {
           const consumedActors = actorTravels.filter((t) => t.n === null);
           const hasActor = actorTravels.length > 0 || actorMutations.length > 0;
 
+          // Tree steps carry no traveling actor; they name the acted-on unit(s)
+          // in story.emphasize. Match the old-state clones (a factor's inert
+          // leaves resolve to the factor's unit id; a whole-numerator @N or a
+          // whole-term id lights all its contained factors) so they can pulse.
+          const emphIds = story?.emphasize ?? [];
+          const emphSet = new Set(emphIds);
+          const emphMatch = (term: string | null): boolean => {
+            if (!term) return false;
+            if (emphSet.has(term)) return true;
+            for (const id of emphIds) {
+              const m = id.match(/^([LR]\d+)(@N)?$/);
+              if (m && (id === m[1] || id.endsWith("@N")) && (term === m[1] || term.startsWith(`${m[1]}@`)))
+                return true;
+            }
+            return false;
+          };
+          const emphClones = hasActor ? [] : clones.filter((c) => emphMatch(c.g.term));
+          const hasEmphasis = !hasActor && emphClones.length > 0;
+
           // The sink: a resident term whose id SURVIVED with changed glyphs.
           // Stable ids make this exact — no landing-on-heuristics.
           const oldTermText = new Map<string, string>();
@@ -915,7 +935,7 @@ const EquationBuilderTool = () => {
           // motion reads as lag; travel is stretched so a term reads as PLACED,
           // not flung (a slower arc is easier for the eye to track).
           const isDivide = divisionForm || earlyReflow;
-          const EMPH_MS = hasActor ? 70 : 0;
+          const EMPH_MS = hasActor || hasEmphasis ? 70 : 0;
           const TRAVEL_MS = hasActor ? (isDivide ? 680 : 600) : 0;
           const T_TRAVEL_START = EMPH_MS;
           const T_LAND = T_TRAVEL_START + TRAVEL_MS;
@@ -959,9 +979,10 @@ const EquationBuilderTool = () => {
             siteClones.forEach((c) => tag(c.node, "site"));
             clones.forEach((c) => { if (c.g.term === sinkTermId && !c.node.getAttribute("data-anim-role")) tag(c.node, "sink"); });
             deaths.forEach((c) => tag(c.node, "died"));
+            emphClones.forEach((c) => { if (!c.node.getAttribute("data-anim-role")) tag(c.node, "emph"); });
             (window as unknown as { __animPhases?: unknown }).__animPhases = {
               start: performance.now(),
-              hasActor, hasMerge, divisionForm, earlyReflow, reduced,
+              hasActor, hasMerge, hasEmphasis, divisionForm, earlyReflow, reduced,
               phases: reduced
                 ? [{ name: "reduced", t0: 0, t1: CURTAIN }]
                 : [
@@ -1052,6 +1073,26 @@ const EquationBuilderTool = () => {
             }, ms);
 
           if (!reduced) {
+            // Tree fixation cue: the acted-on unit pulses (orange + a gentle
+            // scale) while the rest holds still, THEN the reflow begins at
+            // T_REFLOW (= EMPH_MS, since there is no travel). The anticipation
+            // beat flat moves get, so a tree step no longer just reflows cold.
+            // Colour, not a transform: the clone's transform is owned by its
+            // reflow/death animation, so a composite scale doesn't reliably
+            // show. An orange flash (the actor cue's primary signal) is
+            // conflict-free and reads clearly. makeClone gives it a .25s
+            // colour transition, so setting then reverting fades in and out.
+            if (hasEmphasis) {
+              for (const c of emphClones) {
+                const orig = c.g.color;
+                c.node.style.transition = "color .12s ease-out";
+                c.node.style.color = EMPH;
+                later(() => {
+                  c.node.style.transition = "color .18s ease-in";
+                  c.node.style.color = orig;
+                }, EMPH_MS + 90);
+              }
+            }
             // the intermediate landing offset for consumed movers: AFTER the
             // sink's current right edge (a term joining the side), or BELOW
             // it when a fraction is forming (the divisor dives under)
@@ -3035,17 +3076,27 @@ const EquationBuilderTool = () => {
     return null;
   };
 
+  /** The unit(s) the user grabbed, so the replay can pulse them (tree steps
+   *  have no traveling actor — this is their fixation cue). */
+  const emphasisStory = (payload: DragPayload): MoveStory => {
+    const ids =
+      "ids" in payload ? payload.ids : "termId" in payload && payload.termId ? [payload.termId] : [];
+    return { actors: [], site: [], born: [], emphasize: ids.filter(Boolean) };
+  };
+  const withEmphasis = (o: TreeOutcome, payload: DragPayload): TreeOutcome =>
+    o.story ? o : { ...o, story: emphasisStory(payload) };
+
   const commitTreeOutcome = (o: TreeOutcome) => {
     if (o.flatNext) {
       // the escape hatch: the equation fits the flat model again — the full
       // move grammar takes over from here
       setTreeEq(null);
       setEquation(o.flatNext);
-      setHistory((h) => [...h, makeStep(o.label, o.flatNext!, o.dangerous, o.note, o.pill)]);
+      setHistory((h) => [...h, makeStep(o.label, o.flatNext!, o.dangerous, o.note, o.pill, o.story)]);
     } else if (o.treeNext) {
       setTreeEq(o.treeNext);
       setEquation(TREE_DUMMY());
-      setHistory((h) => [...h, makeTreeStep(o.label, o.treeNext!, o.dangerous, o.note, o.pill)]);
+      setHistory((h) => [...h, makeTreeStep(o.label, o.treeNext!, o.dangerous, o.note, o.pill, o.story)]);
     }
     setSelection(null);
     setNotice(null);
@@ -3428,7 +3479,7 @@ const EquationBuilderTool = () => {
         flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
         return;
       }
-      commitTreeOutcome(result);
+      commitTreeOutcome(withEmphasis(result, payload));
       return;
     }
     if (!treeEq && payload.kind === "group" && (target.kind === "side" || target.kind === "under")) {
@@ -3438,7 +3489,7 @@ const EquationBuilderTool = () => {
         flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
         return;
       }
-      commitTreeOutcome(result);
+      commitTreeOutcome(withEmphasis(result, payload));
       return;
     }
     if (treeEq) {
@@ -3448,7 +3499,7 @@ const EquationBuilderTool = () => {
         flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
         return;
       }
-      commitTreeOutcome(result);
+      commitTreeOutcome(withEmphasis(result, payload));
       return;
     }
     const result = computeDrop(payload, target);
