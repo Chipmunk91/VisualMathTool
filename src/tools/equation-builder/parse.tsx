@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { parse as mathParse, MathNode } from "mathjs";
 import { EquationState, EqTerm, LeafTerm, FuncName, leaf, group, func, scaleNum, scaleDen, combine } from "./model";
-import { TNode, TreeEq, simplify, tadd, tc, tfn, tmul, tpow, tv, treeSideToFlat } from "./tree";
+import { TNode, TreeEq, simplify, tadd, tc, tfn, tmul, tnamed, tpow, tv, treeSideToFlat } from "./tree";
 
 /**
  * Typed-equation support: mathjs parses the text into an AST (the standard
@@ -205,6 +205,7 @@ function mathToTree(node: Node): TNode {
   switch (node.type) {
     case "SymbolNode":
       if (node.name === "x" || node.name === "y") return tv(node.name);
+      if (node.name === "pi" || node.name === "π") return tnamed("pi");
       throw new Unsupported(`the constant "${node.name}" isn't playable yet`);
     case "ParenthesisNode":
       return mathToTree(node.content);
@@ -290,7 +291,7 @@ const PreviewNode = ({ node }: { node: Node }): ReactNode => {
     case "ConstantNode":
       return <span>{String(node.value)}</span>;
     case "SymbolNode":
-      if (node.name === "pi") return <span className="italic">π</span>;
+      if (node.name === "pi" || node.name === "π") return <span className="italic">π</span>;
       return <span className={isWordSymbol(node.name) ? "" : "italic"}>{node.name}</span>;
     case "ParenthesisNode":
       return (

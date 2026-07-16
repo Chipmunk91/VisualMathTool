@@ -14,6 +14,7 @@ import {
   tmul,
   tpow,
   tfn,
+  tnamed,
   simplify,
   printNode,
   printTreeEq,
@@ -39,7 +40,13 @@ import {
 } from "../src/tools/equation-builder/treemoves";
 import { CATALOG } from "../src/tools/equation-builder/catalog";
 import { parseEquation } from "../src/tools/equation-builder/parse";
-import { resolveTreeFactor, treeFactorLayout } from "../src/tools/equation-builder/treeunits";
+import {
+  isAtomicTreeFactorId,
+  resolveTreeFactor,
+  resolveTreeFactorGroup,
+  treeMarqueeSelection,
+  treeFactorLayout,
+} from "../src/tools/equation-builder/treeunits";
 
 let pass = 0;
 let fail = 0;
@@ -106,7 +113,7 @@ console.log("\n== A. model arithmetic: combine / scale (flat layer) ==");
 
 console.log("\n== B. simplifier: rational + power laws ==");
 simp("B1 6/2 folds to 3", tmul(tc(6), tpow(tc(2), -1)), "3");
-simp("B2 like addends merge: x/2 + x/3", tadd(tmul(tc(1, 2), tv("x")), tmul(tc(1, 3), tv("x"))), "5/6x");
+simp("B2 like addends merge: x/2 + x/3", tadd(tmul(tc(1, 2), tv("x")), tmul(tc(1, 3), tv("x"))), "(5x)/6");
 simp("B3 zero annihilates a product", tmul(tc(0), tv("x"), tfn("sin", tv("x"))), "0");
 simp("B4 x·x² merges within a sign class", tmul(tv("x"), tpow(tv("x"), 2)), "x³");
 simp("B5 x³/x² honestly stays (0 in domain gap)", tmul(tpow(tv("x"), 3), tpow(tv("x"), -2)), "x³/x²");
@@ -223,14 +230,14 @@ console.log("\n== J. sympy-style normalization: cancel + thaw, receipts attached
     left: tfn("exp", tadd(tfn("ln", tv("x")), tc(5, 2))),
     right: tfn("exp", tmul(tc(1, 4), tv("y"))),
   });
-  check("J2 e^(ln x + 5/2) thaws at load", printTreeEq(n2.te) === "e^(5/2)·x = e^(1/4y)", printTreeEq(n2.te));
+  check("J2 e^(ln x + 5/2) thaws at load", printTreeEq(n2.te) === "e^(5/2)·x = e^(y/4)", printTreeEq(n2.te));
   check("J2 — pill", n2.pill === "x > 0", n2.pill);
   const n3 = normalizeOnLoad({ left: tmul(tc(2), tv("x")), right: tc(10) });
   check("J3 a plain equation loads untouched", !n3.changed && printTreeEq(n3.te) === "2x = 10");
   // the MOVE path: any finalize-produced state thaws too, with the note
   const r = applyToolT("exp", { left: tadd(tfn("ln", tv("x")), tc(5, 2)), right: tmul(tc(1, 4), tv("y")) });
   const ok = r !== null && typeof r !== "string" && r.treeNext !== null;
-  check("J4 exp tool thaws e^(ln x + …) via finalize", ok && printTreeEq(r.treeNext!) === "e^(5/2)·x = e^(1/4y)", ok ? printTreeEq((r as TreeOutcome).treeNext!) : String(r));
+  check("J4 exp tool thaws e^(ln x + …) via finalize", ok && printTreeEq(r.treeNext!) === "e^(5/2)·x = e^(y/4)", ok ? printTreeEq((r as TreeOutcome).treeNext!) : String(r));
   check("J4 — pill", ok && (r as TreeOutcome).pill === "x > 0");
   const t = thawExpLn(tfn("exp", tfn("ln", tadd(tv("x"), tc(1)))));
   check("J5 bare e^(ln u) = u, reported", printNode(simplify(t.node)) === "x + 1" && t.thawed.join() === "x + 1");
@@ -247,6 +254,8 @@ simp("K2 −(x − 2) keeps the inner sign", tmul(tc(-1), tadd(tv("x"), tc(-2)))
 simp("K3 nested: 5 − (x + 2)", tadd(tc(5), tmul(tc(-1), tadd(tv("x"), tc(2)))), "−(x + 2) + 5");
 simp("K4 a bare negated term needs no parens", tmul(tc(-2), tv("x")), "−2x");
 check("K5 −(x + 2) still evaluates to −(x+2)", simplifyEval(tmul(tc(-1), tadd(tv("x"), tc(2))), 3) === -5);
+simp("K6 rational product coefficients display below the shared bar", tmul(tc(1, 3), tfn("exp", tc(5)), tpow(tv("x"), -1)), "e^5/(3x)");
+simp("K7 a reciprocal inside a denominator stays parenthesized", tmul(tc(729), tpow(tpow(tv("y"), -6), -1)), "729/(1/y⁶)");
 
 console.log("\n== L. search catalog integrity ==");
 {
@@ -314,7 +323,7 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
     printNode(signedLayout.numerator[0].expr) === "2" && unitText(signed, "L0@n0") === "2",
     inventory(signedLayout)
   );
-  move("M10 moving that visible 2 divides by +2", divideBothT(signed, signedLayout.numerator[0].expr, "2"), "−sin(x) = 1/2y");
+  move("M10 moving that visible 2 divides by +2", divideBothT(signed, signedLayout.numerator[0].expr, "2"), "−sin(x) = y/2");
 
   // A denominator-only product displays a literal 1 above the bar. That 1 is
   // not a meaningful factor move and must not get a phantom @N handle.
@@ -407,6 +416,80 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
     }
   }
   check(`M16 generated ${shapes.length}-shape factor matrix resolves and moves`, matrixFailure === "", matrixFailure);
+
+  const screenshotEq = parsedTree("e^5/x = 3*e^2*sin(y)");
+  const coefficientAndExp = resolveTreeFactorGroup(screenshotEq, ["R0@n0", "R0@n1"]);
+  check(
+    "M17 a selected coefficient + exponential resolves as one numerator chunk",
+    coefficientAndExp?.zone === "n" && printNode(coefficientAndExp.expr) === "3e^2",
+    coefficientAndExp ? printNode(coefficientAndExp.expr) : "null"
+  );
+  move(
+    "M18 moving 3e² together divides both sides by the selected product",
+    coefficientAndExp && divideBothT(screenshotEq, coefficientAndExp.expr, printNode(coefficientAndExp.expr)),
+    "e^3/(3x) = sin(y)"
+  );
+  const expAndSin = resolveTreeFactorGroup(screenshotEq, ["R0@n1", "R0@n2"]);
+  move(
+    "M19 moving e²sin(y) together preserves the unselected 3",
+    expAndSin && divideBothT(screenshotEq, expAndSin.expr, printNode(expAndSin.expr)),
+    "e^3/(x·sin(y)) = 3",
+    "e^2·sin(y) ≠ 0"
+  );
+  check(
+    "M20 mixed numerator/denominator selections are rejected as ambiguous",
+    resolveTreeFactorGroup(screenshotEq, ["L0@n0", "L0@d0"]) === null
+  );
+  check("M21 only exact factor ids enter a factor group", isAtomicTreeFactorId("R0@n1") && !isAtomicTreeFactorId("R0@N"));
+  check(
+    "M21b marquee policy preserves an exact factor chunk instead of its addend",
+    treeMarqueeSelection(screenshotEq, ["R0@n1", "R0@n2"], ["R0"]).join(",") === "R0@n1,R0@n2"
+  );
+  check(
+    "M21c an ambiguous mixed-zone marquee falls back to its owning addend",
+    treeMarqueeSelection(screenshotEq, ["L0@n0", "L0@d0"], []).join(",") === "L0"
+  );
+
+  const dividedByThree = divideBothT(screenshotEq, tc(3), "3");
+  const dividedTree = dividedByThree && typeof dividedByThree !== "string" ? dividedByThree.treeNext : null;
+  check(
+    "M22 moving 3 lands it beside x in the displayed denominator",
+    !!dividedTree && printTreeEq(dividedTree) === "e^5/(3x) = e^2·sin(y)",
+    dividedTree ? printTreeEq(dividedTree) : String(dividedByThree)
+  );
+  if (dividedTree) {
+    const layout = treeFactorLayout("L0", addendsOf(dividedTree.left)[0]);
+    check(
+      "M23 the landed 3 and x are independently selectable denominator factors",
+      inventory(layout) === "L0@n0:coef:e^5 | L0@d0:den:3 | L0@d1:den:x",
+      inventory(layout)
+    );
+    const denominatorGroup = resolveTreeFactorGroup(dividedTree, ["L0@d0", "L0@d1"]);
+    move(
+      "M24 moving a selected denominator chunk multiplies by its exact product",
+      denominatorGroup && multiplyBothT(dividedTree, denominatorGroup.expr, printNode(denominatorGroup.expr)),
+      "e^5 = 3e^2·sin(y)·x"
+    );
+  } else {
+    check("M23 the landed 3 and x are independently selectable denominator factors", false, "no tree result");
+    check("M24 moving a selected denominator chunk multiplies by its exact product", false, "no tree result");
+  }
+}
+
+console.log("\n== N. symbolic constants: pi ==");
+{
+  const piEq = parsedTree("x*pi = y");
+  check("N1 typed pi enters tree mode and prints as π", printTreeEq(piEq) === "π·x = y", printTreeEq(piEq));
+  check("N1b a typed π glyph is accepted too", printTreeEq(parsedTree("π*x = y")) === "π·x = y");
+  check("N2 π evaluates exactly as the runtime constant", Math.abs(evalNode(tnamed("pi"), {}) - Math.PI) < 1e-12);
+  const layout = treeFactorLayout("L0", addendsOf(piEq.left)[0]);
+  check(
+    "N3 π is an independently movable symbolic coefficient",
+    layout.numerator[0]?.role === "coef" && printNode(layout.numerator[0].expr) === "π",
+    layout.numerator.map((unit) => `${unit.role}:${printNode(unit.expr)}`).join(" | ")
+  );
+  move("N4 moving π divides both sides without a domain pill", divideBothT(piEq, tnamed("pi"), "π"), "x = y/π");
+  simp("N5 π/π cancels because π is provably nonzero", tmul(tnamed("pi"), tpow(tnamed("pi"), -1)), "1");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

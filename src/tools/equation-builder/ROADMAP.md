@@ -53,14 +53,16 @@ The formerly gated forms — `1/(x+1)`, `2^x`, `√(x+1)`, `x·y` — now live i
 a real expression tree (`tree.ts`):
 
 ```
-TNode = Const(num/den) | Var("x" | "y") | Add(TNode[]) | Mul(TNode[])
-      | Pow(TNode, TNode) | Fn(name, TNode)
+TNode = Const(num/den) | Named("pi") | Var("x" | "y")
+      | Add(TNode[]) | Mul(TNode[]) | Pow(TNode, TNode) | Fn(name, TNode)
 ```
 
 - **Layer 1 — parse, render, evaluate.** When the flat model refuses, the
   parser falls back to the tree: the equation typesets (real fractions,
   arbitrary exponents, √ overlines) and earns the same open-world reveals —
-  `2^x = 8` plots with its crossing at 3, `y = 2^x` opens the mapping pane.
+  `2^x = 8` plots with its crossing at 3, `y = 2^x` opens the mapping pane,
+  and typed `pi` remains exact and renders as `π` instead of becoming a
+  decimal approximation.
 - **Layer 2 — one engine, two worlds.** The tree renderer (`treeview.tsx`)
   emits the same DOM contracts as the flat renderer (`data-symbol`,
   `data-term-wrap`, `data-equals`), so the single pointer engine — proximity
@@ -68,7 +70,9 @@ TNode = Const(num/den) | Var("x" | "y") | Add(TNode[]) | Mul(TNode[])
   behavior is untouched (all flat suites pass unchanged). Immediate product
   factors are described once in `treeunits.ts` and consumed by both rendering
   and drop resolution: `sin(y)`, `e^5`, `(x+1)`, powers, and radicals are each
-  one atomic factor target instead of overlapping syntax hitboxes.
+  one atomic factor target instead of overlapping syntax hitboxes. Marquee
+  selection preserves any same-row numerator or denominator factor chunk, so
+  `3e²`, `e²sin(y)`, or `3x` can move as one exact product.
 - **Layer 3 — typed rewrites.** Tree moves (`treemoves.ts`) return
   `{ next, pills }`; the pill is the license. The simplifier is a strict
   whitelist of identities true everywhere: `x/x` does NOT silently become 1
@@ -80,15 +84,16 @@ TNode = Const(num/den) | Var("x" | "y") | Add(TNode[]) | Mul(TNode[])
 
 Shipped tree moves: addend across `=`, any immediate numerator factor divides
 both sides (`ln 2`, `sin(y)`, `e^5`, `x`, and `(x+1)` included), any immediate
-denominator factor multiplies both sides, matching factors cancel with their
+same-zone factor selection moves as a product, any immediate denominator
+factor multiplies both sides, matching factors cancel with their
 nonzero receipt, and all eight toolbox symbols work (ln thaws `2^x` to
 `ln(2)·x` exactly; recip flips `1/(x+1) = 2` straight to `x + 1 = ½`;
 squaring resolves √ with its check-roots pill).
 
 ## Still honestly gated
 
-- **Symbolic constants** `π`, bare `e` outside `e^( )` — the constant
-  algebra stays capped at rationals and fn-of-rational values.
+- **Bare `e` outside `e^( )`** — `π` is now an exact named constant, while
+  Euler's constant still enters through exponential notation.
 - **Per-term rebuilding in tree mode** (drag a toolbox symbol onto one tree
   term) — clicks apply to both sides; term-level tree rebuilds arrive with
   path-addressed payloads.

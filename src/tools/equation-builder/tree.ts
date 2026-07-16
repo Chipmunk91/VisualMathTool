@@ -24,9 +24,11 @@ import {
 } from "./model";
 
 export type TFnName = FuncName | "sqrt";
+export type TNamedConstant = "pi";
 
 export type TNode =
   | { kind: "const"; num: number; den: number }
+  | { kind: "named"; name: TNamedConstant }
   | { kind: "var"; name: Variable }
   | { kind: "add"; terms: TNode[] }
   | { kind: "mul"; factors: TNode[] }
@@ -41,6 +43,7 @@ export interface TreeEq {
 /* --- constructors ------------------------------------------------------- */
 
 export const tc = (num: number, den = 1): TNode => normRat({ kind: "const", num, den });
+export const tnamed = (name: TNamedConstant): TNode => ({ kind: "named", name });
 export const tv = (name: Variable): TNode => ({ kind: "var", name });
 export const tadd = (...terms: TNode[]): TNode => ({ kind: "add", terms });
 export const tmul = (...factors: TNode[]): TNode => ({ kind: "mul", factors });
@@ -85,6 +88,8 @@ export function varsIn(n: TNode): Set<Variable> {
   const out = new Set<Variable>();
   const walk = (m: TNode) => {
     switch (m.kind) {
+      case "named":
+        break;
       case "var":
         out.add(m.name);
         break;
@@ -135,6 +140,33 @@ export const addendsOf = (n: TNode): TNode[] =>
 export const sideFromAddends = (terms: TNode[]): TNode =>
   terms.length === 0 ? tc(0) : terms.length === 1 ? terms[0] : tadd(...terms);
 
+/**
+ * The factors exactly as a product is displayed around a fraction bar.
+ *
+ * Rational coefficients are stored canonically as one exact `const` node,
+ * but students read (1/3)e^5/x as e^5/(3x). Splitting the rational here keeps
+ * rendering, factor selection and drag resolution on the same boundary.
+ * Callers strip a leading sign first, so the returned units are magnitudes.
+ */
+export function displayedProductFactors(body: TNode): { numerator: TNode[]; denominator: TNode[] } {
+  const factors = body.kind === "mul" ? body.factors : [body];
+  const numerator: TNode[] = [];
+  const denominator: TNode[] = [];
+
+  for (const factor of factors) {
+    if (factor.kind === "const" && factor.den !== 1) {
+      if (factor.num !== 1) numerator.push(tc(factor.num));
+      denominator.push(tc(factor.den));
+    } else if (factor.kind === "pow" && factor.exp.kind === "const" && factor.exp.num < 0) {
+      denominator.push(simplify(tpow(factor.base, tc(-factor.exp.num, factor.exp.den))));
+    } else {
+      numerator.push(factor);
+    }
+  }
+
+  return { numerator, denominator };
+}
+
 /* --- the whitelist simplifier -------------------------------------------- */
 
 /**
@@ -151,6 +183,7 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
   switch (n.kind) {
     case "const":
       return normRat(n);
+    case "named":
     case "var":
       return n;
     case "fn": {
@@ -226,6 +259,7 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
         const nonneg = (f: TNode): boolean =>
           (f.kind === "fn" && (f.fn === "exp" || f.fn === "sqrt")) ||
           (f.kind === "const" && f.num >= 0) ||
+          (f.kind === "named" && f.name === "pi") ||
           (f.kind === "pow" && f.exp.kind === "const" && f.exp.den === 1 && f.exp.num % 2 === 0);
         const pulled = base.factors.filter((f) => oddRoot || nonneg(f));
         const kept = base.factors.filter((f) => !(oddRoot || nonneg(f)));
@@ -408,6 +442,8 @@ export function evalNode(n: TNode, env: { x?: number; y?: number }): number {
   switch (n.kind) {
     case "const":
       return n.num / n.den;
+    case "named":
+      return n.name === "pi" ? Math.PI : NaN;
     case "var":
       return env[n.name] ?? NaN;
     case "add":
@@ -440,6 +476,8 @@ export function printNode(n: TNode): string {
   switch (n.kind) {
     case "const":
       return n.den === 1 ? String(n.num).replace("-", "−") : `${String(n.num).replace("-", "−")}/${n.den}`;
+    case "named":
+      return "π";
     case "var":
       return n.name;
     case "add":
@@ -462,13 +500,7 @@ export function printNode(n: TNode): string {
         const b = printNode(split.body);
         return split.body.kind === "add" ? `−(${b})` : `−${b}`;
       }
-      const numer: TNode[] = [];
-      const denom: TNode[] = [];
-      for (const f of n.factors) {
-        if (f.kind === "pow" && f.exp.kind === "const" && f.exp.num < 0) {
-          denom.push(simplify(tpow(f.base, tc(-f.exp.num, f.exp.den))));
-        } else numer.push(f);
-      }
+      const { numerator: numer, denominator: denom } = displayedProductFactors(n);
       const part = (fs: TNode[]): string => {
         if (fs.length === 0) return "1";
         let out = "";
@@ -484,7 +516,12 @@ export function printNode(n: TNode): string {
       if (denom.length === 0) return top;
       const bottom = part(denom);
       const wrapTop = numer.length > 1 || (numer[0] && numer[0].kind === "add") ? `(${top})` : top;
-      const wrapBottom = denom.length > 1 || denom[0].kind === "add" ? `(${bottom})` : bottom;
+      const onlyDenom = denom[0];
+      const nestedFraction =
+        onlyDenom.kind === "mul" ||
+        (onlyDenom.kind === "const" && onlyDenom.den !== 1) ||
+        (onlyDenom.kind === "pow" && onlyDenom.exp.kind === "const" && onlyDenom.exp.num < 0);
+      const wrapBottom = denom.length > 1 || onlyDenom.kind === "add" || nestedFraction ? `(${bottom})` : bottom;
       return `${wrapTop}/${wrapBottom}`;
     }
     case "pow": {
@@ -544,6 +581,7 @@ export function signSplit(n: TNode): { neg: boolean; body: TNode } {
 export function derivative(n: TNode, v: Variable): TNode | null {
   switch (n.kind) {
     case "const":
+    case "named":
       return tc(0);
     case "var":
       return tc(n.name === v ? 1 : 0);
@@ -630,6 +668,7 @@ function linearIn(n: TNode, v: Variable): { aNum: number; aDen: number } | null 
 export function antiderivative(n: TNode, v: Variable): TNode | null {
   switch (n.kind) {
     case "const":
+    case "named":
       return tmul(n, tv(v));
     case "var":
       return n.name === v ? tmul(tc(1, 2), tpow(tv(v), 2)) : tmul(n, tv(v));

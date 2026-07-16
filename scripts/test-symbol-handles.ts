@@ -10,7 +10,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseEquation } from "../src/tools/equation-builder/parse";
-import { type TNode, simplify, tadd, tc, tfn, tmul, tpow, tv } from "../src/tools/equation-builder/tree";
+import { type TNode, simplify, tadd, tc, tfn, tmul, tnamed, tpow, tv } from "../src/tools/equation-builder/tree";
 
 let pass = 0;
 let fail = 0;
@@ -35,13 +35,13 @@ async function main() {
   // runtime, so expose React while exercising the component under Node.
   (globalThis as unknown as { React: typeof React }).React = React;
   const { TreeSideView } = await import("../src/tools/equation-builder/treeview");
-  const renderSide = (node: TNode, side: "left" | "right") =>
+  const renderSide = (node: TNode, side: "left" | "right", selectedIds: string[] | null = null) =>
     renderToStaticMarkup(
       React.createElement(TreeSideView, {
         node,
         side,
         hoveredTermId: null,
-        selectedIds: null,
+        selectedIds,
         onHover: () => undefined,
       })
     );
@@ -58,7 +58,6 @@ async function main() {
     JSON.stringify(leftHandles) ===
       JSON.stringify([
         { id: "L0@n0", role: "coef" },
-        { id: "L0", role: "term" },
         { id: "L0@n1", role: "numer" },
       ]),
     JSON.stringify(leftHandles)
@@ -118,6 +117,54 @@ async function main() {
     "S8 standalone x^3 retains its cube-root operation",
     standalonePower.some((h) => h.role === "root"),
     JSON.stringify(standalonePower)
+  );
+
+  const screenshot = parseEquation("e^5/x = 3*e^2*sin(y)");
+  if (!screenshot.ok || !screenshot.tree) throw new Error("screenshot equation did not reach tree mode");
+  const screenshotRight = renderSide(screenshot.tree.right, "right");
+  const screenshotHandles = handlesIn(screenshotRight);
+  check(
+    "S9 the reported 3, e² and sin(y) product exposes only its three factors",
+    JSON.stringify(screenshotHandles) ===
+      JSON.stringify([
+        { id: "R0@n0", role: "coef" },
+        { id: "R0@n1", role: "coef" },
+        { id: "R0@n2", role: "numer" },
+      ]) &&
+      !screenshotRight.includes('data-role="term">·'),
+    JSON.stringify(screenshotHandles)
+  );
+  const selectedRight = renderSide(screenshot.tree.right, "right", ["R0@n1", "R0@n2"]);
+  check(
+    "S10 a selected factor chunk highlights exactly its member handles",
+    (selectedRight.match(/data-selected="true"/g) ?? []).length === 2 &&
+      selectedRight.includes('data-term-id="R0@n1"') &&
+      selectedRight.includes('data-term-id="R0@n2"')
+  );
+
+  const landed = simplify(tmul(tc(1, 3), tfn("exp", tc(5)), tpow(tv("x"), -1)));
+  const landedHandles = handlesIn(renderSide(landed, "left"));
+  check(
+    "S11 a divided coefficient renders as a denominator unit beside x",
+    JSON.stringify(landedHandles) ===
+      JSON.stringify([
+        { id: "L0@n0", role: "coef" },
+        { id: "L0", role: "term" },
+        { id: "L0@d0", role: "den" },
+        { id: "L0@d1", role: "den" },
+      ]),
+    JSON.stringify(landedHandles)
+  );
+
+  const piHandles = handlesIn(renderSide(simplify(tmul(tnamed("pi"), tv("x"))), "left"));
+  check(
+    "S12 π renders as a movable symbolic coefficient",
+    JSON.stringify(piHandles) ===
+      JSON.stringify([
+        { id: "L0@n0", role: "coef" },
+        { id: "L0@n1", role: "numer" },
+      ]),
+    JSON.stringify(piHandles)
   );
 
   console.log(`\n${pass} passed, ${fail} failed`);

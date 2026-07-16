@@ -182,6 +182,7 @@ export function thawExpLn(n: TNode): { node: TNode; thawed: string[] } {
   const walk = (m: TNode): TNode => {
     switch (m.kind) {
       case "const":
+      case "named":
       case "var":
         return m;
       case "add":
@@ -314,6 +315,10 @@ function lnOfNode(side: TNode): SideResult {
     if (f.kind === "const") {
       if (f.num <= 0) return "ln is only defined for positive numbers — one side isn't positive";
       if (f.num !== f.den) parts.push(tfn("ln", f));
+      continue;
+    }
+    if (f.kind === "named" && f.name === "pi") {
+      parts.push(tfn("ln", f));
       continue;
     }
     if (f.kind === "fn" && f.fn === "exp") {

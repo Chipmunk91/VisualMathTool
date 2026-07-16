@@ -70,7 +70,12 @@ import {
   type TreeOutcome,
 } from "./treemoves";
 import { TreeSideView } from "./treeview";
-import { resolveTreeFactor } from "./treeunits";
+import {
+  isAtomicTreeFactorId,
+  resolveTreeFactor,
+  resolveTreeFactorGroup,
+  treeMarqueeSelection,
+} from "./treeunits";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -2426,7 +2431,8 @@ const EquationBuilderTool = () => {
       };
       if (rect.right - rect.left < 8 && rect.bottom - rect.top < 8) return;
 
-      const hits: Record<Side, Set<string>> = { left: new Set(), right: new Set() };
+      const additiveHits: Record<Side, Set<string>> = { left: new Set(), right: new Set() };
+      const factorHits: Record<Side, Set<string>> = { left: new Set(), right: new Set() };
       const spans = equationRef.current?.querySelectorAll<HTMLElement>("[data-symbol]") ?? [];
       spans.forEach((span) => {
         const b = span.getBoundingClientRect();
@@ -2434,14 +2440,26 @@ const EquationBuilderTool = () => {
         if (!overlaps) return;
         const side = span.dataset.side as Side;
         const termId = span.dataset.termId;
-        // Marquee selection is additive. Tree factor ids describe sub-term
-        // drag units, so collapse them to their owning addend for a block move.
-        if (side && termId) hits[side].add(treeEq ? termId.split("@")[0] : termId);
+        if (!side || !termId) return;
+        if (treeEq && isAtomicTreeFactorId(termId)) {
+          factorHits[side].add(termId);
+        } else {
+          additiveHits[side].add(treeEq ? termId.split("@")[0] : termId);
+        }
       });
 
-      const side: Side = hits.left.size >= hits.right.size ? "left" : "right";
-      if (hits[side].size === 0) return;
-      setSelection({ side, termIds: Array.from(hits[side]) });
+      // Exact factor hits outrank the overlapping whole-term punctuation.
+      // If they form one numerator or denominator chunk, preserve those ids;
+      // otherwise fall back to the original additive block selection.
+      const hasFactorHits = factorHits.left.size > 0 || factorHits.right.size > 0;
+      const side: Side = hasFactorHits
+        ? (factorHits.left.size >= factorHits.right.size ? "left" : "right")
+        : (additiveHits.left.size >= additiveHits.right.size ? "left" : "right");
+      const selected = treeEq
+        ? treeMarqueeSelection(treeEq, Array.from(factorHits[side]), Array.from(additiveHits[side]))
+        : Array.from(additiveHits[side]);
+      if (selected.length === 0) return;
+      setSelection({ side, termIds: selected });
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -2450,6 +2468,7 @@ const EquationBuilderTool = () => {
   // --- Drag & drop ---
   type DragPayload =
     | { kind: "terms"; ids: string[]; from: Side }
+    | { kind: "factorGroup"; ids: string[]; from: Side }
     | { kind: "coef"; termId: string; from: Side }
     | { kind: "den"; termId: string; from: Side }
     | { kind: "neg"; termId: string; from: Side }
@@ -2812,10 +2831,21 @@ const EquationBuilderTool = () => {
     const termId = el.dataset.termId ?? "";
     const side = (el.dataset.side ?? "left") as Side;
     const role = (el.dataset.role ?? "term") as Role;
-    // A selected block always moves as a whole, whatever symbol is grabbed
-    const selectionId = treeEq ? termId.split("@")[0] : termId;
-    if (selection && selection.side === side && selection.termIds.includes(selectionId)) {
-      return { kind: "terms", ids: selection.termIds, from: side };
+    // A selected multiplicative chunk keeps its exact factor ids. Additive
+    // selections still acquire from any symbol inside their owning addend.
+    const ownerId = treeEq ? termId.split("@")[0] : termId;
+    if (selection && selection.side === side) {
+      if (
+        treeEq &&
+        selection.termIds.length > 1 &&
+        selection.termIds.includes(termId) &&
+        selection.termIds.every(isAtomicTreeFactorId)
+      ) {
+        return { kind: "factorGroup", ids: selection.termIds, from: side };
+      }
+      if (selection.termIds.includes(ownerId)) {
+        return { kind: "terms", ids: selection.termIds, from: side };
+      }
     }
     switch (role) {
       case "coef":
@@ -2879,7 +2909,13 @@ const EquationBuilderTool = () => {
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
     // tree-only handles (the e of e^u, an exponent) never reach flat mode,
     // and unit-on-unit drops plus group divides are dispatched before this
-    if (payload.kind === "lnbase" || payload.kind === "root" || payload.kind === "raise" || payload.kind === "group") return null;
+    if (
+      payload.kind === "lnbase" ||
+      payload.kind === "root" ||
+      payload.kind === "raise" ||
+      payload.kind === "group" ||
+      payload.kind === "factorGroup"
+    ) return null;
     if (target.kind === "unit") return null;
     // Toolbox symbols: dropped ON a term they rebuild that term (a building
     // move — new equation, trail restarts); dropped anywhere else they apply
@@ -3027,6 +3063,18 @@ const EquationBuilderTool = () => {
       if (target.kind === "onterm")
         return "rebuilding single terms arrives with the full tree grammar — click the symbol to apply it to both sides";
       return applyToolT(payload.tool, treeEq);
+    }
+    if (payload.kind === "factorGroup") {
+      const group = resolveTreeFactorGroup(treeEq, payload.ids);
+      if (!group) return "select factors from one product row — numerator and denominator chunks move separately";
+      const text = printNode(group.expr);
+      if (group.zone === "n") {
+        if (target.kind === "under" || target.kind === "side") return divideBothT(treeEq, group.expr, text);
+        return null;
+      }
+      if (target.kind === "under") return "a denominator group multiplies — drop it beside the other side";
+      if (target.kind === "side") return multiplyBothT(treeEq, group.expr, text);
+      return null;
     }
     if (target.kind === "unit" && (payload.kind === "numer" || payload.kind === "den" || payload.kind === "coef")) {
       // dropping a factor onto its reciprocal counterpart cancels the pair
@@ -3567,6 +3615,10 @@ const EquationBuilderTool = () => {
           })
           .join(", ");
       }
+      if (p.kind === "factorGroup") {
+        const group = resolveTreeFactorGroup(treeEq, p.ids);
+        return group ? printNode(group.expr) : "?";
+      }
       if (p.kind === "coef") {
         const expr = coefExprOf(p.termId);
         return expr ? printNode(expr) : "?";
@@ -3583,6 +3635,8 @@ const EquationBuilderTool = () => {
     }
     const findTerm = (id: string) => equation[p.from].find((t) => t.id === id);
     switch (p.kind) {
+      case "factorGroup":
+        return "?"; // tree-only; retained for exhaustive type safety
       case "xdiv":
       case "xmul": {
         const t = findTerm(p.termId);
@@ -3636,6 +3690,9 @@ const EquationBuilderTool = () => {
       if (p.kind === "terms") {
         const a = treeAddend(p.ids[0]);
         if (a) text = printNode(simplifyTree(tmul(tc(-1), a)));
+      } else if (p.kind === "factorGroup") {
+        const group = resolveTreeFactorGroup(treeEq, p.ids);
+        if (group) text = `${group.zone === "n" ? "÷" : "×"}${printNode(group.expr)}`;
       } else if (p.kind === "coef") {
         const expr = coefExprOf(p.termId);
         if (expr) text = `÷${printNode(expr)}`;
@@ -3731,6 +3788,14 @@ const EquationBuilderTool = () => {
       // tree units: the same both-sides vocabulary, resolved from the tree
       if (!underHover && !dragOver) return null;
       switch (p.kind) {
+        case "factorGroup": {
+          const group = resolveTreeFactorGroup(treeEq, p.ids);
+          if (!group) return null;
+          return {
+            kind: group.zone === "n" ? "divide" : "multiply",
+            text: printNode(group.expr),
+          };
+        }
         case "coef": {
           const expr = coefExprOf(p.termId);
           return expr ? { kind: "divide", text: printNode(expr) } : null;
