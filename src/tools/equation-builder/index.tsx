@@ -70,6 +70,7 @@ import {
   type TreeOutcome,
 } from "./treemoves";
 import { TreeSideView } from "./treeview";
+import { resolveTreeFactor } from "./treeunits";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -2367,7 +2368,9 @@ const EquationBuilderTool = () => {
         if (!overlaps) return;
         const side = span.dataset.side as Side;
         const termId = span.dataset.termId;
-        if (side && termId) hits[side].add(termId);
+        // Marquee selection is additive. Tree factor ids describe sub-term
+        // drag units, so collapse them to their owning addend for a block move.
+        if (side && termId) hits[side].add(treeEq ? termId.split("@")[0] : termId);
       });
 
       const side: Side = hits.left.size >= hits.right.size ? "left" : "right";
@@ -2744,7 +2747,8 @@ const EquationBuilderTool = () => {
     const side = (el.dataset.side ?? "left") as Side;
     const role = (el.dataset.role ?? "term") as Role;
     // A selected block always moves as a whole, whatever symbol is grabbed
-    if (selection && selection.side === side && selection.termIds.includes(termId)) {
+    const selectionId = treeEq ? termId.split("@")[0] : termId;
+    if (selection && selection.side === side && selection.termIds.includes(selectionId)) {
       return { kind: "terms", ids: selection.termIds, from: side };
     }
     switch (role) {
@@ -2946,28 +2950,9 @@ const EquationBuilderTool = () => {
     return simplifyTree(parts.length === 1 ? parts[0] : tmul(...parts));
   };
 
-  /** The unit a handle id points at: one factor (L0@n1, R0@d0) or the whole
-   *  numerator product (L0@N — the "e³·x" unit, grabbed at its ·) */
+  /** Resolve through the same factor layout used by TreeSideView. */
   const treeFactorOf = (id: string): { expr: TNode; zone: "n" | "d" } | null => {
-    const m = id.match(/^([LR]\d+)@(N|[nd]\d+)$/);
-    if (!m) return null;
-    const addend = treeAddend(m[1]);
-    if (!addend) return null;
-    const factors = addend.kind === "mul" ? addend.factors : [addend];
-    const numer: TNode[] = [];
-    const denom: TNode[] = [];
-    for (const f of factors) {
-      if (f.kind === "pow" && f.exp.kind === "const" && f.exp.num < 0) {
-        denom.push(simplifyTree(tpow(f.base, tc(-f.exp.num, f.exp.den))));
-      } else numer.push(f);
-    }
-    if (m[2] === "N") {
-      if (numer.length === 0) return null;
-      return { expr: simplifyTree(numer.length === 1 ? numer[0] : tmul(...numer)), zone: "n" };
-    }
-    const list = m[2][0] === "n" ? numer : denom;
-    const expr = list[Number(m[2].slice(1))];
-    return expr !== undefined ? { expr, zone: m[2][0] as "n" | "d" } : null;
+    return treeEq ? resolveTreeFactor(treeEq, id) : null;
   };
 
   const computeTreeDrop = (payload: DragPayload, target: DropTarget): TreeMoveResult => {
@@ -2996,8 +2981,8 @@ const EquationBuilderTool = () => {
       return divideBothT(treeEq, expr, printNode(expr));
     }
     if (payload.kind === "xdiv") {
-      // a bare variable factor is a multiplier: moving it anywhere across
-      // applies its inverse — divide both sides by it
+      // Legacy tree links used @x/@y variable handles. New tree products use
+      // the same @n factor contract for variables and composite expressions.
       const v = payload.termId.split("@")[1] as Variable | undefined;
       if (!v) return null;
       if (target.kind === "under" || target.kind === "side") return divideBothT(treeEq, tv(v), v);
@@ -3117,8 +3102,9 @@ const EquationBuilderTool = () => {
       const dy = y - Math.max(r.top, Math.min(y, r.bottom));
       const d = Math.hypot(dx, dy); // 0 when inside the box
       const area = r.width * r.height;
-      // nested units tie at distance 0 — the SMALLEST box wins, so grabbing
-      // the e of e³ grabs the e, not the product row wrapped around it
+      // Nested units tie at distance 0 — the SMALLEST box wins. Tree product
+      // factors are atomic, so the only intentional overlap is a factor inside
+      // its optional whole-numerator row handle.
       if (d < bestDistance - 0.5 || (Math.abs(d - bestDistance) <= 0.5 && area < bestArea)) {
         bestDistance = d;
         bestArea = area;

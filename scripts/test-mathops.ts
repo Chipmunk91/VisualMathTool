@@ -19,6 +19,7 @@ import {
   printTreeEq,
   evalNode,
   keyOf,
+  addendsOf,
   flatToTree,
   type TreeEq,
   type TNode,
@@ -38,6 +39,7 @@ import {
 } from "../src/tools/equation-builder/treemoves";
 import { CATALOG } from "../src/tools/equation-builder/catalog";
 import { parseEquation } from "../src/tools/equation-builder/parse";
+import { resolveTreeFactor, treeFactorLayout } from "../src/tools/equation-builder/treeunits";
 
 let pass = 0;
 let fail = 0;
@@ -64,6 +66,18 @@ const move = (name: string, r: TreeMoveResult, want: string, wantPill?: string) 
     const pill = r !== null && typeof r !== "string" ? (r.pill ?? "(none)") : "(refused)";
     check(`${name} — pill`, pill === wantPill, `got ${pill}, want ${wantPill}`);
   }
+};
+const parsedTree = (text: string): TreeEq => {
+  const parsed = parseEquation(text);
+  if (!parsed.ok) throw new Error(`test equation did not parse: ${text} — ${parsed.message}`);
+  return parsed.tree ?? {
+    left: flatToTree(parsed.state.left),
+    right: flatToTree(parsed.state.right),
+  };
+};
+const unitText = (te: TreeEq, id: string): string | null => {
+  const unit = resolveTreeFactor(te, id);
+  return unit ? printNode(unit.expr) : null;
 };
 
 console.log("\n== A. model arithmetic: combine / scale (flat layer) ==");
@@ -242,6 +256,157 @@ console.log("\n== L. search catalog integrity ==");
     check(`L catalog name is unique: ${entry.name}`, !names.has(entry.name));
     names.add(entry.name);
   }
+}
+
+console.log("\n== M. symbol operations: displayed factor contract ==");
+{
+  // Owner-reported regression: both right-side factors must be independently
+  // draggable, including e^5 (which used to contain overlapping ln/root boxes).
+  const reported = parsedTree("e^3*x = sin(y)*e^5/sqrt(3)");
+  check("M1 reported equation reaches the expected tree", printTreeEq(reported) === "e^3·x = (e^5·sin(y))/√(3)", printTreeEq(reported));
+
+  const left = treeFactorLayout("L0", addendsOf(reported.left)[0]);
+  const right = treeFactorLayout("R0", addendsOf(reported.right)[0]);
+  const inventory = (layout: ReturnType<typeof treeFactorLayout>) =>
+    [...layout.numerator, ...layout.denominator].map((u) => `${u.id}:${u.role}:${printNode(u.expr)}`).join(" | ");
+  check(
+    "M2 every left product factor is its own unit",
+    inventory(left) === "L0@n0:coef:e^3 | L0@n1:numer:x",
+    inventory(left)
+  );
+  check(
+    "M3 function, exponential, and radical resolve independently",
+    inventory(right) === "R0@n0:coef:e^5 | R0@n1:numer:sin(y) | R0@d0:den:√(3)",
+    inventory(right)
+  );
+  check("M4 the numerator gap resolves to the whole product", unitText(reported, "R0@N") === "e^5·sin(y)", unitText(reported, "R0@N") ?? "null");
+  check("M5 old variable-specific ids are not minted by the factor contract", unitText(reported, "L0@x") === null);
+
+  const sinY = resolveTreeFactor(reported, "R0@n1")!;
+  move(
+    "M6 move only sin(y)",
+    divideBothT(reported, sinY.expr, printNode(sinY.expr)),
+    "(e^3·x)/sin(y) = e^5/√(3)",
+    "sin(y) ≠ 0"
+  );
+  const e5 = resolveTreeFactor(reported, "R0@n0")!;
+  move(
+    "M7 move only e^5",
+    divideBothT(reported, e5.expr, printNode(e5.expr)),
+    "e^(−2)·x = sin(y)/√(3)"
+  );
+  const sqrt3 = resolveTreeFactor(reported, "R0@d0")!;
+  move(
+    "M8 move only denominator √3",
+    multiplyBothT(reported, sqrt3.expr, printNode(sqrt3.expr)),
+    "√(3)·e^3·x = e^5·sin(y)"
+  );
+
+  // The sign is a separate displayed glyph. The factor underneath it must
+  // resolve to positive 2, not the old drop-side value of negative 2.
+  const signed: TreeEq = {
+    left: simplify(tmul(tc(-2), tfn("sin", tv("x")))),
+    right: tv("y"),
+  };
+  const signedLayout = treeFactorLayout("L0", signed.left);
+  check(
+    "M9 a signed product's visible coefficient resolves to its magnitude",
+    printNode(signedLayout.numerator[0].expr) === "2" && unitText(signed, "L0@n0") === "2",
+    inventory(signedLayout)
+  );
+  move("M10 moving that visible 2 divides by +2", divideBothT(signed, signedLayout.numerator[0].expr, "2"), "−sin(x) = 1/2y");
+
+  // A denominator-only product displays a literal 1 above the bar. That 1 is
+  // not a meaningful factor move and must not get a phantom @N handle.
+  const denominatorOnly: TreeEq = {
+    left: simplify(tmul(tpow(tfn("sin", tv("x")), -1), tpow(tadd(tv("x"), tc(1)), -1))),
+    right: tv("y"),
+  };
+  const denominatorLayout = treeFactorLayout("L0", denominatorOnly.left);
+  check(
+    "M11 reciprocal-only products expose denominator factors without a phantom numerator",
+    denominatorLayout.numerator.length === 0 &&
+      denominatorLayout.denominator.length === 2 &&
+      denominatorLayout.wholeNumerator === null &&
+      unitText(denominatorOnly, "L0@N") === null,
+    inventory(denominatorLayout)
+  );
+
+  // Atomicity boundary: immediate powers/functions/groups are factors; their
+  // bases, exponents, and arguments are syntax inside that unit.
+  const composite: TreeEq = {
+    left: simplify(
+      tmul(
+        tpow(tv("x"), 3),
+        tfn("sin", tadd(tv("y"), tc(1))),
+        tpow(tadd(tv("x"), tc(1)), -1)
+      )
+    ),
+    right: tc(7),
+  };
+  const compositeLayout = treeFactorLayout("L0", composite.left);
+  check(
+    "M12 powers, functions, and grouped denominators stay atomic",
+    inventory(compositeLayout) === "L0@n0:numer:x³ | L0@n1:numer:sin(y + 1) | L0@d0:den:x + 1",
+    inventory(compositeLayout)
+  );
+
+  const constants: TreeEq = {
+    left: simplify(tmul(tfn("exp", tc(5)), tfn("ln", tc(2)), tfn("sqrt", tc(3)))),
+    right: tv("x"),
+  };
+  const constantLayout = treeFactorLayout("L0", constants.left);
+  check(
+    "M13 every constant-valued composite is a precise coefficient unit",
+    constantLayout.numerator.length === 3 && constantLayout.numerator.every((u) => u.role === "coef"),
+    inventory(constantLayout)
+  );
+
+  const oneFactor = treeFactorLayout("L0", tfn("sin", tv("x")));
+  check("M14 a single factor has no redundant whole-numerator hitbox", oneFactor.wholeNumerator === null);
+  check("M15 malformed and out-of-range ids resolve safely", unitText(reported, "R0@n9") === null && unitText(reported, "Q0@n0") === null);
+
+  // Generated shape matrix: run the same renderer/resolver/move contract over
+  // the factor families students can currently type, rather than protecting
+  // only the one reported equation.
+  const shapes: [string, TNode][] = [
+    ["variable", tv("x")],
+    ["integer power", tpow(tv("x"), 3)],
+    ["grouped sum", tadd(tv("x"), tc(2))],
+    ["trig function", tfn("sin", tv("y"))],
+    ["log function", tfn("ln", tadd(tv("x"), tc(2)))],
+    ["radical", tfn("sqrt", tadd(tv("y"), tc(3)))],
+    ["constant exponential", tfn("exp", tc(5))],
+    ["variable exponential", tfn("exp", tadd(tv("x"), tc(1)))],
+    ["variable exponent", tpow(tc(2), tv("x"))],
+    ["powered function", tpow(tfn("sin", tv("y")), 2)],
+  ];
+  let matrixFailure = "";
+  for (const [name, shape] of shapes) {
+    const te: TreeEq = {
+      left: simplify(tmul(tc(11), shape, tpow(tfn("cos", tadd(tv("y"), tc(2))), -1))),
+      right: tfn("exp", tadd(tv("x"), tc(4))),
+    };
+    const layout = treeFactorLayout("L0", te.left);
+    const picked = layout.numerator.find((u) => keyOf(u.expr) === keyOf(simplify(shape)));
+    const denominator = layout.denominator[0];
+    const resolved = picked ? resolveTreeFactor(te, picked.id) : null;
+    const divided = picked ? divideBothT(te, picked.expr, printNode(picked.expr)) : null;
+    const multiplied = denominator ? multiplyBothT(te, denominator.expr, printNode(denominator.expr)) : null;
+    if (
+      !picked ||
+      !resolved ||
+      keyOf(resolved.expr) !== keyOf(picked.expr) ||
+      !divided ||
+      typeof divided === "string" ||
+      !multiplied ||
+      typeof multiplied === "string"
+    ) {
+      matrixFailure = `${name}: ${inventory(layout)}`;
+      break;
+    }
+  }
+  check(`M16 generated ${shapes.length}-shape factor matrix resolves and moves`, matrixFailure === "", matrixFailure);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

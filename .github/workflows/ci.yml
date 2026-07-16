@@ -19,6 +19,8 @@ jobs:
         run: npm run check
       - name: Math operation sanity suite
         run: npx tsx scripts/test-mathops.ts
+      - name: Symbol handle renderer contract
+        run: npx tsx scripts/test-symbol-handles.ts
       - name: Rewrite-engine tests
         run: npx tsx scripts/test-rewrites.ts
       - name: Build

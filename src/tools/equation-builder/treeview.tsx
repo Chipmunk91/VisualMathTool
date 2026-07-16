@@ -4,12 +4,14 @@
  * data-term-id, data-side, data-term-wrap), so the one pointer engine —
  * proximity grab, marquee, drop targets, previews — drives both worlds.
  *
- * Grabbing any glyph moves its whole top-level addend; constant-valued
- * factors (3, ln 2, √2) are coefficient handles that divide both sides.
+ * In a product, each immediate factor is one atomic grab target. Numerator
+ * factors divide both sides and denominator factors multiply both sides;
+ * syntax inside a factor stays quiet so it cannot steal the factor's drag.
  */
 import { Fragment, type ReactNode } from "react";
 import type { Side } from "./model";
 import { TNode, addendsOf, signSplit, varsIn, tc, tpow, simplify } from "./tree";
+import { treeFactorLayout, type TreeFactorUnit } from "./treeunits";
 
 interface Ctx {
   id: string;
@@ -195,64 +197,27 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
           </span>
         );
       }
-      // factors with negative constant exponents form the denominator
-      const numer: TNode[] = [];
-      const denom: TNode[] = [];
-      for (const f of node.factors) {
-        if (f.kind === "pow" && f.exp.kind === "const" && f.exp.num < 0) {
-          denom.push(simplify(tpow(f.base, tc(-f.exp.num, f.exp.den))));
-        } else numer.push(f);
-      }
-      const row = (fs: TNode[], zone: "top" | "bottom"): ReactNode =>
-        fs.length === 0 ? (
+      const layout = treeFactorLayout(ctx.id, node);
+      const numer = layout.numerator;
+      const denom = layout.denominator;
+      const row = (units: TreeFactorUnit[], zone: "top" | "bottom"): ReactNode =>
+        units.length === 0 ? (
           <TSym ctx={ctx}>1</TSym>
         ) : (
           <span className="inline-flex items-center">
-            {fs.map((f, i) => {
-              const dot = i > 0 && !(fs[i - 1].kind === "const" && f.kind !== "const");
-              // every factor is its OWN unit: denominators multiply both
-              // sides; constant-valued numerator factors (3, e³, ln 2) divide
-              // by exactly themselves; bare variables keep their flat-style
-              // handle; compound factors divide
+            {units.map((unit, i) => {
+              const dot =
+                i > 0 && !(units[i - 1].expr.kind === "const" && unit.expr.kind !== "const");
+              // Every immediate factor has one, and only one, active hitbox.
+              // This is deliberately atomic: e^5 is a movable factor here,
+              // rather than three overlapping "factor / ln / root" actions.
               const body =
                 ctx.inert ? (
-                  <TN node={f} ctx={ctx} />
-                ) : zone === "bottom" ? (
-                  <FactorHandle ctx={ctx} id={`${ctx.id}@d${i}`} role="den">
-                    <TN node={f} ctx={{ ...ctx, inert: true }} />
-                  </FactorHandle>
-                ) : f.kind === "var" ? (
-                  <TSym ctx={ctx} role="xdiv" id={`${ctx.id}@${f.name}`} className="italic">
-                    {f.name}
-                  </TSym>
-                ) : varsIn(f).size === 0 ? (
-                  f.kind === "fn" && f.fn === "exp" ? (
-                    // e^n is grabbable as a WHOLE unit (drag across → divide
-                    // both sides by e^n, just like the plain coefficient of a
-                    // product), while its inner e (ln) and n (root) handles
-                    // still win where they cover — the picker takes the
-                    // smallest box at the point.
-                    <span
-                      data-symbol
-                      data-term-id={`${ctx.id}@n${i}`}
-                      data-side={ctx.side}
-                      data-role="coef"
-                      title="Drag across the equals sign to divide both sides by this"
-                      className="-mx-[0.08em] inline-flex cursor-grab select-none px-[0.08em] transition-colors duration-150 [&:hover:not(:has([data-symbol]:hover))]:text-amber-500 active:cursor-grabbing"
-                    >
-                      <TN node={f} ctx={ctx} />
-                    </span>
-                  ) : (
-                    <FactorHandle ctx={ctx} id={`${ctx.id}@n${i}`} role="coef">
-                      <TN node={f} ctx={{ ...ctx, inert: true }} />
-                    </FactorHandle>
-                  )
-                ) : f.kind === "fn" || f.kind === "pow" || f.kind === "add" ? (
-                  <FactorHandle ctx={ctx} id={`${ctx.id}@n${i}`} role="numer">
-                    <TN node={f} ctx={{ ...ctx, inert: true }} />
-                  </FactorHandle>
+                  <TN node={unit.expr} ctx={ctx} />
                 ) : (
-                  <TN node={f} ctx={ctx} coefZone />
+                  <FactorHandle ctx={ctx} id={unit.id} role={unit.role}>
+                    <TN node={unit.expr} ctx={{ ...ctx, inert: true }} />
+                  </FactorHandle>
                 );
               return (
                 <Fragment key={i}>
@@ -274,15 +239,14 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
       if (denom.length === 0) return row(numer, "top");
       return (
         <span className="mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
-          {/* the numerator ROW is the product unit ("e³·x"): its padding, the
-              gaps, and the · all grab it; the factor handles nested inside win
-              where they cover. It lights up only when no inner unit is hovered. */}
-          {ctx.inert ? (
+          {/* For a multi-factor numerator, the row owns only its gaps and
+              multiplication dots. Each visible factor has its smaller box. */}
+          {ctx.inert || !layout.wholeNumerator ? (
             <span className="px-[0.15em]">{row(numer, "top")}</span>
           ) : (
             <span
               data-symbol
-              data-term-id={`${ctx.id}@N`}
+              data-term-id={layout.wholeNumerator.id}
               data-side={ctx.side}
               data-role="numer"
               title="Drag across the equals sign to divide both sides by the whole numerator"
