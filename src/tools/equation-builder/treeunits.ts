@@ -14,11 +14,10 @@ import {
   type TNode,
   type TreeEq,
   addendsOf,
+  displayedProductFactors,
   signSplit,
   simplify,
-  tc,
   tmul,
-  tpow,
   varsIn,
 } from "./tree";
 
@@ -40,6 +39,16 @@ export interface TreeFactorLayout {
   wholeNumerator: { id: string; expr: TNode; zone: "n" } | null;
 }
 
+export interface TreeFactorGroup {
+  ids: string[];
+  ownerId: string;
+  expr: TNode;
+  zone: TreeFactorZone;
+}
+
+/** Exact factor ids can participate in a multi-factor selection. */
+export const isAtomicTreeFactorId = (id: string): boolean => /^[LR]\d+@[nd]\d+$/.test(id);
+
 /**
  * Split one displayed addend into numerator and denominator factors.
  *
@@ -49,17 +58,7 @@ export interface TreeFactorLayout {
  */
 export function treeFactorLayout(addendId: string, addend: TNode): TreeFactorLayout {
   const { body } = signSplit(addend);
-  const factors = body.kind === "mul" ? body.factors : [body];
-  const numeratorExprs: TNode[] = [];
-  const denominatorExprs: TNode[] = [];
-
-  for (const factor of factors) {
-    if (factor.kind === "pow" && factor.exp.kind === "const" && factor.exp.num < 0) {
-      denominatorExprs.push(simplify(tpow(factor.base, tc(-factor.exp.num, factor.exp.den))));
-    } else {
-      numeratorExprs.push(factor);
-    }
-  }
+  const { numerator: numeratorExprs, denominator: denominatorExprs } = displayedProductFactors(body);
 
   const numerator = numeratorExprs.map((expr, index): TreeFactorUnit => ({
     id: `${addendId}@n${index}`,
@@ -108,4 +107,39 @@ export function resolveTreeFactor(
   const units = match[3][0] === "n" ? layout.numerator : layout.denominator;
   const unit = units[Number(match[3].slice(1))];
   return unit ? { expr: unit.expr, zone: unit.zone } : null;
+}
+
+/**
+ * Resolve a marquee-selected multiplicative chunk into one exact product.
+ * A group must live inside one addend and one side of its fraction bar;
+ * mixing numerator and denominator units would make the gesture ambiguous.
+ */
+export function resolveTreeFactorGroup(te: TreeEq, ids: string[]): TreeFactorGroup | null {
+  const unique = Array.from(new Set(ids));
+  if (unique.length === 0 || unique.some((id) => !isAtomicTreeFactorId(id))) return null;
+
+  const parsed = unique.map((id) => {
+    const match = id.match(/^([LR]\d+)@([nd])(\d+)$/);
+    if (!match) return null;
+    const resolved = resolveTreeFactor(te, id);
+    return resolved
+      ? { id, ownerId: match[1], zone: match[2] as TreeFactorZone, index: Number(match[3]), expr: resolved.expr }
+      : null;
+  });
+  if (parsed.some((item) => item === null)) return null;
+  const units = parsed as NonNullable<(typeof parsed)[number]>[];
+  const ownerId = units[0].ownerId;
+  const zone = units[0].zone;
+  if (units.some((unit) => unit.ownerId !== ownerId || unit.zone !== zone)) return null;
+
+  units.sort((a, b) => a.index - b.index);
+  const expr = simplify(units.length === 1 ? units[0].expr : tmul(...units.map((unit) => unit.expr)));
+  return { ids: units.map((unit) => unit.id), ownerId, expr, zone };
+}
+
+/** Pure marquee policy: prefer one valid factor chunk, otherwise addends. */
+export function treeMarqueeSelection(te: TreeEq, factorIds: string[], addendIds: string[]): string[] {
+  const group = resolveTreeFactorGroup(te, factorIds);
+  if (group) return group.ids;
+  return Array.from(new Set([...addendIds, ...factorIds.map((id) => id.split("@")[0])]));
 }

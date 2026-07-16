@@ -17,6 +17,7 @@ interface Ctx {
   id: string;
   side: Side;
   onHover: (id: string | null) => void;
+  selectedIds?: ReadonlySet<string>;
   /** inside a factor handle: the handle is the one grab box, glyphs go quiet */
   inert?: boolean;
 }
@@ -89,6 +90,7 @@ const FactorHandle = ({
     data-term-id={id}
     data-side={ctx.side}
     data-role={role}
+    data-selected={ctx.selectedIds?.has(id) || undefined}
     title={
       title ??
       (role === "numer"
@@ -97,7 +99,9 @@ const FactorHandle = ({
           ? "Drag across the equals sign to divide both sides by this"
           : "Drag beside the other side to multiply both sides by this")
     }
-    className="-my-[0.16em] inline-flex cursor-grab select-none items-center py-[0.16em] transition-colors duration-150 hover:text-amber-500 active:cursor-grabbing"
+    className={`-my-[0.16em] inline-flex cursor-grab select-none items-center py-[0.16em] transition-colors duration-150 hover:text-amber-500 active:cursor-grabbing ${
+      ctx.selectedIds?.has(id) ? "text-amber-500" : ""
+    }`}
   >
     {children}
   </span>
@@ -163,6 +167,8 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
       }
       return <TSym ctx={ctx} role={role}>{constText(node.num, node.den)}</TSym>;
     }
+    case "named":
+      return <TSym ctx={ctx} role={role} className="italic">π</TSym>;
     case "var":
       return <TSym ctx={ctx} className="italic">{node.name}</TSym>;
     case "add":
@@ -200,7 +206,7 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
       const layout = treeFactorLayout(ctx.id, node);
       const numer = layout.numerator;
       const denom = layout.denominator;
-      const row = (units: TreeFactorUnit[], zone: "top" | "bottom"): ReactNode =>
+      const row = (units: TreeFactorUnit[]): ReactNode =>
         units.length === 0 ? (
           <TSym ctx={ctx}>1</TSym>
         ) : (
@@ -221,38 +227,34 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
                 );
               return (
                 <Fragment key={i}>
-                  {dot &&
-                    // in a fraction, the · belongs to the numerator-PRODUCT
-                    // handle wrapped around the whole row — transparent to the
-                    // pointer so the row receives the grab
-                    (zone === "top" && denom.length > 0 && !ctx.inert ? (
-                      <span className="pointer-events-none mx-0.5 select-none">·</span>
-                    ) : (
-                      <TSym ctx={ctx} className="mx-0.5">·</TSym>
-                    ))}
+                  {/* A multiplication dot is punctuation, not a whole-addend
+                      grab target. Proximity therefore resolves to an adjacent
+                      factor instead of unexpectedly selecting the full term. */}
+                  {dot && <span className="pointer-events-none mx-0.5 select-none">·</span>}
                   {body}
                 </Fragment>
               );
             })}
           </span>
         );
-      if (denom.length === 0) return row(numer, "top");
+      if (denom.length === 0) return row(numer);
       return (
         <span className="mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
           {/* For a multi-factor numerator, the row owns only its gaps and
               multiplication dots. Each visible factor has its smaller box. */}
           {ctx.inert || !layout.wholeNumerator ? (
-            <span className="px-[0.15em]">{row(numer, "top")}</span>
+            <span className="px-[0.15em]">{row(numer)}</span>
           ) : (
             <span
               data-symbol
               data-term-id={layout.wholeNumerator.id}
               data-side={ctx.side}
               data-role="numer"
+              data-selected={ctx.selectedIds?.has(layout.wholeNumerator.id) || undefined}
               title="Drag across the equals sign to divide both sides by the whole numerator"
               className="-mx-[0.1em] -mt-[0.14em] cursor-grab select-none px-[0.25em] pt-[0.14em] transition-colors duration-150 [&:hover:not(:has([data-symbol]:hover))]:text-amber-500 active:cursor-grabbing"
             >
-              {row(numer, "top")}
+              {row(numer)}
             </span>
           )}
           {/* the bar is the FRACTION's own handle: grab it to move the whole term */}
@@ -272,7 +274,7 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
               <span className="block h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
             </span>
           )}
-          <span className="px-[0.15em]">{row(denom, "bottom")}</span>
+          <span className="px-[0.15em]">{row(denom)}</span>
         </span>
       );
     }
@@ -427,8 +429,9 @@ export function TreeSideView({
 }) {
   const addends = addendsOf(node);
   const prefix = side === "left" ? "L" : "R";
+  const selectedSet = new Set(selectedIds ?? []);
   if (addends.length === 0) {
-    const ctx: Ctx = { id: `${prefix}0`, side, onHover };
+    const ctx: Ctx = { id: `${prefix}0`, side, onHover, selectedIds: selectedSet };
     return (
       <span className="inline-flex items-center">
         <TSym ctx={ctx}>0</TSym>
@@ -439,7 +442,7 @@ export function TreeSideView({
     <span className="inline-flex items-center">
       {addends.map((a, i) => {
         const id = `${prefix}${i}`;
-        const ctx: Ctx = { id, side, onHover };
+        const ctx: Ctx = { id, side, onHover, selectedIds: selectedSet };
         const { neg, body } = signSplit(a);
         const highlighted = hoveredTermId === id || (selectedIds?.includes(id) ?? false);
         return (

@@ -9,7 +9,7 @@
  *   Catches ambiguous/wrong parenthesization (the −(x+2) → −x+2 class).
  */
 import {
-  tc, tv, tadd, tmul, tpow, tfn, simplify, printNode, evalNode, type TNode, type TFnName,
+  tc, tv, tadd, tmul, tnamed, tpow, tfn, simplify, printNode, evalNode, type TNode, type TFnName,
 } from "../src/tools/equation-builder/tree";
 import { parseEquation } from "../src/tools/equation-builder/parse";
 
@@ -24,7 +24,12 @@ const FNS: TFnName[] = ["sin", "cos", "tan", "ln", "exp", "sqrt"];
 // generate a random tree, EXP-weighted so exponentials get hammered
 function gen(depth: number, expHeavy: boolean): TNode {
   if (depth <= 0 || rnd() < 0.28) {
-    return rnd() < 0.5 ? tv(pick(["x", "y"])) : tc(randInt(-4, 5), randInt(1, 3));
+    const leafRoll = rnd();
+    return leafRoll < 0.42
+      ? tv(pick(["x", "y"]))
+      : leafRoll < 0.54
+        ? tnamed("pi")
+        : tc(randInt(-4, 5), randInt(1, 3));
   }
   const roll = rnd();
   const bias = expHeavy ? 0.45 : 0.18;
@@ -52,7 +57,7 @@ function toAscii(s: string): string {
       out += `^(${run})`;
     } else { out += s[i]; i++; }
   }
-  return out.replace(/−/g, "-").replace(/·/g, "*").replace(/√/g, "sqrt");
+  return out.replace(/−/g, "-").replace(/·/g, "*").replace(/√/g, "sqrt").replace(/π/g, "pi");
 }
 
 const PTS: [number, number][] = [];

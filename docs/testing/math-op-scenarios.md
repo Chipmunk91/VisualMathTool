@@ -45,6 +45,9 @@ browser suite · 📐 = honest refusal by design · ❌ = known gap (candidate w
 | B13 | `e^3*x = sin(y)*e^5/sqrt(3)` | drag only `sin(y)` or only `e^5` | exactly that factor divides both sides; the other numerator factor stays | ✅ M1–M8, ✅ S1–S4 |
 | B14 | `−2sin(x) = y` (tree) | drag the visible `2` | divide by **+2**, not the separately rendered leading sign | ✅ M9–M10, ✅ S5 |
 | B15 | reciprocal-only product | inspect/grab the literal numerator `1` | no phantom numerator-product handle; denominator factors remain independent | ✅ M11, ✅ S6 |
+| B16 | `e^5/x = 3e^2*sin(y)` | marquee `3e²` or `e²sin(y)`, then drag one selected factor across | only the selected product divides both sides; unselected factors remain | ✅ M17–M21, ✅ S9–S10 |
+| B17 | same equation | drag `3` across | `e^5/(3x) = e²sin(y)`; `3` lands as a real denominator factor beside `x`, not as a nested `1/3` numerator | ✅ K6, M22–M23, ✅ S11 |
+| B18 | `pi*x = y` | load, then drag `π` across | exact symbolic `π·x = y` → `x = y/π`, without a nonzero pill | ✅ N1–N5, ✅ S12 |
 
 ## C. Groups (parentheses)
 
