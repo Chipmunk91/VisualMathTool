@@ -645,6 +645,12 @@ const EquationBuilderTool = () => {
           // that starts without a ramp-in and decelerates into the landing.
           const TRAVEL = "cubic-bezier(0.3, 0.2, 0.5, 1)";
           const SETTLE = "cubic-bezier(0.2, 0.6, 0.3, 1)";
+          // Reflow curve: for a small flat settle SETTLE is fine, but on a tree
+          // step the reflow IS the whole motion (many glyphs restructuring at
+          // once), and SETTLE's front load made a big move lunge-then-creep.
+          // This even curve spreads the glide across the window and eases into
+          // rest — same shape as TRAVEL, applied to the followers.
+          const REFLOW = "cubic-bezier(0.3, 0.2, 0.5, 1)";
           const center = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
           const unionCenter = (rects: DOMRect[]) => {
             const left = Math.min(...rects.map((r) => r.left));
@@ -915,7 +921,15 @@ const EquationBuilderTool = () => {
           const HOLD_MS = hasMerge || legacySite ? 260 : hasActor ? 60 : 0;
           const MERGE_MS = hasMerge || legacySite ? (isDivide ? 360 : 320) : 0;
           const T_MERGE = T_LAND + HOLD_MS;
-          const REFLOW_MS = 240;
+          // Reflow duration scales with how far the followers actually travel,
+          // so perceived speed stays roughly constant (Material/Carbon "duration
+          // ∝ distance"). A small flat settle stays ~240ms; a big tree
+          // restructure gets up to ~500ms instead of cramming 370px into 240ms.
+          const reflowDist = [...pairs, ...mutations].reduce(
+            (m, { c, n }) => Math.max(m, Math.hypot(n.rect.left - c.g.rect.left, n.rect.top - c.g.rect.top)),
+            0
+          );
+          const REFLOW_MS = Math.round(Math.min(500, Math.max(240, 170 + reflowDist * 0.7)));
           const T_REFLOW = earlyReflow ? T_TRAVEL_START : T_MERGE + MERGE_MS + (hasMerge || legacySite ? 30 : 0);
           const CURTAIN = reduced
             ? 120
@@ -1269,7 +1283,7 @@ const EquationBuilderTool = () => {
                 [{ transform: "translate(0,0)" }, { transform: `translate(${dx}px, ${dy}px)` }],
                 earlyReflow
                   ? { duration: TRAVEL_MS * 0.62, delay: T_TRAVEL_START + TRAVEL_MS * 0.22, easing: SETTLE, fill: "both" }
-                  : { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, fill: "both" }
+                  : { duration: REFLOW_MS, delay: T_REFLOW, easing: REFLOW, fill: "both" }
               );
             }
 
@@ -1287,7 +1301,7 @@ const EquationBuilderTool = () => {
                 ],
                 earlyReflow
                   ? { duration: TRAVEL_MS * 0.62, delay: T_TRAVEL_START + TRAVEL_MS * 0.22, easing: SETTLE, fill: "both" }
-                  : { duration: REFLOW_MS, delay: T_REFLOW, easing: SETTLE, fill: "both" }
+                  : { duration: REFLOW_MS, delay: T_REFLOW, easing: REFLOW, fill: "both" }
               );
             }
             // division formation — created AFTER the reflow glides so the
