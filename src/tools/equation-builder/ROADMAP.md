@@ -65,7 +65,10 @@ TNode = Const(num/den) | Var("x" | "y") | Add(TNode[]) | Mul(TNode[])
   emits the same DOM contracts as the flat renderer (`data-symbol`,
   `data-term-wrap`, `data-equals`), so the single pointer engine — proximity
   grab, marquee, drop targets, live previews, history — drives both. Flat
-  behavior is untouched (all flat suites pass unchanged).
+  behavior is untouched (all flat suites pass unchanged). Immediate product
+  factors are described once in `treeunits.ts` and consumed by both rendering
+  and drop resolution: `sin(y)`, `e^5`, `(x+1)`, powers, and radicals are each
+  one atomic factor target instead of overlapping syntax hitboxes.
 - **Layer 3 — typed rewrites.** Tree moves (`treemoves.ts`) return
   `{ next, pills }`; the pill is the license. The simplifier is a strict
   whitelist of identities true everywhere: `x/x` does NOT silently become 1
@@ -75,11 +78,12 @@ TNode = Const(num/den) | Var("x" | "y") | Add(TNode[]) | Mul(TNode[])
   a tree equation becomes flat-representable, it drops back into the full
   flat game — `√(x+1) = 3` --square--> `x + 1 = 9` and every flat move works.
 
-Shipped tree moves: addend across `=`, coefficient handles divide both sides
-(`ln 2` included), bare-variable handles divide (`x·y = 6` → `y = 6/x`), and
-all eight toolbox symbols (ln thaws `2^x` to `ln(2)·x` exactly; recip flips
-`1/(x+1) = 2` straight to `x + 1 = ½`; squaring resolves √ with its
-check-roots pill).
+Shipped tree moves: addend across `=`, any immediate numerator factor divides
+both sides (`ln 2`, `sin(y)`, `e^5`, `x`, and `(x+1)` included), any immediate
+denominator factor multiplies both sides, matching factors cancel with their
+nonzero receipt, and all eight toolbox symbols work (ln thaws `2^x` to
+`ln(2)·x` exactly; recip flips `1/(x+1) = 2` straight to `x + 1 = ½`;
+squaring resolves √ with its check-roots pill).
 
 ## Still honestly gated
 

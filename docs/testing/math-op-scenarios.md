@@ -7,7 +7,8 @@ is a separate pass.
 
 **How to run:**
 
-- Pure layer (no browser): `npx tsx scripts/test-mathops.ts` — sections A–J below.
+- Pure layer (no browser): `npx tsx scripts/test-mathops.ts` — sections A–M below.
+- Rendered hitbox contract: `npx tsx scripts/test-symbol-handles.ts`.
 - Gesture layer (Playwright vs `vite preview`): the scratchpad suites named
   in the Status column exercise the same operations through real drags.
 
@@ -41,6 +42,9 @@ browser suite · 📐 = honest refusal by design · ❌ = known gap (candidate w
 | B10 | any | divide by 0 | 📐 refused: "can't divide by zero" | ✅ F4 |
 | B11 | any | divide by 1 | non-move (nothing happens) | ✅ F5 |
 | B12 | `x = ±√2` (terminal) | scale attempt | 📐 refused: frozen values can't be scaled | 🖱 test-max |
+| B13 | `e^3*x = sin(y)*e^5/sqrt(3)` | drag only `sin(y)` or only `e^5` | exactly that factor divides both sides; the other numerator factor stays | ✅ M1–M8, ✅ S1–S4 |
+| B14 | `−2sin(x) = y` (tree) | drag the visible `2` | divide by **+2**, not the separately rendered leading sign | ✅ M9–M10, ✅ S5 |
+| B15 | reciprocal-only product | inspect/grab the literal numerator `1` | no phantom numerator-product handle; denominator factors remain independent | ✅ M11, ✅ S6 |
 
 ## C. Groups (parentheses)
 
@@ -147,6 +151,11 @@ Split into *correctness* (fixed), *deliberate* (correct as-is), and
 *feature gaps* (unsupported, honest about it).
 
 **Fixed in the audit:**
+- Product factors used separate renderer/drop partition logic, so nested
+  exponential handles could steal `e^5`, a visible `2` in `−2sin(x)` resolved
+  as `−2`, and denominator-only products minted a phantom numerator handle.
+  One shared factor contract now drives both layers, with a rendered-markup
+  regression suite in CI.
 - `−(x+2)` printed as `−x + 2` — a genuine display bug in `printNode`, now
   parenthesized. (Value was always correct; only labels/previews/share lied.)
 - `x = x` / `x + 1 = x` gave no verdict — detection was syntactic
