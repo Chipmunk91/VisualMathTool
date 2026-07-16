@@ -24,6 +24,13 @@ export interface MoveStory {
   kind?: "cross" | "divide";
   /** the term the actors merge into / dive under — its id SURVIVES the step */
   sink?: string;
+  /**
+   * Tree steps have no single traveling actor (the whole side restructures),
+   * so instead of a travel they name the unit(s) the user acted on. The engine
+   * gives these a brief fixation pulse before the reflow — the anticipation
+   * cue flat moves get, without a (mis)classified travel.
+   */
+  emphasize?: string[];
 }
 
 export interface SharedStep {

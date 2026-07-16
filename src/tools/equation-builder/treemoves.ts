@@ -9,6 +9,7 @@
  * full flat game with all its moves.
  */
 import { combine, leaf, type EquationState, type Side } from "./model";
+import type { MoveStory } from "./share";
 import {
   TNode,
   TreeEq,
@@ -33,6 +34,8 @@ export interface TreeOutcome {
   dangerous?: boolean;
   note?: string;
   pill?: string;
+  /** replay choreography — set by the drop dispatcher, not the pure move */
+  story?: MoveStory;
 }
 
 export type TreeMoveResult = TreeOutcome | string | null;
