@@ -82,6 +82,13 @@ import {
 } from "./operations";
 import { toggleTreeFactorSelection, type SymbolSelection } from "./selection";
 import { treeActorDestinationTerm, treeAnimationStages, treeMoveStory } from "./treeanimation";
+import {
+  applySpecialActionT,
+  specialActionLabel,
+  type SpecialActionKind,
+  type SpecialActionRef,
+} from "./specialactions";
+import { applyRewrite, detectRewritesEq, type Rewrite } from "./rewrites";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -508,6 +515,27 @@ const EquationBuilderTool = () => {
   const [notice, setNotice] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<{ kind: "ok" | "reject" | "cancel"; text: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [specialBubble, setSpecialBubble] = useState<{
+    action: SpecialActionRef;
+    ownerId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [rewriteBubble, setRewriteBubble] = useState<{
+    side: Side;
+    nodeId: string;
+    ownerId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [rewriteHints, setRewriteHints] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem("vmt:rewrite-hints") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [devHitboxes, setDevHitboxes] = useState(false);
   /** dev: record each replay transition as a lossless JSON trace (see below) */
   const [devCapture, setDevCapture] = useState(false);
@@ -531,6 +559,31 @@ const EquationBuilderTool = () => {
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const equationRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("vmt:rewrite-hints", rewriteHints ? "1" : "0");
+    } catch {
+      // Private browsing and embedded browsers may deny storage. The toggle
+      // still works for this session.
+    }
+  }, [rewriteHints]);
+
+  const rewriteCandidates = useMemo(
+    () => (rewriteHints && treeEq ? detectRewritesEq(treeEq) : []),
+    [rewriteHints, treeEq]
+  );
+  const rewriteHintIds = useMemo(
+    () => ({
+      left: Array.from(
+        new Set(rewriteCandidates.filter((candidate) => candidate.side === "left").map(({ rewrite }) => rewrite.before.id))
+      ),
+      right: Array.from(
+        new Set(rewriteCandidates.filter((candidate) => candidate.side === "right").map(({ rewrite }) => rewrite.before.id))
+      ),
+    }),
+    [rewriteCandidates]
+  );
 
   // --- Replay: animate the derivation from step 0 to the latest form ------
   const [playing, setPlaying] = useState(false);
@@ -2361,6 +2414,8 @@ const EquationBuilderTool = () => {
     setEquation(TREE_DUMMY());
     setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
     setSelection(null);
+    setSpecialBubble(null);
+    setRewriteBubble(null);
     setNotice(null);
     setInputMsg(null);
   };
@@ -2402,7 +2457,31 @@ const EquationBuilderTool = () => {
     setEquation(TREE_DUMMY());
     setHistory((h) => h.slice(0, index + 1));
     setSelection(null);
+    setSpecialBubble(null);
+    setRewriteBubble(null);
     setNotice(null);
+  };
+
+  type PointerTapIntent =
+    | { kind: "special"; action: SpecialActionRef; ownerId: string; x: number; y: number }
+    | { kind: "rewrite"; side: Side; nodeId: string; ownerId: string; x: number; y: number };
+
+  const tapPointFor = (el: HTMLElement): { x: number; y: number } => {
+    const rect = el.getBoundingClientRect();
+    return {
+      x: Math.max(112, Math.min(window.innerWidth - 112, rect.left + rect.width / 2)),
+      y: Math.max(72, rect.top - 8),
+    };
+  };
+
+  const specialActionFromElement = (el: HTMLElement): SpecialActionRef | null => {
+    const kind = el.dataset.specialAction as SpecialActionKind | undefined;
+    const nodeId = el.dataset.specialNode;
+    const side = el.dataset.side as Side | undefined;
+    if (!kind || !nodeId || (side !== "left" && side !== "right")) return null;
+    const rawN = el.dataset.specialN;
+    const n = rawN === undefined || rawN === "" ? undefined : Number(rawN);
+    return { kind, nodeId, side, n: n !== undefined && Number.isFinite(n) ? n : undefined };
   };
 
   // --- Marquee (drag-to-select a block of symbols on empty space) ---
@@ -2416,6 +2495,10 @@ const EquationBuilderTool = () => {
       return;
     }
     const targetEl = e.target as HTMLElement;
+    if (!targetEl.closest("[data-context-bubble]")) {
+      setSpecialBubble(null);
+      setRewriteBubble(null);
+    }
     // word search is modal to its own bar: any press elsewhere exits it
     if (!targetEl.closest("[data-search]")) setSearchMode(false);
     // Toolbox items drag via the pointer engine (click still applies them)
@@ -2436,12 +2519,28 @@ const EquationBuilderTool = () => {
     // The playfield's touch-action CSS is the primary contract; preventing the
     // default here is a second guard for older iOS versions and embedded views.
     if (e.pointerType === "touch") e.preventDefault();
+    const specialEl = targetEl.closest<HTMLElement>("[data-special-action]");
+    const specialAction = specialEl ? specialActionFromElement(specialEl) : null;
+    const rewriteEl = rewriteHints
+      ? targetEl.closest<HTMLElement>("[data-rewrite-node]")
+      : null;
+    const rewriteSide = rewriteEl?.dataset.rewriteSide as Side | undefined;
+    const rewriteNodeId = rewriteEl?.dataset.rewriteNode;
     // Proximity grab: the nearest symbol within reach picks up, even if the
-    // press wasn't pixel-perfect on the glyph
-    const symbol = nearestSymbol(e.clientX, e.clientY, e.pointerType);
+    // press wasn't pixel-perfect on the glyph. A tap-only special anchor never
+    // competes for drag ownership; its nearest enclosing algebra unit does.
+    const symbol =
+      specialEl?.closest<HTMLElement>("[data-symbol]") ??
+      nearestSymbol(e.clientX, e.clientY, e.pointerType);
+    const ownerId = symbol?.dataset.termId;
+    const tapIntent: PointerTapIntent | null = specialAction && specialEl && ownerId
+      ? { kind: "special", action: specialAction, ownerId, ...tapPointFor(specialEl) }
+      : rewriteEl && rewriteNodeId && ownerId && (rewriteSide === "left" || rewriteSide === "right")
+        ? { kind: "rewrite", side: rewriteSide, nodeId: rewriteNodeId, ownerId, ...tapPointFor(rewriteEl) }
+        : null;
     if (symbol) {
       e.preventDefault();
-      beginDrag(payloadFromSymbol(symbol), e, symbol);
+      beginDrag(payloadFromSymbol(symbol), e, symbol, tapIntent);
       return;
     }
     const x0 = e.clientX;
@@ -3079,7 +3178,57 @@ const EquationBuilderTool = () => {
       makeTreeStep(o.label, o.treeNext, o.dangerous, o.note, o.pill, o.story, o.treeIntermediate),
     ]);
     setSelection(null);
+    setSpecialBubble(null);
+    setRewriteBubble(null);
     setNotice(null);
+  };
+
+  const runSpecialAction = (action: SpecialActionRef, ownerId: string) => {
+    if (!treeEq) return;
+    const result = applySpecialActionT(treeEq, action);
+    setSpecialBubble(null);
+    if (result === null) return;
+    if (typeof result === "string") {
+      flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+      return;
+    }
+    commitTreeOutcome({
+      ...result,
+      story: result.story ?? {
+        actors: [],
+        site: [],
+        born: [],
+        kind: "simplify",
+        emphasize: [ownerId],
+      },
+    });
+  };
+
+  const runRewrite = (side: Side, rewrite: Rewrite, ownerId: string) => {
+    if (!treeEq) return;
+    const rewritten = applyRewrite(treeEq[side], rewrite);
+    const result = finalize(
+      side === "left" ? rewritten : treeEq.left,
+      side === "right" ? rewritten : treeEq.right,
+      rewrite.label,
+      rewrite.pill
+        ? {
+            dangerous: true,
+            note: `This identity is valid where ${rewrite.pill}.`,
+            pill: rewrite.pill,
+          }
+        : undefined
+    );
+    commitTreeOutcome({
+      ...result,
+      story: {
+        actors: [],
+        site: [],
+        born: [],
+        kind: "simplify",
+        emphasize: [ownerId],
+      },
+    });
   };
 
   /** Live outcome preview: what would happen if the drag were released here */
@@ -3119,15 +3268,18 @@ const EquationBuilderTool = () => {
   const GRAB_RADIUS = 28;
   const TOUCH_GRAB_RADIUS = 40;
   const DRAG_SLOP = 5;
+  const TOUCH_DRAG_SLOP = 10;
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
   const pointerDragRef = useRef<{
     payload: DragPayload;
+    tapIntent: PointerTapIntent | null;
     tapFactorId: string | null;
     tapSide: Side | null;
     tapAdditive: boolean;
     started: boolean;
     x0: number;
     y0: number;
+    slop: number;
     pointerId: number;
     captureEl: HTMLElement;
   } | null>(null);
@@ -3366,7 +3518,12 @@ const EquationBuilderTool = () => {
     finishDrag();
   };
 
-  const beginDrag = (payload: DragPayload, e: ReactPointerEvent, sourceSymbol?: HTMLElement) => {
+  const beginDrag = (
+    payload: DragPayload,
+    e: ReactPointerEvent,
+    sourceSymbol?: HTMLElement,
+    tapIntent: PointerTapIntent | null = null
+  ) => {
     const captureEl = e.currentTarget as HTMLElement;
     const pointerId = e.pointerId;
     const tapFactorId = treeEq
@@ -3375,6 +3532,7 @@ const EquationBuilderTool = () => {
     capturePointer(captureEl, pointerId);
     pointerDragRef.current = {
       payload,
+      tapIntent,
       tapFactorId,
       tapSide: tapFactorId ? ((sourceSymbol?.dataset.side ?? null) as Side | null) : null,
       // Touch has no modifier key: successive taps build a coherent chunk.
@@ -3383,6 +3541,7 @@ const EquationBuilderTool = () => {
       started: false,
       x0: e.clientX,
       y0: e.clientY,
+      slop: e.pointerType === "touch" ? TOUCH_DRAG_SLOP : DRAG_SLOP,
       pointerId,
       captureEl,
     };
@@ -3396,8 +3555,10 @@ const EquationBuilderTool = () => {
       const st = pointerDragRef.current;
       if (!st || ev.pointerId !== st.pointerId) return;
       if (!st.started) {
-        if (Math.hypot(ev.clientX - st.x0, ev.clientY - st.y0) < DRAG_SLOP) return;
+        if (Math.hypot(ev.clientX - st.x0, ev.clientY - st.y0) < st.slop) return;
         st.started = true;
+        setSpecialBubble(null);
+        setRewriteBubble(null);
         dragPayloadRef.current = st.payload;
         setDragActive(true);
         setHoveredTermId(null);
@@ -3414,6 +3575,25 @@ const EquationBuilderTool = () => {
       if (st?.started) {
         const target = findTarget(ev.clientX, ev.clientY, st.payload);
         if (target) performDrop(st.payload, target);
+      } else if (st?.tapIntent?.kind === "special") {
+        setSpecialBubble({
+          action: st.tapIntent.action,
+          ownerId: st.tapIntent.ownerId,
+          x: st.tapIntent.x,
+          y: st.tapIntent.y,
+        });
+        setRewriteBubble(null);
+        setSelection(null);
+      } else if (st?.tapIntent?.kind === "rewrite") {
+        setRewriteBubble({
+          side: st.tapIntent.side,
+          nodeId: st.tapIntent.nodeId,
+          ownerId: st.tapIntent.ownerId,
+          x: st.tapIntent.x,
+          y: st.tapIntent.y,
+        });
+        setSpecialBubble(null);
+        setSelection(null);
       } else if (st?.tapFactorId && st.tapSide && treeEq) {
         setSelection((current) =>
           toggleTreeFactorSelection(treeEq, current, st.tapSide!, st.tapFactorId!, st.tapAdditive)
@@ -4505,6 +4685,15 @@ const EquationBuilderTool = () => {
     </span>
   );
 
+  const rewriteChoices = rewriteBubble
+    ? rewriteCandidates
+        .filter(
+          (candidate) =>
+            candidate.side === rewriteBubble.side && candidate.rewrite.before.id === rewriteBubble.nodeId
+        )
+        .map(({ rewrite }) => rewrite)
+    : [];
+
   return (
     <div
       className="relative flex h-full w-full touch-none flex-col items-center justify-center overscroll-none bg-background text-foreground"
@@ -4611,7 +4800,7 @@ const EquationBuilderTool = () => {
       </div>
 
       {/* Symbol toolbox */}
-      <div className="absolute left-4 top-4 z-30" data-ui data-toolbox>
+      <div className="absolute left-4 top-4 z-30 flex items-start gap-2" data-ui data-toolbox>
         <div
           className="relative"
           onMouseEnter={() => {
@@ -4715,6 +4904,26 @@ const EquationBuilderTool = () => {
             </div>
           )}
         </div>
+        <button
+          type="button"
+          aria-pressed={rewriteHints}
+          onClick={() => {
+            setRewriteHints((current) => {
+              const next = !current;
+              if (!next) setRewriteBubble(null);
+              return next;
+            });
+          }}
+          title="Highlight optional algebra rewrites such as factoring and distribution"
+          className={`flex min-h-9 items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs shadow-sm transition-colors ${
+            rewriteHints
+              ? "border-sky-300 bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-300"
+              : "border-border bg-card text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+          }`}
+        >
+          <span className="text-sky-500">✦</span>
+          Hints
+        </button>
       </div>
 
       {/* Dev: visualize grab regions and drop zones (not in embeds) */}
@@ -4866,6 +5075,7 @@ const EquationBuilderTool = () => {
                     side={side}
                     hoveredTermId={hoveredTermId}
                     selectedIds={selection?.side === side ? selection.termIds : null}
+                    rewriteHintIds={rewriteHints ? rewriteHintIds[side] : null}
                     onHover={symHandlers.hover}
                   />
                   {spread?.kind === "wrap" && (
@@ -4896,6 +5106,52 @@ const EquationBuilderTool = () => {
           </>
         )}
       </div>
+
+      {/* Contextual math actions are taps, never competing drag hitboxes. */}
+      {specialBubble && treeEq && (
+        <div
+          data-ui
+          data-context-bubble
+          role="dialog"
+          aria-label="Equation operation"
+          className="fixed z-[70] w-max max-w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-full rounded-2xl border border-border bg-card p-1.5 shadow-xl"
+          style={{ left: specialBubble.x, top: specialBubble.y }}
+        >
+          <button
+            type="button"
+            onClick={() => runSpecialAction(specialBubble.action, specialBubble.ownerId)}
+            className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors hover:bg-muted active:bg-muted"
+          >
+            <span className="text-amber-500">→</span>
+            {specialActionLabel(specialBubble.action)}
+          </button>
+        </div>
+      )}
+
+      {rewriteBubble && rewriteChoices.length > 0 && treeEq && (
+        <div
+          data-ui
+          data-context-bubble
+          role="dialog"
+          aria-label="Suggested rewrites"
+          className="fixed z-[70] w-[min(24rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-full rounded-2xl border border-sky-200 bg-card p-2 shadow-xl dark:border-sky-900"
+          style={{ left: rewriteBubble.x, top: rewriteBubble.y }}
+        >
+          {rewriteChoices.map((rewrite) => (
+            <button
+              type="button"
+              key={`${rewrite.kind}:${keyOf(rewrite.after)}`}
+              onClick={() => runRewrite(rewriteBubble.side, rewrite, rewriteBubble.ownerId)}
+              className="flex min-h-11 w-full flex-col justify-center rounded-xl px-3 py-2 text-left transition-colors hover:bg-sky-50 active:bg-sky-50 dark:hover:bg-sky-950/30 dark:active:bg-sky-950/30"
+            >
+              <span className="text-sm font-medium text-sky-700 dark:text-sky-300">{rewrite.label}</span>
+              <span className="mt-0.5 font-serif text-xs text-muted-foreground">
+                {printNode(rewrite.before)} → {printNode(rewrite.after)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* State line: notice, solved, or a neutral hint — plus the active assumption */}
       <div className="mt-10 flex h-6 items-center gap-3 text-sm text-muted-foreground">

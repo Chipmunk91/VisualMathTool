@@ -25,24 +25,46 @@ interface Handle {
   role: string;
 }
 
+interface SpecialAnchor {
+  action: string;
+  nodeId: string;
+  n?: number;
+}
+
 const handlesIn = (html: string): Handle[] =>
   Array.from(html.matchAll(/<span ([^>]*data-symbol="true"[^>]*)>/g)).map((match) => ({
     id: match[1].match(/data-term-id="([^"]+)"/)?.[1] ?? "?",
     role: match[1].match(/data-role="([^"]+)"/)?.[1] ?? "?",
   }));
 
+const specialAnchorsIn = (html: string): SpecialAnchor[] =>
+  Array.from(html.matchAll(/<span ([^>]*data-special-action="[^"]+"[^>]*)>/g)).map((match) => {
+    const rawN = match[1].match(/data-special-n="([^"]+)"/)?.[1];
+    return {
+      action: match[1].match(/data-special-action="([^"]+)"/)?.[1] ?? "?",
+      nodeId: match[1].match(/data-special-node="([^"]+)"/)?.[1] ?? "?",
+      n: rawN ? Number(rawN) : undefined,
+    };
+  });
+
 async function main() {
   // The repo preserves JSX for Vite; tsx's server transform uses the classic
   // runtime, so expose React while exercising the component under Node.
   (globalThis as unknown as { React: typeof React }).React = React;
   const { TreeSideView } = await import("../src/tools/equation-builder/treeview");
-  const renderSide = (node: TNode, side: "left" | "right", selectedIds: string[] | null = null) =>
+  const renderSide = (
+    node: TNode,
+    side: "left" | "right",
+    selectedIds: string[] | null = null,
+    rewriteHintIds: string[] | null = null
+  ) =>
     renderToStaticMarkup(
       React.createElement(TreeSideView, {
         node,
         side,
         hoveredTermId: null,
         selectedIds,
+        rewriteHintIds,
         onHover: () => undefined,
       })
     );
@@ -58,6 +80,7 @@ async function main() {
   const leftLayout = treeFactorLayout(leftAddend.id, leftAddend);
   const rightLayout = treeFactorLayout(rightAddend.id, rightAddend);
   const atomic = (handles: Handle[]) => handles.filter((handle) => isAtomicTreeFactorId(handle.id));
+  const rightSpecials = specialAnchorsIn(rightHtml);
 
   check(
     "S1 reported left side exposes e^3 and x as factors",
@@ -72,10 +95,12 @@ async function main() {
     JSON.stringify(rightHandles)
   );
   check(
-    "S3 e^5 keeps its factor handle and nested ln/root operations",
+    "S3 e^5 keeps one drag owner plus tap-only ln/root actions",
     rightHandles.filter((h) => h.id === rightLayout.numerator[0].id).length === 1 &&
-      rightHandles.some((h) => h.role === "lnbase") &&
-      rightHandles.some((h) => h.role === "root")
+      rightSpecials.some((special) => special.action === "ln") &&
+      rightSpecials.some((special) => special.action === "root" && special.n === 5) &&
+      !rightHandles.some((h) => h.role === "lnbase" || h.role === "root"),
+    JSON.stringify({ handles: rightHandles, specials: rightSpecials })
   );
   check("S4 tree variables use the same factor contract", !leftHtml.includes('data-role="xdiv"'));
 
@@ -103,18 +128,28 @@ async function main() {
     JSON.stringify(denominatorHandles)
   );
 
-  // Structural actions remain available both standalone and inside a product.
-  const standaloneExp = handlesIn(renderSide(tfn("exp", tc(5)), "left"));
+  // Structural actions are tap anchors, while each complete expression keeps
+  // exactly one semantic drag owner.
+  const standaloneExpHtml = renderSide(tfn("exp", tc(5)), "left");
+  const standaloneExp = handlesIn(standaloneExpHtml);
+  const standaloneExpSpecials = specialAnchorsIn(standaloneExpHtml);
   check(
-    "S7 standalone e^5 retains ln and fifth-root operations",
-    standaloneExp.some((h) => h.role === "lnbase") && standaloneExp.some((h) => h.role === "root"),
-    JSON.stringify(standaloneExp)
+    "S7 standalone e^5 has one owner and ln/fifth-root tap actions",
+    standaloneExp.length === 1 &&
+      standaloneExp[0].role === "term" &&
+      standaloneExpSpecials.some((special) => special.action === "ln") &&
+      standaloneExpSpecials.some((special) => special.action === "root" && special.n === 5),
+    JSON.stringify({ handles: standaloneExp, specials: standaloneExpSpecials })
   );
-  const standalonePower = handlesIn(renderSide(tpow(tv("x"), 3), "left"));
+  const standalonePowerHtml = renderSide(tpow(tv("x"), 3), "left");
+  const standalonePower = handlesIn(standalonePowerHtml);
+  const standalonePowerSpecials = specialAnchorsIn(standalonePowerHtml);
   check(
-    "S8 standalone x^3 retains its cube-root operation",
-    standalonePower.some((h) => h.role === "root"),
-    JSON.stringify(standalonePower)
+    "S8 standalone x^3 has one owner and a cube-root tap action",
+    standalonePower.length === 1 &&
+      standalonePower[0].role === "term" &&
+      standalonePowerSpecials.some((special) => special.action === "root" && special.n === 3),
+    JSON.stringify({ handles: standalonePower, specials: standalonePowerSpecials })
   );
 
   const screenshot = parseEquation("e^5/x = 3*e^2*sin(y)");
@@ -157,6 +192,58 @@ async function main() {
       JSON.stringify(piLayout.numerator.map(({ id, role }) => ({ id, role }))) &&
       piLayout.numerator[0]?.role === "coef",
     JSON.stringify(piHandles)
+  );
+
+  const cubeRootHtml = renderSide(tpow(tadd(tv("x"), tc(1)), tc(1, 3)), "left");
+  const cubeRootSpecials = specialAnchorsIn(cubeRootHtml);
+  check(
+    "S13 reciprocal powers render as indexed radicals with a raise action",
+    cubeRootHtml.includes(">3</span><span>√</span>") &&
+      cubeRootSpecials.some((special) => special.action === "raise" && special.n === 3),
+    cubeRootHtml
+  );
+
+  const sinSpecials = specialAnchorsIn(renderSide(tfn("sin", tv("x")), "left"));
+  const lnSpecials = specialAnchorsIn(renderSide(tfn("ln", tv("x")), "left"));
+  check(
+    "S14 special function names expose only their contextual inverse",
+    sinSpecials.length === 1 && sinSpecials[0].action === "asin" &&
+      lnSpecials.length === 1 && lnSpecials[0].action === "exp",
+    JSON.stringify({ sinSpecials, lnSpecials })
+  );
+
+  const nestedSpecialHtml = renderSide(tfn("sin", tpow(tv("x"), 3)), "left");
+  const nestedSpecials = specialAnchorsIn(nestedSpecialHtml);
+  check(
+    "S15 deeply nested special glyphs stay tappable without extra drag owners",
+    handlesIn(nestedSpecialHtml).length === 1 &&
+      nestedSpecials.some((special) => special.action === "asin") &&
+      nestedSpecials.some((special) => special.action === "root" && special.n === 3),
+    JSON.stringify({ handles: handlesIn(nestedSpecialHtml), specials: nestedSpecials })
+  );
+
+  const rewriteExpr = simplify(tmul(tc(2), tadd(tv("x"), tc(3))));
+  const hintedHtml = renderSide(rewriteExpr, "left", null, [rewriteExpr.id]);
+  check(
+    "S16 rewrite hints decorate structure without minting a drag handle",
+    hintedHtml.includes("data-rewrite-node=") &&
+      handlesIn(hintedHtml).length === handlesIn(renderSide(rewriteExpr, "left")).length,
+    hintedHtml
+  );
+
+  const repeatedFirst = tmul(tc(2), tadd(tv("x"), tc(3)));
+  const repeatedSecond = tmul(tc(2), tadd(tv("x"), tc(3)));
+  const repeatedHtml = renderSide(
+    tadd(repeatedFirst, repeatedSecond),
+    "left",
+    null,
+    [repeatedFirst.id, repeatedSecond.id]
+  );
+  check(
+    "S17 identical-looking hints retain distinct semantic node ids",
+    repeatedHtml.includes(`data-rewrite-node="${repeatedFirst.id}"`) &&
+      repeatedHtml.includes(`data-rewrite-node="${repeatedSecond.id}"`),
+    repeatedHtml
   );
 
   console.log(`\n${pass} passed, ${fail} failed`);
