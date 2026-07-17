@@ -2395,6 +2395,7 @@ const EquationBuilderTool = () => {
     // Toolbox items drag via the pointer engine (click still applies them)
     const toolButton = targetEl.closest("[data-tool]") as HTMLElement | null;
     if (toolButton?.dataset.tool) {
+      e.preventDefault();
       beginDrag({ kind: "tool", tool: toolButton.dataset.tool as ToolKind }, e);
       return;
     }
@@ -2405,9 +2406,13 @@ const EquationBuilderTool = () => {
     // Presses inside UI chrome (history menu, presets, input) keep their own
     // click handling — closing the menu here would unmount the button mid-press
     if (targetEl.closest("[data-ui]")) return;
+    // Safari decides whether a finger owns a browser pan at pointer-down time.
+    // The playfield's touch-action CSS is the primary contract; preventing the
+    // default here is a second guard for older iOS versions and embedded views.
+    if (e.pointerType === "touch") e.preventDefault();
     // Proximity grab: the nearest symbol within reach picks up, even if the
     // press wasn't pixel-perfect on the glyph
-    const symbol = nearestSymbol(e.clientX, e.clientY);
+    const symbol = nearestSymbol(e.clientX, e.clientY, e.pointerType);
     if (symbol) {
       e.preventDefault();
       beginDrag(payloadFromSymbol(symbol), e);
@@ -2415,13 +2420,28 @@ const EquationBuilderTool = () => {
     }
     const x0 = e.clientX;
     const y0 = e.clientY;
+    const pointerId = e.pointerId;
+    const captureEl = e.currentTarget as HTMLElement;
+    capturePointer(captureEl, pointerId);
     setSelection(null);
 
-    const move = (ev: PointerEvent) => setMarquee({ x0, y0, x1: ev.clientX, y1: ev.clientY });
-    const up = (ev: PointerEvent) => {
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      setMarquee({ x0, y0, x1: ev.clientX, y1: ev.clientY });
+    };
+    const cleanup = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      releasePointer(captureEl, pointerId);
       setMarquee(null);
+    };
+    const cancel = (ev: PointerEvent) => {
+      if (ev.pointerId === pointerId) cleanup();
+    };
+    const up = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      cleanup();
 
       const rect = {
         left: Math.min(x0, ev.clientX),
@@ -2463,6 +2483,7 @@ const EquationBuilderTool = () => {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   };
 
   // --- Drag & drop ---
@@ -3212,13 +3233,38 @@ const EquationBuilderTool = () => {
   // box picks it up after a small movement slop. Targets are computed from
   // live geometry, so no invisible strip elements are needed.
   const GRAB_RADIUS = 28;
+  const TOUCH_GRAB_RADIUS = 40;
   const DRAG_SLOP = 5;
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
-  const pointerDragRef = useRef<{ payload: DragPayload; started: boolean; x0: number; y0: number } | null>(null);
+  const pointerDragRef = useRef<{
+    payload: DragPayload;
+    started: boolean;
+    x0: number;
+    y0: number;
+    pointerId: number;
+    captureEl: HTMLElement;
+  } | null>(null);
 
-  const nearestSymbol = (x: number, y: number): HTMLElement | null => {
+  const capturePointer = (el: HTMLElement, pointerId: number) => {
+    try {
+      el.setPointerCapture(pointerId);
+    } catch {
+      // A browser may have cancelled the pointer before capture. Cleanup still
+      // runs through pointercancel, so there is no drag state left behind.
+    }
+  };
+
+  const releasePointer = (el: HTMLElement, pointerId: number) => {
+    try {
+      if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+    } catch {
+      // Pointer capture is released automatically after pointerup/cancel.
+    }
+  };
+
+  const nearestSymbol = (x: number, y: number, pointerType = "mouse"): HTMLElement | null => {
     let best: HTMLElement | null = null;
-    let bestDistance = GRAB_RADIUS;
+    let bestDistance = pointerType === "touch" ? TOUCH_GRAB_RADIUS : GRAB_RADIUS;
     let bestArea = Infinity;
     equationRef.current?.querySelectorAll<HTMLElement>("[data-symbol]").forEach((el) => {
       const r = el.getBoundingClientRect();
@@ -3434,10 +3480,26 @@ const EquationBuilderTool = () => {
   };
 
   const beginDrag = (payload: DragPayload, e: ReactPointerEvent) => {
-    pointerDragRef.current = { payload, started: false, x0: e.clientX, y0: e.clientY };
+    const captureEl = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    capturePointer(captureEl, pointerId);
+    pointerDragRef.current = {
+      payload,
+      started: false,
+      x0: e.clientX,
+      y0: e.clientY,
+      pointerId,
+      captureEl,
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", esc);
+    };
     const move = (ev: PointerEvent) => {
       const st = pointerDragRef.current;
-      if (!st) return;
+      if (!st || ev.pointerId !== st.pointerId) return;
       if (!st.started) {
         if (Math.hypot(ev.clientX - st.x0, ev.clientY - st.y0) < DRAG_SLOP) return;
         st.started = true;
@@ -3449,27 +3511,38 @@ const EquationBuilderTool = () => {
       applyHoverTarget(st.payload, findTarget(ev.clientX, ev.clientY, st.payload));
     };
     const up = (ev: PointerEvent) => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      window.removeEventListener("keydown", esc);
+      const active = pointerDragRef.current;
+      if (!active || ev.pointerId !== active.pointerId) return;
+      cleanup();
       const st = pointerDragRef.current;
       pointerDragRef.current = null;
       if (st?.started) {
         const target = findTarget(ev.clientX, ev.clientY, st.payload);
         if (target) performDrop(st.payload, target);
       }
+      if (st) releasePointer(st.captureEl, st.pointerId);
+      finishPointerDrag();
+    };
+    const cancel = (ev: PointerEvent) => {
+      const st = pointerDragRef.current;
+      if (!st || ev.pointerId !== st.pointerId) return;
+      cleanup();
+      pointerDragRef.current = null;
+      releasePointer(st.captureEl, st.pointerId);
       finishPointerDrag();
     };
     const esc = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-        window.removeEventListener("keydown", esc);
+        cleanup();
+        const st = pointerDragRef.current;
+        pointerDragRef.current = null;
+        if (st) releasePointer(st.captureEl, st.pointerId);
         finishPointerDrag();
       }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
     window.addEventListener("keydown", esc);
   };
 
@@ -4535,7 +4608,7 @@ const EquationBuilderTool = () => {
 
   return (
     <div
-      className="relative flex h-full w-full flex-col items-center justify-center bg-background text-foreground"
+      className="relative flex h-full w-full touch-none flex-col items-center justify-center overscroll-none bg-background text-foreground"
       onPointerDown={onBackgroundPointerDown}
     >
       {/* Typed equation input with live parse preview; the magnifier toggles
