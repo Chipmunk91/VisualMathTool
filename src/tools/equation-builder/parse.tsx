@@ -54,15 +54,21 @@ const unwrapParens = (node: Node): Node => (node.type === "ParenthesisNode" ? un
 
 /* --- mathjs AST → canonical expression tree ------------------------------- */
 
-const TREE_FN: Record<string, "sin" | "cos" | "tan" | "ln" | "exp" | "sqrt"> = {
+const TREE_FN = {
   sin: "sin",
   cos: "cos",
   tan: "tan",
+  asin: "asin",
+  arcsin: "asin",
+  acos: "acos",
+  arccos: "acos",
+  atan: "atan",
+  arctan: "atan",
   ln: "ln",
   log: "ln",
   exp: "exp",
   sqrt: "sqrt",
-};
+} as const;
 
 type VariableName = "x" | "y";
 
@@ -93,11 +99,17 @@ function mathToTree(node: Node): TNode {
     case "ParenthesisNode":
       return mathToTree(node.content);
     case "FunctionNode": {
-      const fn = TREE_FN[node.fn?.name];
+      const fnName = node.fn?.name;
+      const fn = fnName && fnName in TREE_FN ? TREE_FN[fnName as keyof typeof TREE_FN] : undefined;
       if (!fn || node.args.length !== 1) {
-        throw new Unsupported(`${node.fn?.name ?? "that function"}( ) isn't playable yet — try sin, cos, tan, ln, exp, or sqrt`);
+        throw new Unsupported(
+          `${node.fn?.name ?? "that function"}( ) isn't playable yet — try sin, cos, tan, arcsin, arccos, arctan, ln, exp, or sqrt`
+        );
       }
-      return tfn(fn, mathToTree(node.args[0]));
+      const arg = mathToTree(node.args[0]);
+      // sqrt is an input alias. The canonical tree stores every n-th root as
+      // the reciprocal power 1/n; TreeSideView supplies radical notation.
+      return fn === "sqrt" ? tpow(arg, tc(1, 2)) : tfn(fn, arg);
     }
     case "OperatorNode": {
       if (node.op === "-" && node.args.length === 1) return tmul(tc(-1), mathToTree(node.args[0]));

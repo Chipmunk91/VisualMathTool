@@ -11,6 +11,7 @@
 import { Fragment, type ReactNode } from "react";
 import type { Side } from "./model";
 import { TNode, addendsOf, signSplit, varsIn, tc, tpow, simplify } from "./tree";
+import type { SpecialActionKind } from "./specialactions";
 import { treeFactorLayout, type TreeFactorUnit } from "./treeunits";
 
 interface Ctx {
@@ -18,10 +19,12 @@ interface Ctx {
   side: Side;
   onHover: (id: string | null) => void;
   selectedIds?: ReadonlySet<string>;
+  /** Stable node ids with optional rewrite suggestions (Hints toggle). */
+  rewriteHintIds?: ReadonlySet<string>;
   /** inside a factor handle: the handle is the one grab box, glyphs go quiet */
   inert?: boolean;
-  /** Structural sub-actions (an exponent or the base e) stay playable. */
-  nestedActions?: boolean;
+  /** Stable semantic owner for tap actions inside a display projection. */
+  actionOwnerId?: string;
 }
 
 const TSym = ({
@@ -132,16 +135,34 @@ const TermRegion = ({ ctx, children }: { ctx: Ctx; children: ReactNode }) => {
   );
 };
 
-/** The exponent as its own unit: dragging the n across takes the n-th root */
-const RootHandle = ({ ctx, n, children }: { ctx: Ctx; n: number; children: ReactNode }) => (
+/**
+ * A tap anchor for one inverse operation. It is deliberately NOT a data-symbol
+ * drag hitbox: movement is owned by the surrounding factor/addend.
+ */
+const SpecialActionAnchor = ({
+  ctx,
+  nodeId,
+  action,
+  n,
+  title,
+  className = "",
+  children,
+}: {
+  ctx: Ctx;
+  nodeId: string;
+  action: SpecialActionKind;
+  n?: number;
+  title: string;
+  className?: string;
+  children: ReactNode;
+}) => (
   <span
-    data-symbol
-    data-term-id={ctx.id}
+    data-special-action={action}
+    data-special-node={nodeId}
     data-side={ctx.side}
-    data-role="root"
-    data-root-n={n}
-    title={`Drag across the equals sign — takes the ${n === 2 ? "square" : n === 3 ? "cube" : `${n}th`} root of both sides`}
-    className="-m-[0.14em] cursor-grab select-none p-[0.14em] transition-colors duration-150 hover:text-amber-500 active:cursor-grabbing"
+    data-special-n={n}
+    title={title}
+    className={`-m-[0.14em] cursor-pointer select-none p-[0.14em] transition-colors duration-150 hover:text-amber-500 ${className}`}
   >
     {children}
   </span>
@@ -155,7 +176,7 @@ const supInt = (p: number): string =>
   (p < 0 ? "⁻" : "") + String(Math.abs(p)).split("").map((d) => SUP[Number(d)]).join("");
 
 /** One node, recursively. `coefZone` marks constant-valued factors as divide handles. */
-function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?: boolean }): ReactNode {
+function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?: boolean }): ReactNode {
   const role = coefZone && varsIn(node).size === 0 ? "coef" : "term";
   switch (node.kind) {
     case "const": {
@@ -225,7 +246,7 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
                   <TN node={unit.expr} ctx={ctx} />
                 ) : (
                   <FactorHandle ctx={ctx} id={unit.id} role={unit.role}>
-                    <TN node={unit.expr} ctx={{ ...ctx, inert: true, nestedActions: true }} />
+                    <TN node={unit.expr} ctx={{ ...ctx, inert: true, actionOwnerId: unit.id }} />
                   </FactorHandle>
                 );
               return (
@@ -292,132 +313,206 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
             <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
             <span className="px-[0.15em]">
               {ctx.inert || !denominatorId ? (
-                <TN node={inv} ctx={ctx} />
+                <TN node={inv} ctx={{ ...ctx, actionOwnerId: ctx.actionOwnerId ?? node.id }} />
               ) : (
                 <FactorHandle ctx={ctx} id={denominatorId} role="den">
-                  <TN node={inv} ctx={{ ...ctx, inert: true }} />
+                  <TN node={inv} ctx={{ ...ctx, inert: true, actionOwnerId: denominatorId }} />
                 </FactorHandle>
               )}
             </span>
           </span>
         );
       }
+      // Every exact reciprocal power is shown in the notation students wrote:
+      // √u, ³√u, ⁿ√u. The tree remains pow(u, 1/n), so simplification and the
+      // inverse "raise both sides" operation share one canonical structure.
+      if (node.exp.kind === "const" && node.exp.num === 1 && node.exp.den >= 2) {
+        const n = node.exp.den;
+        return (
+          <TermRegion ctx={ctx}>
+            <span className="inline-flex items-start">
+              <SpecialActionAnchor
+                ctx={ctx}
+                nodeId={ctx.actionOwnerId ?? node.id}
+                action="raise"
+                n={n}
+                title={`Tap to raise both sides to the power ${n}`}
+                className="relative mr-[0.02em] inline-flex items-start"
+              >
+                {n !== 2 && (
+                  <span className="mr-[-0.18em] mt-[-0.34em] text-[0.38em] leading-none">{n}</span>
+                )}
+                <span>√</span>
+              </SpecialActionAnchor>
+              <span className="border-t-[0.06em] border-current pt-[0.02em]">
+                <TN node={node.base} ctx={{ ...ctx, inert: true }} />
+              </span>
+            </span>
+          </TermRegion>
+        );
+      }
       // add renders its own parens; mul/pow bases need explicit ones
       const wrapBase = node.base.kind === "mul" || node.base.kind === "pow";
       const expInt = node.exp.kind === "const" && node.exp.den === 1;
-      const structureActive = !ctx.inert || !!ctx.nestedActions;
       const inner = { ...ctx, inert: true };
-      return (
+      const expression = (
         <span className="inline-flex items-start">
           {wrapBase ? (
             <span className="inline-flex items-center">
               <span className="select-none">(</span>
-              <TermRegion ctx={ctx}>
-                <TN node={node.base} ctx={inner} />
-              </TermRegion>
+              <TN node={node.base} ctx={inner} />
               <span className="select-none">)</span>
             </span>
           ) : (
-            <TermRegion ctx={ctx}>
-              <TN node={node.base} ctx={inner} coefZone={coefZone} />
-            </TermRegion>
+            <TN node={node.base} ctx={inner} coefZone={coefZone} />
           )}
           <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
-            {expInt && structureActive && (node.exp as { num: number }).num >= 2 ? (
-              <RootHandle ctx={ctx} n={(node.exp as { num: number }).num}>
+            {expInt && (node.exp as { num: number }).num >= 2 ? (
+              <SpecialActionAnchor
+                ctx={ctx}
+                nodeId={ctx.actionOwnerId ?? node.id}
+                action="root"
+                n={(node.exp as { num: number }).num}
+                title={`Tap to take the ${(node.exp as { num: number }).num === 2 ? "square" : (node.exp as { num: number }).num === 3 ? "cube" : `${(node.exp as { num: number }).num}th`} root of both sides`}
+              >
                 {supInt((node.exp as { num: number }).num)}
-              </RootHandle>
+              </SpecialActionAnchor>
             ) : expInt ? (
               <TSym ctx={ctx}>{supInt((node.exp as { num: number }).num)}</TSym>
-            ) : structureActive && node.exp.kind === "const" && node.exp.num === 1 && node.exp.den > 1 ? (
-              // a fractional exponent 1/n is the root's handle in reverse:
-              // dragging it across raises both sides to the n-th power
-              <span
-                data-symbol
-                data-term-id={ctx.id}
-                data-side={ctx.side}
-                data-role="raise"
-                data-raise-n={node.exp.den}
-                title={`Drag across the equals sign — raises both sides to the power ${node.exp.den}`}
-                className="-m-[0.14em] cursor-grab select-none p-[0.14em] transition-colors duration-150 hover:text-amber-500 active:cursor-grabbing"
-              >
-                <TN node={node.exp} ctx={{ ...ctx, inert: true }} />
-              </span>
             ) : (
-              <TermRegion ctx={ctx}>
-                <TN node={node.exp} ctx={inner} />
-              </TermRegion>
+              <TN node={node.exp} ctx={inner} />
             )}
           </span>
         </span>
       );
+      return <TermRegion ctx={ctx}>{expression}</TermRegion>;
     }
     case "fn": {
       if (node.fn === "exp") {
         // e^1 is plain e — no dangling superscript 1
         if (node.arg.kind === "const" && node.arg.num === 1 && node.arg.den === 1) {
-          return <TSym ctx={ctx} role={role} className="italic">e</TSym>;
-        }
-        // the base and the exponent are their OWN units: dragging the e
-        // takes ln of both sides; dragging a whole exponent n takes the
-        // n-th root of both sides
-        const structureActive = !ctx.inert || !!ctx.nestedActions;
-        const rootN =
-          structureActive && node.arg.kind === "const" && node.arg.den === 1 && node.arg.num >= 2
-            ? node.arg.num
-            : null;
-        return (
-          <span className="inline-flex items-start">
-            {!structureActive ? (
-              <span className="select-none italic">e</span>
-            ) : (
-              <span
-                data-symbol
-                data-term-id={ctx.id}
-                data-side={ctx.side}
-                data-role="lnbase"
-                title="Drag across the equals sign — takes ln of both sides"
-                className="-my-[0.16em] cursor-grab select-none py-[0.16em] italic transition-colors duration-150 hover:text-amber-500 active:cursor-grabbing"
+          return (
+            <TermRegion ctx={ctx}>
+              <SpecialActionAnchor
+                ctx={ctx}
+                nodeId={ctx.actionOwnerId ?? node.id}
+                action="ln"
+                title="Tap to take ln of both sides"
+                className="italic"
               >
                 e
-              </span>
-            )}
+              </SpecialActionAnchor>
+            </TermRegion>
+          );
+        }
+        // The base and exponent are tap-only inverse-operation anchors. The
+        // surrounding TermRegion/FactorHandle remains the sole drag owner.
+        const rootN =
+          node.arg.kind === "const" && node.arg.den === 1 && node.arg.num >= 2
+            ? node.arg.num
+            : null;
+        const expression = (
+          <span className="inline-flex items-start">
+            <SpecialActionAnchor
+              ctx={ctx}
+              nodeId={ctx.actionOwnerId ?? node.id}
+              action="ln"
+              title="Tap to take ln of both sides"
+              className="italic"
+            >
+              e
+            </SpecialActionAnchor>
             <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
               {rootN !== null ? (
-                <RootHandle ctx={ctx} n={rootN}>{constText(rootN, 1)}</RootHandle>
+                <SpecialActionAnchor
+                  ctx={ctx}
+                  nodeId={ctx.actionOwnerId ?? node.id}
+                  action="root"
+                  n={rootN}
+                  title={`Tap to take the ${rootN === 2 ? "square" : rootN === 3 ? "cube" : `${rootN}th`} root of both sides`}
+                >
+                  {constText(rootN, 1)}
+                </SpecialActionAnchor>
               ) : (
-                <TermRegion ctx={ctx}>
-                  <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
-                </TermRegion>
+                <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
               )}
             </span>
           </span>
         );
+        return <TermRegion ctx={ctx}>{expression}</TermRegion>;
       }
       if (node.fn === "sqrt") {
         return (
-          <span className="inline-flex items-baseline">
-            <TSym ctx={ctx} role={role}>√</TSym>
-            <span className="border-t-[0.06em] border-current pt-[0.02em]">
-              <TermRegion ctx={ctx}>
+          <TermRegion ctx={ctx}>
+            <span className="inline-flex items-baseline">
+              <SpecialActionAnchor
+                ctx={ctx}
+                nodeId={ctx.actionOwnerId ?? node.id}
+                action="square"
+                title="Tap to square both sides"
+              >
+                √
+              </SpecialActionAnchor>
+              <span className="border-t-[0.06em] border-current pt-[0.02em]">
                 <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
-              </TermRegion>
+              </span>
             </span>
-          </span>
+          </TermRegion>
         );
       }
+      const inverseAction: SpecialActionKind | null =
+        node.fn === "sin"
+          ? "asin"
+          : node.fn === "cos"
+            ? "acos"
+            : node.fn === "tan"
+              ? "atan"
+              : node.fn === "ln"
+                ? "exp"
+                : null;
+      const shownName = node.fn === "asin" ? "arcsin" : node.fn === "acos" ? "arccos" : node.fn === "atan" ? "arctan" : node.fn;
       return (
-        <span className="inline-flex items-center">
-          <TSym ctx={ctx} role={role} className="mr-0.5">{node.fn}</TSym>
-          <span className="select-none">(</span>
-          <TermRegion ctx={ctx}>
+        <TermRegion ctx={ctx}>
+          <span className="inline-flex items-center">
+            {inverseAction ? (
+              <SpecialActionAnchor
+                ctx={ctx}
+                nodeId={ctx.actionOwnerId ?? node.id}
+                action={inverseAction}
+                title={`Tap to apply ${inverseAction === "exp" ? "e^" : shownName === "sin" ? "arcsin" : shownName === "cos" ? "arccos" : "arctan"} to both sides`}
+                className="mr-0.5"
+              >
+                {shownName}
+              </SpecialActionAnchor>
+            ) : (
+              <span className="mr-0.5 select-none">{shownName}</span>
+            )}
+            <span className="select-none">(</span>
             <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
-          </TermRegion>
-          <span className="select-none">)</span>
-        </span>
+            <span className="select-none">)</span>
+          </span>
+        </TermRegion>
       );
     }
   }
+}
+
+/** Decorate exactly the subtree a rewrite candidate matched, without making
+ * the decoration another drag hitbox. */
+function TN(props: { node: TNode; ctx: Ctx; coefZone?: boolean }): ReactNode {
+  const content = TNContent(props);
+  if (!props.ctx.rewriteHintIds?.has(props.node.id)) return content;
+  return (
+    <span
+      data-rewrite-node={props.node.id}
+      data-rewrite-side={props.ctx.side}
+      title="Tap to inspect a suggested rewrite"
+      className="relative inline-flex rounded-md outline outline-1 outline-dashed outline-sky-400/70 outline-offset-2"
+    >
+      {content}
+      <span className="pointer-events-none absolute -right-1.5 -top-2 font-sans text-[0.22em] leading-none text-sky-500">✦</span>
+    </span>
+  );
 }
 
 export function TreeSideView({
@@ -425,29 +520,43 @@ export function TreeSideView({
   side,
   hoveredTermId,
   selectedIds,
+  rewriteHintIds,
   onHover,
 }: {
   node: TNode;
   side: Side;
   hoveredTermId: string | null;
   selectedIds: string[] | null;
+  rewriteHintIds?: string[] | null;
   onHover: (id: string | null) => void;
 }) {
   const addends = addendsOf(node);
   const selectedSet = new Set(selectedIds ?? []);
+  const hintSet = new Set(rewriteHintIds ?? []);
   if (addends.length === 0) {
-    const ctx: Ctx = { id: node.id, side, onHover, selectedIds: selectedSet };
+    const ctx: Ctx = { id: node.id, side, onHover, selectedIds: selectedSet, rewriteHintIds: hintSet };
     return (
       <span className="inline-flex items-center">
         <TSym ctx={ctx}>0</TSym>
       </span>
     );
   }
+  const rootRewriteId = node.kind === "add" && hintSet.has(node.id) ? node.id : null;
   return (
-    <span className="inline-flex items-center">
+    <span
+      data-rewrite-node={rootRewriteId || undefined}
+      data-rewrite-side={rootRewriteId ? side : undefined}
+      title={rootRewriteId ? "Tap to inspect a suggested rewrite" : undefined}
+      className={`relative inline-flex items-center ${
+        rootRewriteId ? "rounded-md outline outline-1 outline-dashed outline-sky-400/70 outline-offset-2" : ""
+      }`}
+    >
+      {rootRewriteId && (
+        <span className="pointer-events-none absolute -right-1.5 -top-2 font-sans text-[0.22em] leading-none text-sky-500">✦</span>
+      )}
       {addends.map((a, i) => {
         const id = a.id;
-        const ctx: Ctx = { id, side, onHover, selectedIds: selectedSet };
+        const ctx: Ctx = { id, side, onHover, selectedIds: selectedSet, rewriteHintIds: hintSet };
         const { neg, body } = signSplit(a);
         const highlighted = hoveredTermId === id || (selectedIds?.includes(id) ?? false);
         return (

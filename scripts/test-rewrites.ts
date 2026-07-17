@@ -1,6 +1,6 @@
 /**
  * Tests for the rewrite-suggestion engine (src/tools/equation-builder/rewrites.ts).
- * The engine is NOT wired to the UI — this is its whole verification surface.
+ * The engine powers the opt-in Hints UI; this suite verifies its pure layer.
  *
  * Run: npx tsx scripts/test-rewrites.ts
  */
@@ -107,6 +107,26 @@ console.log("\n== application: apply and land the rewrite ==");
   const r = rs.find((x) => x.kind === "identity")!;
   const applied = simplify(applyRewrite(n, r));
   check("nested identity applies in place: 3 + ln x + ln y", printNode(applied).includes("ln(x)") && printNode(applied).includes("+ 3"), printNode(applied));
+}
+{
+  // Two identical-looking subtrees still have different semantic identities.
+  // Choosing the second highlight must never rewrite the first occurrence.
+  const first = tmul(tc(2), tadd(tv("x"), tc(3)));
+  const second = tmul(tc(2), tadd(tv("x"), tc(3)));
+  const n = tadd(first, second);
+  const rs = detectRewrites(n).filter((r) => r.label === "distribute");
+  const target = rs.find((r) => r.before.id === second.id);
+  check(
+    "identical subtrees receive distinct rewrite candidates by semantic id",
+    rs.some((r) => r.before.id === first.id) && !!target,
+    rs.map((r) => r.before.id).join(" | ")
+  );
+  const applied = target ? applyRewrite(n, target) : n;
+  check(
+    "choosing the second identical subtree rewrites only that occurrence",
+    applied.kind === "add" && applied.terms[0].kind === "mul" && applied.terms[1].kind === "add",
+    printNode(applied)
+  );
 }
 
 console.log("\n== the honesty guard: every detected candidate is value-preserving ==");

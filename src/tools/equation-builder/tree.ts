@@ -24,7 +24,8 @@ import {
   type Variable,
 } from "./model";
 
-export type TFnName = FuncName | "sqrt";
+/** Tree-only functions may exceed the legacy flat model's vocabulary. */
+export type TFnName = FuncName | "sqrt" | "asin" | "acos" | "atan";
 export type TNamedConstant = "pi";
 export type TNodeId = string;
 
@@ -332,6 +333,22 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
           return simplifyPass(tpow(base.base, m * p), assume);
         }
       }
+      // The reciprocal of a canonical root keeps the same real domain when
+      // written as a negative reciprocal exponent. Normalizing this exact
+      // shape lets denominator roots cancel against their matching factors:
+      // (b^(1/n))^−1 → b^(−1/n). Broader fractional power chaining is not
+      // safe (for example (√x)^2 would silently enlarge the domain).
+      if (
+        base.kind === "pow" &&
+        base.exp.kind === "const" &&
+        base.exp.num === 1 &&
+        base.exp.den >= 2 &&
+        exp.kind === "const" &&
+        exp.num === -1 &&
+        exp.den === 1
+      ) {
+        return simplifyPass(tpow(base.base, tc(-1, base.exp.den)), assume);
+      }
       // (a·b)^n = a^n·b^n for integer n — equal wherever either side is
       // defined; without this, dividing by a product can never cancel it
       if (base.kind === "mul" && exp.kind === "const" && exp.den === 1) {
@@ -490,6 +507,12 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
         if (constantValued) {
           if (factor.kind === "named") return 0;
           if (factor.kind === "fn" && factor.fn === "sqrt") return 1;
+          if (
+            factor.kind === "pow" &&
+            factor.exp.kind === "const" &&
+            factor.exp.num === 1 &&
+            factor.exp.den >= 2
+          ) return 1;
           if (factor.kind === "fn" && factor.fn === "exp") return 2;
           return 3;
         }
@@ -600,6 +623,9 @@ const FN_EVAL: Record<TFnName, (v: number) => number> = {
   sin: Math.sin,
   cos: Math.cos,
   tan: Math.tan,
+  asin: Math.asin,
+  acos: Math.acos,
+  atan: Math.atan,
   ln: Math.log,
   exp: Math.exp,
   sqrt: Math.sqrt,
@@ -618,7 +644,22 @@ export function evalNode(n: TNode, env: { x?: number; y?: number }): number {
     case "mul":
       return n.factors.reduce((a, f) => a * evalNode(f, env), 1);
     case "pow":
-      return Math.pow(evalNode(n.base, env), evalNode(n.exp, env));
+      {
+        const base = evalNode(n.base, env);
+        const exp = evalNode(n.exp, env);
+        // JavaScript returns NaN for rational odd-root powers of a negative
+        // base, although (-8)^(1/3) = -2 and (-8)^(2/3) = 4 over the reals.
+        if (
+          base < 0 &&
+          n.exp.kind === "const" &&
+          n.exp.den > 1 &&
+          n.exp.den % 2 === 1
+        ) {
+          const root = Math.sign(base) * Math.abs(base) ** (1 / n.exp.den);
+          return Math.pow(root, n.exp.num);
+        }
+        return Math.pow(base, exp);
+      }
     case "fn":
       return FN_EVAL[n.fn](evalNode(n.arg, env));
   }
@@ -692,6 +733,10 @@ export function printNode(n: TNode): string {
       return `${wrapTop}/${wrapBottom}`;
     }
     case "pow": {
+      if (n.exp.kind === "const" && n.exp.num === 1 && n.exp.den >= 2) {
+        const index = n.exp.den === 2 ? "" : supInt(n.exp.den);
+        return `${index}√(${printNode(n.base)})`;
+      }
       const base = needsParens(n.base) || n.base.kind === "mul" || n.base.kind === "pow" || n.base.kind === "fn"
         ? `(${printNode(n.base)})`
         : printNode(n.base);
@@ -713,7 +758,7 @@ export function printNode(n: TNode): string {
         return `e^${bare ? printNode(n.arg) : `(${printNode(n.arg)})`}`;
       }
       if (n.fn === "sqrt") return `√(${printNode(n.arg)})`;
-      return `${n.fn}(${printNode(n.arg)})`;
+      return `${n.fn === "asin" ? "arcsin" : n.fn === "acos" ? "arccos" : n.fn === "atan" ? "arctan" : n.fn}(${printNode(n.arg)})`;
   }
 }
 
@@ -803,6 +848,12 @@ export function derivative(n: TNode, v: Variable): TNode | null {
                   ? tfn("exp", u)
                   : n.fn === "sqrt"
                     ? tmul(tc(1, 2), tpow(tfn("sqrt", u), -1))
+                    : n.fn === "asin"
+                      ? tpow(tadd(tc(1), tmul(tc(-1), tpow(u, 2))), tc(-1, 2))
+                      : n.fn === "acos"
+                        ? tmul(tc(-1), tpow(tadd(tc(1), tmul(tc(-1), tpow(u, 2))), tc(-1, 2)))
+                        : n.fn === "atan"
+                          ? tpow(tadd(tc(1), tpow(u, 2)), -1)
                     : null;
       if (!outer) return null;
       return tmul(outer, du);
@@ -896,6 +947,10 @@ export function antiderivative(n: TNode, v: Variable): TNode | null {
           return tmul(inv, tadd(tmul(n.arg, tfn("ln", n.arg)), tmul(tc(-1), n.arg)));
         case "tan":
           return null; // −ln|cos| needs the |…| we don't have
+        case "asin":
+        case "acos":
+        case "atan":
+          return null; // inverse-trig antiderivatives need forms beyond this playground
       }
     }
   }

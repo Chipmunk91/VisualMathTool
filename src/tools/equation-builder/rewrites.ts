@@ -1,12 +1,12 @@
 /**
- * The rewrite-suggestion engine — NOT wired to the UI.
+ * The rewrite-suggestion engine behind the opt-in Hints UI.
  *
  * The simplifier deliberately leaves things factored (2(x+3) stays, products
  * don't FOIL, log/trig identities don't auto-apply) because those directions
  * are the STUDENT's choice, not a canonical form. This engine is the other
  * half: given a state, it DETECTS the rewrites available at each subtree —
  * expand ⇄ factor, and the conditional identity rewrites — and returns them as
- * candidates. The caller (a future UI) offers them; the user takes them or not.
+ * candidates. The optional Hints UI offers them; the user takes them or not.
  *
  * Every candidate is value-preserving on its stated domain: the conditional
  * ones (log laws) carry a pill, exactly like the moves. `verifyRewrite` below
@@ -275,7 +275,7 @@ export function detectRewrites(root: TNode): Rewrite[] {
   const out: Rewrite[] = [];
   const seen = new Set<string>();
   const add = (r: Rewrite) => {
-    const k = `${r.kind}|${keyOf(r.before)}|${keyOf(r.after)}`;
+    const k = `${r.kind}|${r.before.id}|${keyOf(r.after)}`;
     if (seen.has(k) || keyOf(r.before) === keyOf(r.after)) return;
     seen.add(k);
     out.push(r);
@@ -301,12 +301,12 @@ export function detectRewritesEq(te: TreeEq): { side: "left" | "right"; rewrite:
   ];
 }
 
-/** Apply a candidate: replace the first structural occurrence of `before`. */
+/** Apply a candidate: replace the exact semantic occurrence that was offered. */
 export function applyRewrite(root: TNode, r: Rewrite): TNode {
-  const target = keyOf(r.before);
+  const target = r.before.id;
   let done = false;
   const rec = (n: TNode): TNode => {
-    if (!done && keyOf(n) === target) {
+    if (!done && n.id === target) {
       done = true;
       return cloneTree(r.after);
     }

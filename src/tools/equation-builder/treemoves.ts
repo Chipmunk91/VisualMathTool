@@ -362,9 +362,21 @@ function expOfNode(side: TNode): SideResult {
 /** ( )² of one side: resolves √ exactly (the pill lives on the move) */
 function squareOfNode(side: TNode): TNode {
   if (side.kind === "fn" && side.fn === "sqrt") return side.arg;
+  if (
+    side.kind === "pow" &&
+    side.exp.kind === "const" &&
+    side.exp.num === 1 &&
+    side.exp.den === 2
+  ) return side.base;
   if (side.kind === "mul") {
     // (c·√u)² = c²·u
-    const factors = side.factors.map((f) => (f.kind === "fn" && f.fn === "sqrt" ? f.arg : tpow(f, 2)));
+    const factors = side.factors.map((f) =>
+      f.kind === "fn" && f.fn === "sqrt"
+        ? f.arg
+        : f.kind === "pow" && f.exp.kind === "const" && f.exp.num === 1 && f.exp.den === 2
+          ? f.base
+          : tpow(f, 2)
+    );
     return tmul(...factors);
   }
   return tpow(side, 2);
@@ -413,7 +425,7 @@ export function applyToolT(tool: TreeToolKind, te: TreeEq): TreeMoveResult {
     });
   }
   if (tool === "sqrt") {
-    return finalize(tfn("sqrt", te.left), tfn("sqrt", te.right), "took the square root of both sides", {
+    return finalize(tpow(te.left, tc(1, 2)), tpow(te.right, tc(1, 2)), "took the square root of both sides", {
       dangerous: true,
       note: "principal (+) root only — a negative branch is dropped",
       pill: "branch +",

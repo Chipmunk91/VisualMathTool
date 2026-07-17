@@ -40,6 +40,7 @@ import {
 } from "../src/tools/equation-builder/treemoves";
 import { CATALOG } from "../src/tools/equation-builder/catalog";
 import { parseEquation } from "../src/tools/equation-builder/parse";
+import { applySpecialActionT, specialActionLabel } from "../src/tools/equation-builder/specialactions";
 import {
   isAtomicTreeFactorId,
   resolveTreeFactor,
@@ -121,6 +122,11 @@ simp("B5 x³/x² honestly stays (0 in domain gap)", tmul(tpow(tv("x"), 3), tpow(
 simp("B7 √4 folds exactly", tfn("sqrt", tc(4)), "2");
 simp("B8 8^(1/3) folds exactly", tpow(tc(8), tc(1, 3)), "2");
 simp("B9 (−8)^(1/3) = −2 (odd roots keep sign)", tpow(tc(-8), tc(1, 3)), "−2");
+check(
+  "B9b rational odd-root powers of negative bases evaluate over the reals",
+  Math.abs(evalNode(tpow(tc(-8), tc(2, 3)), {}) - 4) < 1e-12 &&
+    Math.abs(evalNode(tpow(tc(-8), tc(-2, 3)), {}) - 0.25) < 1e-12
+);
 simp("B10 x⁰ with x unknown stays honest? — const base folds", tpow(tc(5), tc(0)), "1");
 simp("B11 (b²)³ = b⁶", tpow(tpow(tv("x"), 2), 3), "x⁶");
 simp("B12 (ab)² distributes", tpow(tmul(tv("x"), tv("y")), 2), "x²·y²");
@@ -136,13 +142,13 @@ simp("C7 e^0 = 1", tfn("exp", tc(0)), "1");
 simp("C8 ln 1 = 0", tfn("ln", tc(1)), "0");
 
 console.log("\n== D. simplifier: root laws (sign-aware) ==");
-simp("D1 odd root distributes over a product", tpow(tmul(tfn("exp", tc(3)), tv("x"), tpow(tfn("sin", tv("x")), -1)), tc(1, 3)), "(e·x^(1/3))/(sin(x))^(1/3)");
+simp("D1 odd root distributes over a product", tpow(tmul(tfn("exp", tc(3)), tv("x"), tpow(tfn("sin", tv("x")), -1)), tc(1, 3)), "(e·³√(x))/³√(sin(x))");
 simp("D2 (8x³)^(1/3) = 2x", tpow(tmul(tc(8), tpow(tv("x"), 3)), tc(1, 3)), "2x");
-simp("D3 even root pulls out e^u only", tpow(tmul(tfn("exp", tc(2)), tv("x")), tc(1, 2)), "e·x^(1/2)");
-simp("D4 even root refuses signed factors", tpow(tmul(tv("x"), tv("y")), tc(1, 2)), "(x·y)^(1/2)");
+simp("D3 even root pulls out e^u only", tpow(tmul(tfn("exp", tc(2)), tv("x")), tc(1, 2)), "e·√(x)");
+simp("D4 even root refuses signed factors", tpow(tmul(tv("x"), tv("y")), tc(1, 2)), "√(x·y)");
 simp("D5 (x⁻¹)^(1/3) = x^(−1/3)", tpow(tpow(tv("x"), -1), tc(1, 3)), "x^(−1/3)");
 simp("D6 (x^(1/3))³ = x (odd chain)", tpow(tpow(tv("x"), tc(1, 3)), 3), "x");
-simp("D7 x² does NOT silently become |x| under √", tpow(tpow(tv("x"), 2), tc(1, 2)), "(x²)^(1/2)");
+simp("D7 x² does NOT silently become |x| under √", tpow(tpow(tv("x"), 2), tc(1, 2)), "√(x²)");
 
 console.log("\n== E. tree moves: additive ==");
 {
@@ -179,7 +185,7 @@ console.log("\n== G. tree moves: roots and powers ==");
   check("G5 root n must be an integer ≥ 2", rootBothT(cube, 1) === null && raiseBothT(cube, 0) === null);
   const fracEq: TreeEq = { left: tmul(tfn("exp", tc(3)), tv("x"), tpow(tfn("sin", tv("x")), -1)), right: tv("y") };
   const rootedFrac = rootBothT(fracEq, 3);
-  move("G6 cube root simplifies the exponential out", rootedFrac, "(e·x^(1/3))/(sin(x))^(1/3) = y^(1/3)");
+  move("G6 cube root simplifies the exponential out", rootedFrac, "(e·³√(x))/³√(sin(x)) = ³√(y)");
   if (rootedFrac && typeof rootedFrac !== "string" && rootedFrac.treeNext) {
     move("G7 raise round-trips to the original", raiseBothT(rootedFrac.treeNext, 3), "(e^3·x)/sin(x) = y");
   } else {
@@ -535,6 +541,91 @@ console.log("\n== N. symbolic constants: pi ==");
   );
   move("N4 moving π divides both sides without a domain pill", divideBothT(piEq, tnamed("pi"), "π"), "x = y/π");
   simp("N5 π/π cancels because π is provably nonzero", tmul(tnamed("pi"), tpow(tnamed("pi"), -1)), "1");
+}
+
+console.log("\n== O. contextual special-symbol actions ==");
+{
+  const sqrtAlias = parsedTree("sqrt(x + 1) = 3");
+  check(
+    "O1 sqrt input normalizes to the canonical reciprocal power",
+    sqrtAlias.left.kind === "pow" &&
+      sqrtAlias.left.exp.kind === "const" &&
+      sqrtAlias.left.exp.num === 1 &&
+      sqrtAlias.left.exp.den === 2 &&
+      printTreeEq(sqrtAlias) === "√(x + 1) = 3",
+    printTreeEq(sqrtAlias)
+  );
+  check(
+    "O2 general reciprocal powers print as indexed radicals",
+    printTreeEq(parsedTree("(x + 1)^(1/3) = y")) === "³√(x + 1) = y"
+  );
+
+  const expEq = parsedTree("e^x = 5");
+  move(
+    "O3 tapping e applies ln to both sides",
+    applySpecialActionT(expEq, { kind: "ln", nodeId: expEq.left.id, side: "left" }),
+    "x = ln(5)"
+  );
+
+  const cubeExp = parsedTree("e^3 = y");
+  move(
+    "O4 tapping exponent 3 takes the cube root",
+    applySpecialActionT(cubeExp, { kind: "root", n: 3, nodeId: cubeExp.left.id, side: "left" }),
+    "e = ³√(y)"
+  );
+
+  const cubeRoot = parsedTree("(x + 1)^(1/3) = y");
+  move(
+    "O5 tapping an indexed radical raises both sides",
+    applySpecialActionT(cubeRoot, { kind: "raise", n: 3, nodeId: cubeRoot.left.id, side: "left" }),
+    "x + 1 = y³"
+  );
+
+  const sinEq = parsedTree("sin(x) = 1/2");
+  move(
+    "O6 tapping sin applies the principal arcsin operation",
+    applySpecialActionT(sinEq, { kind: "asin", nodeId: sinEq.left.id, side: "left" }),
+    "x = arcsin(1/2)",
+    "check branches"
+  );
+  const nestedSin = parsedTree("3*sin(x) = y");
+  const nestedSinAction = applySpecialActionT(nestedSin, {
+    kind: "asin",
+    nodeId: nestedSin.left.id,
+    side: "left",
+  });
+  check(
+    "O6b inverse trig asks the student to isolate a multiplied function first",
+    typeof nestedSinAction === "string" && nestedSinAction.includes("isolate sin"),
+    String(nestedSinAction)
+  );
+  const outOfRange = parsedTree("sin(x) = 2");
+  const outOfRangeAction = applySpecialActionT(outOfRange, {
+    kind: "asin",
+    nodeId: outOfRange.left.id,
+    side: "left",
+  });
+  check(
+    "O6c arcsin rejects a known out-of-range side",
+    typeof outOfRangeAction === "string" && outOfRangeAction.includes("between −1 and 1"),
+    String(outOfRangeAction)
+  );
+
+  const lnEq = parsedTree("ln(x) = 2");
+  move(
+    "O7 tapping ln exponentiates both sides",
+    applySpecialActionT(lnEq, { kind: "exp", nodeId: lnEq.left.id, side: "left" }),
+    "x = e^2"
+  );
+  check(
+    "O8 inverse trig names parse and print",
+    printTreeEq(parsedTree("arccos(x) = arctan(y)")) === "arccos(x) = arctan(y)"
+  );
+  check(
+    "O9 each special anchor advertises one concise operation",
+    specialActionLabel({ kind: "root", n: 5, nodeId: cubeExp.left.id, side: "left" }) ===
+      "Take the 5th root of both sides"
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
