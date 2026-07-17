@@ -12,9 +12,10 @@
 import type { Side } from "./model";
 import {
   type TNode,
+  type TNodeId,
   type TreeEq,
   addendsOf,
-  displayedProductFactors,
+  displayedProductUnits,
   signSplit,
   simplify,
   tmul,
@@ -46,8 +47,43 @@ export interface TreeFactorGroup {
   zone: TreeFactorZone;
 }
 
-/** Exact factor ids can participate in a multi-factor selection. */
-export const isAtomicTreeFactorId = (id: string): boolean => /^[LR]\d+@[nd]\d+$/.test(id);
+const FACTOR_PREFIX = "factor:";
+const PRODUCT_PREFIX = "product:";
+
+export const factorHandleId = (ownerId: TNodeId, zone: TreeFactorZone, nodeId: TNodeId): string =>
+  `${FACTOR_PREFIX}${ownerId}:${zone}:${nodeId}`;
+
+export const wholeNumeratorHandleId = (ownerId: TNodeId): string => `${PRODUCT_PREFIX}${ownerId}:n`;
+
+export function parseFactorHandleId(
+  id: string
+): { ownerId: TNodeId; zone: TreeFactorZone; nodeId: TNodeId } | null {
+  if (!id.startsWith(FACTOR_PREFIX)) return null;
+  const [ownerId, zone, nodeId, ...extra] = id.slice(FACTOR_PREFIX.length).split(":");
+  if (!ownerId || (zone !== "n" && zone !== "d") || !nodeId || extra.length > 0) return null;
+  return { ownerId, zone, nodeId };
+}
+
+export function ownerOfTreeHandleId(id: string): TNodeId {
+  const factor = parseFactorHandleId(id);
+  if (factor) return factor.ownerId;
+  if (id.startsWith(PRODUCT_PREFIX)) return id.slice(PRODUCT_PREFIX.length).split(":")[0] || id;
+  return id;
+}
+
+/** Exact semantic factor handles can participate in a multi-factor selection. */
+export const isAtomicTreeFactorId = (id: string): boolean => parseFactorHandleId(id) !== null;
+
+export function treeAddendById(
+  te: TreeEq,
+  id: TNodeId
+): { node: TNode; side: Side; index: number } | null {
+  for (const side of ["left", "right"] as const) {
+    const index = addendsOf(te[side]).findIndex((addend) => addend.id === id);
+    if (index >= 0) return { node: addendsOf(te[side])[index], side, index };
+  }
+  return null;
+}
 
 /**
  * Split one displayed addend into numerator and denominator factors.
@@ -58,18 +94,19 @@ export const isAtomicTreeFactorId = (id: string): boolean => /^[LR]\d+@[nd]\d+$/
  */
 export function treeFactorLayout(addendId: string, addend: TNode): TreeFactorLayout {
   const { body } = signSplit(addend);
-  const { numerator: numeratorExprs, denominator: denominatorExprs } = displayedProductFactors(body);
+  const { numerator: numeratorUnits, denominator: denominatorUnits } = displayedProductUnits(body);
+  const numeratorExprs = numeratorUnits.map((unit) => unit.expr);
 
-  const numerator = numeratorExprs.map((expr, index): TreeFactorUnit => ({
-    id: `${addendId}@n${index}`,
-    expr,
+  const numerator = numeratorUnits.map((unit, index): TreeFactorUnit => ({
+    id: factorHandleId(addendId, "n", unit.sourceId),
+    expr: unit.expr,
     zone: "n",
     index,
-    role: varsIn(expr).size === 0 ? "coef" : "numer",
+    role: varsIn(unit.expr).size === 0 ? "coef" : "numer",
   }));
-  const denominator = denominatorExprs.map((expr, index): TreeFactorUnit => ({
-    id: `${addendId}@d${index}`,
-    expr,
+  const denominator = denominatorUnits.map((unit, index): TreeFactorUnit => ({
+    id: factorHandleId(addendId, "d", unit.sourceId),
+    expr: unit.expr,
     zone: "d",
     index,
     role: "den",
@@ -80,7 +117,7 @@ export function treeFactorLayout(addendId: string, addend: TNode): TreeFactorLay
   const wholeNumerator =
     numeratorExprs.length > 1
       ? {
-          id: `${addendId}@N`,
+          id: wholeNumeratorHandleId(addendId),
           expr: simplify(tmul(...numeratorExprs)),
           zone: "n" as const,
         }
@@ -93,20 +130,23 @@ export function treeFactorLayout(addendId: string, addend: TNode): TreeFactorLay
 export function resolveTreeFactor(
   te: TreeEq,
   id: string
-): { expr: TNode; zone: TreeFactorZone } | null {
-  const match = id.match(/^([LR])(\d+)@(N|[nd]\d+)$/);
-  if (!match) return null;
-
-  const side: Side = match[1] === "L" ? "left" : "right";
-  const addend = addendsOf(te[side])[Number(match[2])];
-  if (!addend) return null;
-
-  const layout = treeFactorLayout(`${match[1]}${match[2]}`, addend);
-  if (match[3] === "N") return layout.wholeNumerator;
-
-  const units = match[3][0] === "n" ? layout.numerator : layout.denominator;
-  const unit = units[Number(match[3].slice(1))];
-  return unit ? { expr: unit.expr, zone: unit.zone } : null;
+): { expr: TNode; zone: TreeFactorZone; ownerId: TNodeId; side: Side } | null {
+  const factor = parseFactorHandleId(id);
+  const wholeOwner = id.startsWith(PRODUCT_PREFIX)
+    ? id.slice(PRODUCT_PREFIX.length).split(":")[0]
+    : null;
+  const ownerId = factor?.ownerId ?? wholeOwner;
+  if (!ownerId) return null;
+  const found = treeAddendById(te, ownerId);
+  if (!found) return null;
+  const layout = treeFactorLayout(ownerId, found.node);
+  if (wholeOwner) {
+    return layout.wholeNumerator?.id === id
+      ? { expr: layout.wholeNumerator.expr, zone: "n", ownerId, side: found.side }
+      : null;
+  }
+  const unit = [...layout.numerator, ...layout.denominator].find((candidate) => candidate.id === id);
+  return unit ? { expr: unit.expr, zone: unit.zone, ownerId, side: found.side } : null;
 }
 
 /**
@@ -119,11 +159,19 @@ export function resolveTreeFactorGroup(te: TreeEq, ids: string[]): TreeFactorGro
   if (unique.length === 0 || unique.some((id) => !isAtomicTreeFactorId(id))) return null;
 
   const parsed = unique.map((id) => {
-    const match = id.match(/^([LR]\d+)@([nd])(\d+)$/);
-    if (!match) return null;
+    const handle = parseFactorHandleId(id);
+    if (!handle) return null;
     const resolved = resolveTreeFactor(te, id);
     return resolved
-      ? { id, ownerId: match[1], zone: match[2] as TreeFactorZone, index: Number(match[3]), expr: resolved.expr }
+      ? {
+          id,
+          ownerId: handle.ownerId,
+          zone: handle.zone,
+          index: treeFactorLayout(handle.ownerId, treeAddendById(te, handle.ownerId)!.node)[
+            handle.zone === "n" ? "numerator" : "denominator"
+          ].findIndex((unit) => unit.id === id),
+          expr: resolved.expr,
+        }
       : null;
   });
   if (parsed.some((item) => item === null)) return null;
@@ -141,5 +189,5 @@ export function resolveTreeFactorGroup(te: TreeEq, ids: string[]): TreeFactorGro
 export function treeMarqueeSelection(te: TreeEq, factorIds: string[], addendIds: string[]): string[] {
   const group = resolveTreeFactorGroup(te, factorIds);
   if (group) return group.ids;
-  return Array.from(new Set([...addendIds, ...factorIds.map((id) => id.split("@")[0])]));
+  return Array.from(new Set([...addendIds, ...factorIds.map(ownerOfTreeHandleId)]));
 }

@@ -38,7 +38,8 @@ export interface SharedStep {
   note?: string;
   dangerous?: boolean;
   pill?: string;
-  state: EquationState;
+  /** Legacy flat snapshots remain readable; new shares store only `tree`. */
+  state?: EquationState;
   tree?: TreeEq;
   story?: MoveStory;
 }
@@ -63,7 +64,8 @@ export function decodeHistory(param: string): SharedHistory | null {
     if (!Array.isArray(h.steps) || h.steps.length === 0) return null;
     for (const s of h.steps) {
       if (typeof s.label !== "string") return null;
-      if (!s.state || !Array.isArray(s.state.left) || !Array.isArray(s.state.right)) return null;
+      const flatOk = !!s.state && Array.isArray(s.state.left) && Array.isArray(s.state.right);
+      if (!s.tree && !flatOk) return null;
       if (s.tree && (!s.tree.left || !s.tree.right)) return null;
     }
     return h;

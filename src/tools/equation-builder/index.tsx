@@ -31,6 +31,7 @@ import {
   addendsOf,
   cloneTreeEq,
   constValue,
+  ensureTreeEqIds,
   evalNode,
   printNode,
   printTreeEq,
@@ -40,7 +41,6 @@ import {
   flatToTree,
   introducesLnOf,
   keyOf,
-  splitCoef,
   tadd,
   tc,
   tmul,
@@ -59,23 +59,28 @@ import {
   applyToolT,
   divideBothT,
   finalize,
-  moveTermsT,
-  cancelFactorT,
-  multiplyBothT,
   normalizeOnLoad,
   thawExpLn,
-  raiseBothT,
-  rootBothT,
   type TreeMoveResult,
   type TreeOutcome,
 } from "./treemoves";
 import { TreeSideView } from "./treeview";
 import {
   isAtomicTreeFactorId,
+  ownerOfTreeHandleId,
   resolveTreeFactor,
   resolveTreeFactorGroup,
   treeMarqueeSelection,
 } from "./treeunits";
+import {
+  computeTreeOperation,
+  treeAddendExpression,
+  treeCoefficientExpression,
+  type DragPayload,
+  type DropTarget,
+  type ToolKind,
+} from "./operations";
+import { toggleTreeFactorSelection, type SymbolSelection } from "./selection";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -100,6 +105,7 @@ import {
  * their actors when the history replays.
  */
 const BOOT: EquationState = { left: [leaf(2, 1), leaf(-3)], right: [leaf(-7)] };
+const BOOT_TREE: TreeEq = ensureTreeEqIds({ left: flatToTree(BOOT.left), right: flatToTree(BOOT.right) });
 
 const SUP = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 /** x³ etc. in plain text */
@@ -301,8 +307,6 @@ const makeTreeStep = (label: string, tree: TreeEq, dangerous?: boolean, note?: s
 type Role = "term" | "coef" | "numer" | "den" | "neg" | "xdiv" | "xmul" | "factor" | "exp" | "fn" | "lnbase" | "root" | "raise" | "group";
 
 /** Toolbox operations that apply to both sides of the equation */
-type ToolKind = "ln" | "exp" | "sin" | "cos" | "tan" | "sqrt" | "square" | "recip";
-
 interface ToolItem {
   glyph: string;
   tool?: ToolKind; // absent = shown as roadmap, disabled
@@ -477,14 +481,16 @@ const Fraction = ({
 );
 
 const EquationBuilderTool = () => {
-  const [equation, setEquation] = useState<EquationState>(BOOT);
-  /** Non-null when the equation lives in the expression tree (frontier mode) */
-  const [treeEq, setTreeEq] = useState<TreeEq | null>(null);
-  const [history, setHistory] = useState<Step[]>(() => [makeStep("start", BOOT)]);
+  // The tree is the runtime model. `equation` remains only as a compatibility
+  // workspace for old flat-only helpers while they are retired module by
+  // module; no parser, history or symbol operation re-enters flat mode.
+  const [equation, setEquation] = useState<EquationState>(() => TREE_DUMMY());
+  const [treeEq, setTreeEq] = useState<TreeEq | null>(() => cloneTreeEq(BOOT_TREE));
+  const [history, setHistory] = useState<Step[]>(() => [makeTreeStep("start", BOOT_TREE)]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dragOver, setDragOver] = useState<Side | null>(null);
   const [parenHover, setParenHover] = useState<string | null>(null);
-  const [selection, setSelection] = useState<{ side: Side; termIds: string[] } | null>(null);
+  const [selection, setSelection] = useState<SymbolSelection | null>(null);
   const [hoveredTermId, setHoveredTermId] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -548,8 +554,8 @@ const EquationBuilderTool = () => {
     if (capturingRef.current) downloadTrace();
     setHistory((h) => {
       const last = h[h.length - 1];
-      setEquation(cloneState(last.state));
-      setTreeEq(last.tree ? cloneTreeEq(last.tree) : null);
+      setEquation(TREE_DUMMY());
+      setTreeEq(last.tree ? cloneTreeEq(last.tree) : cloneTreeEq(BOOT_TREE));
       return h;
     });
   };
@@ -866,18 +872,17 @@ const EquationBuilderTool = () => {
           const hasActor = actorTravels.length > 0 || actorMutations.length > 0;
 
           // Tree steps carry no traveling actor; they name the acted-on unit(s)
-          // in story.emphasize. Match the old-state clones (a factor's inert
-          // leaves resolve to the factor's unit id; a whole-numerator @N or a
-          // whole-term id lights all its contained factors) so they can pulse.
+          // in story.emphasize. Exact factor ids light one factor; an addend or
+          // product handle lights every factor owned by that semantic addend.
           const emphIds = story?.emphasize ?? [];
           const emphSet = new Set(emphIds);
           const emphMatch = (term: string | null): boolean => {
             if (!term) return false;
             if (emphSet.has(term)) return true;
             for (const id of emphIds) {
-              const m = id.match(/^([LR]\d+)(@N)?$/);
-              if (m && (id === m[1] || id.endsWith("@N")) && (term === m[1] || term.startsWith(`${m[1]}@`)))
-                return true;
+              const owner = ownerOfTreeHandleId(id);
+              const broad = id === owner || id.startsWith("product:");
+              if (broad && ownerOfTreeHandleId(term) === owner) return true;
             }
             return false;
           };
@@ -1505,8 +1510,8 @@ const EquationBuilderTool = () => {
         }
         // the overlay takes the stage BEFORE the state switches — no blank frame
         const retarget = i > 0 ? beginGlyphTransition(step.story) : null;
-        setEquation(cloneState(step.state));
-        setTreeEq(step.tree ? cloneTreeEq(step.tree) : null);
+        setEquation(TREE_DUMMY());
+        setTreeEq(step.tree ? cloneTreeEq(step.tree) : cloneTreeEq(BOOT_TREE));
         setPlayIndex(i);
         retarget?.();
         if (i >= h.length - 1) {
@@ -1532,8 +1537,7 @@ const EquationBuilderTool = () => {
         note: s.note,
         dangerous: s.dangerous,
         pill: s.pill,
-        state: s.state,
-        tree: s.tree,
+        tree: s.tree ?? ensureTreeEqIds({ left: flatToTree(s.state.left), right: flatToTree(s.state.right) }),
         story: s.story,
       })),
     });
@@ -1548,21 +1552,28 @@ const EquationBuilderTool = () => {
   useEffect(() => {
     const shared = sharedFromUrl();
     if (!shared) return;
-    const steps: Step[] = shared.steps.map((s) => ({
-      id: stepCounter++,
-      label: s.label,
-      note: s.note,
-      dangerous: s.dangerous,
-      pill: s.pill,
-      story: s.story,
-      state: cloneState(s.state),
-      tree: s.tree ? cloneTreeEq(s.tree) : undefined,
-      text: s.tree ? printTreeEq(s.tree) : equationText(s.state),
-    }));
+    const steps: Step[] = shared.steps.map((s) => {
+      // Flat snapshots exist only in old links. Convert once at the boundary;
+      // all restored history from this point forward is canonical tree state.
+      const tree = s.tree
+        ? cloneTreeEq(s.tree)
+        : ensureTreeEqIds({ left: flatToTree(s.state!.left), right: flatToTree(s.state!.right) });
+      return {
+        id: stepCounter++,
+        label: s.label,
+        note: s.note,
+        dangerous: s.dangerous,
+        pill: s.pill,
+        story: s.story,
+        state: TREE_DUMMY(),
+        tree,
+        text: printTreeEq(tree),
+      };
+    });
     const last = steps[steps.length - 1];
     setHistory(steps);
-    setEquation(cloneState(last.state));
-    setTreeEq(last.tree ? cloneTreeEq(last.tree) : null);
+    setEquation(TREE_DUMMY());
+    setTreeEq(cloneTreeEq(last.tree!));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1858,19 +1869,10 @@ const EquationBuilderTool = () => {
     const simplified = simplifyTree(d);
     const label = `differentiated — ${fm.output} now shows d${fm.output}/d${fm.input}`;
     const note = "a new equation about the same function, not an equivalent step";
-    const lhs = leaf(1, 1, 1, fm.output);
-    const fl = treeSideToFlat(simplified);
-    if (fl) {
-      const next: EquationState = { left: [lhs], right: combine(fl.length ? fl : [leaf(0)]) };
-      setTreeEq(null);
-      setEquation(next);
-      setHistory([makeStep(label, next, false, note)]);
-    } else {
-      const nextTree: TreeEq = { left: tv(fm.output), right: simplified };
-      setTreeEq(nextTree);
-      setEquation(TREE_DUMMY());
-      setHistory([makeTreeStep(label, nextTree, false, note)]);
-    }
+    const nextTree = ensureTreeEqIds({ left: tv(fm.output), right: simplified });
+    setTreeEq(nextTree);
+    setEquation(TREE_DUMMY());
+    setHistory([makeTreeStep(label, nextTree, false, note)]);
     setSelection(null);
     setNotice(null);
   };
@@ -1905,19 +1907,10 @@ const EquationBuilderTool = () => {
     const note =
       "one antiderivative of the family F + C (C = 0 shown)" +
       (lnCame ? "; ln|…| written without the bars — argument > 0 assumed" : "");
-    const lhs = leaf(1, 1, 1, fm.output);
-    const fl = treeSideToFlat(simplified);
-    if (fl) {
-      const next: EquationState = { left: [lhs], right: combine(fl.length ? fl : [leaf(0)]) };
-      setTreeEq(null);
-      setEquation(next);
-      setHistory([makeStep(label, next, false, note, "+ C")]);
-    } else {
-      const nextTree: TreeEq = { left: tv(fm.output), right: simplified };
-      setTreeEq(nextTree);
-      setEquation(TREE_DUMMY());
-      setHistory([makeTreeStep(label, nextTree, false, note, "+ C")]);
-    }
+    const nextTree = ensureTreeEqIds({ left: tv(fm.output), right: simplified });
+    setTreeEq(nextTree);
+    setEquation(TREE_DUMMY());
+    setHistory([makeTreeStep(label, nextTree, false, note, "+ C")]);
     setSelection(null);
     setNotice(null);
   };
@@ -2302,31 +2295,12 @@ const EquationBuilderTool = () => {
   }, [searchSel]);
 
   const applyParse = (result: ParseResult & { ok: true }) => {
-    // sympy-style load normalization, UNIFIED across both parser outputs:
-    // whether the equation parsed flat or into the frontier tree, route it
-    // through the tree normalizer so obvious identical-pair cancellations and
-    // e^(ln u) thaws happen NOW — each stamping its assumption on step 0,
-    // never assumed silently. The result re-enters flat mode when it can.
-    const tree: TreeEq = result.tree ?? {
-      left: flatToTree(result.state.left),
-      right: flatToTree(result.state.right),
-    };
-    const norm = normalizeOnLoad(tree);
-    const fl = treeSideToFlat(norm.te.left);
-    const fr = treeSideToFlat(norm.te.right);
-    if (fl && fr) {
-      const state: EquationState = {
-        left: combine(fl.length ? fl : [leaf(0)]),
-        right: combine(fr.length ? fr : [leaf(0)]),
-      };
-      setTreeEq(null);
-      setEquation(state);
-      setHistory([makeStep("start", state, norm.changed, norm.note, norm.pill)]);
-    } else {
-      setTreeEq(norm.te);
-      setEquation(TREE_DUMMY());
-      setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
-    }
+    // Parse directly into the canonical tree. Load-only conditional
+    // normalizations record their assumptions on step zero.
+    const norm = normalizeOnLoad(result.tree);
+    setTreeEq(norm.te);
+    setEquation(TREE_DUMMY());
+    setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
     setSelection(null);
     setNotice(null);
     setInputMsg(null);
@@ -2365,8 +2339,8 @@ const EquationBuilderTool = () => {
   const restoreStep = (index: number) => {
     if (playingRef.current) stopPlayback();
     const step = history[index];
-    setTreeEq(step.tree ? cloneTreeEq(step.tree) : null);
-    setEquation(cloneState(step.state));
+    setTreeEq(step.tree ? cloneTreeEq(step.tree) : cloneTreeEq(BOOT_TREE));
+    setEquation(TREE_DUMMY());
     setHistory((h) => h.slice(0, index + 1));
     setSelection(null);
     setNotice(null);
@@ -2408,7 +2382,7 @@ const EquationBuilderTool = () => {
     const symbol = nearestSymbol(e.clientX, e.clientY, e.pointerType);
     if (symbol) {
       e.preventDefault();
-      beginDrag(payloadFromSymbol(symbol), e);
+      beginDrag(payloadFromSymbol(symbol), e, symbol);
       return;
     }
     const x0 = e.clientX;
@@ -2457,7 +2431,7 @@ const EquationBuilderTool = () => {
         if (treeEq && isAtomicTreeFactorId(termId)) {
           factorHits[side].add(termId);
         } else {
-          additiveHits[side].add(treeEq ? termId.split("@")[0] : termId);
+          additiveHits[side].add(treeEq ? ownerOfTreeHandleId(termId) : termId);
         }
       });
 
@@ -2480,24 +2454,6 @@ const EquationBuilderTool = () => {
   };
 
   // --- Drag & drop ---
-  type DragPayload =
-    | { kind: "terms"; ids: string[]; from: Side }
-    | { kind: "factorGroup"; ids: string[]; from: Side }
-    | { kind: "coef"; termId: string; from: Side }
-    | { kind: "den"; termId: string; from: Side }
-    | { kind: "neg"; termId: string; from: Side }
-    | { kind: "xdiv"; termId: string; from: Side }
-    | { kind: "xmul"; termId: string; from: Side }
-    | { kind: "factor"; termId: string; from: Side }
-    | { kind: "exp"; termId: string; from: Side }
-    | { kind: "fn"; termId: string; from: Side }
-    | { kind: "numer"; termId: string; from: Side }
-    | { kind: "lnbase"; termId: string; from: Side }
-    | { kind: "root"; termId: string; n: number; from: Side }
-    | { kind: "raise"; termId: string; n: number; from: Side }
-    | { kind: "group"; termId: string; from: Side }
-    | { kind: "tool"; tool: ToolKind };
-
   // Tracked in a ref (dataTransfer is unreadable during dragover) so any drop
   // location can route to the opposite side and the target ring is accurate
   const dragPayloadRef = useRef<DragPayload | null>(null);
@@ -2847,15 +2803,26 @@ const EquationBuilderTool = () => {
     const role = (el.dataset.role ?? "term") as Role;
     // A selected multiplicative chunk keeps its exact factor ids. Additive
     // selections still acquire from any symbol inside their owning addend.
-    const ownerId = treeEq ? termId.split("@")[0] : termId;
+    const selectedFactor = treeEq
+      ? (el.closest<HTMLElement>("[data-factor-handle]")?.dataset.factorHandle ?? null)
+      : null;
+    const ownerId = treeEq ? ownerOfTreeHandleId(termId) : termId;
     if (selection && selection.side === side) {
       if (
         treeEq &&
-        selection.termIds.length > 1 &&
-        selection.termIds.includes(termId) &&
+        selectedFactor &&
+        selection.termIds.includes(selectedFactor) &&
         selection.termIds.every(isAtomicTreeFactorId)
       ) {
-        return { kind: "factorGroup", ids: selection.termIds, from: side };
+        if (selection.termIds.length > 1) return { kind: "factorGroup", ids: selection.termIds, from: side };
+        const selected = resolveTreeFactor(treeEq, selectedFactor);
+        if (selected) {
+          return {
+            kind: selected.zone === "d" ? "den" : varsIn(selected.expr).size === 0 ? "coef" : "numer",
+            termId: selectedFactor,
+            from: side,
+          };
+        }
       }
       if (selection.termIds.includes(ownerId)) {
         return { kind: "terms", ids: selection.termIds, from: side };
@@ -2908,16 +2875,6 @@ const EquationBuilderTool = () => {
     underHoverRef.current = null;
     termHoverRef.current = null;
   };
-
-  type DropTarget =
-    | { kind: "side"; side: Side }
-    | { kind: "parens"; termId: string; side: Side }
-    | { kind: "under"; termId: string; side: Side }
-    | { kind: "onexp"; termId: string; side: Side }
-    | { kind: "onterm"; termId: string; side: Side }
-    | { kind: "funcparens"; termId: string; side: Side }
-    | { kind: "bound"; which: "lo" | "hi" | "at" }
-    | { kind: "unit"; unitId: string; side: Side };
 
   /** The single dispatcher shared by real drops and the mid-drag preview */
   const computeDrop = (payload: DragPayload, target: DropTarget): MoveResult => {
@@ -3036,132 +2993,21 @@ const EquationBuilderTool = () => {
     }
   };
 
-  // --- Tree (frontier) moves: the same engine, dispatched to tree rewrites --
+  // --- Canonical tree operations (pure dispatcher lives in operations.ts) --
 
-  /** The addend a tree symbol id (L0, R1, L0@x, …) points at */
-  const treeAddend = (id: string): TNode | null => {
-    if (!treeEq) return null;
-    const side: Side = id.startsWith("L") ? "left" : "right";
-    const list = addendsOf(treeEq[side]);
-    const i = parseInt(id.slice(1), 10);
-    return list[i] ?? null;
-  };
+  const treeAddend = (id: string): TNode | null =>
+    treeEq ? treeAddendExpression(treeEq, id) : null;
 
-  /** The constant part of an addend — what its coefficient handle divides by */
-  const coefExprOf = (id: string): TNode | null => {
-    // a factor-precise handle (L0@n2, L0@N) divides by exactly that unit
-    if (id.includes("@")) {
-      const f = treeFactorOf(id);
-      return f ? f.expr : null;
-    }
-    const a = treeAddend(id);
-    if (!a) return null;
-    const { num, den, core } = splitCoef(a);
-    const constParts = core.filter((f) => varsIn(f).size === 0);
-    const parts: TNode[] = [
-      ...(Math.abs(num) === 1 && den === 1 ? [] : [tc(Math.abs(num), den)]),
-      ...constParts,
-    ];
-    if (parts.length === 0) return null;
-    return simplifyTree(parts.length === 1 ? parts[0] : tmul(...parts));
-  };
+  const coefExprOf = (id: string): TNode | null =>
+    treeEq ? treeCoefficientExpression(treeEq, id) : null;
 
   /** Resolve through the same factor layout used by TreeSideView. */
   const treeFactorOf = (id: string): { expr: TNode; zone: "n" | "d" } | null => {
     return treeEq ? resolveTreeFactor(treeEq, id) : null;
   };
 
-  const computeTreeDrop = (payload: DragPayload, target: DropTarget): TreeMoveResult => {
-    if (!treeEq) return null;
-    if (payload.kind === "tool") {
-      if (target.kind === "onterm")
-        return "rebuilding single terms arrives with the full tree grammar — click the symbol to apply it to both sides";
-      return applyToolT(payload.tool, treeEq);
-    }
-    if (payload.kind === "factorGroup") {
-      const group = resolveTreeFactorGroup(treeEq, payload.ids);
-      if (!group) return "select factors from one product row — numerator and denominator chunks move separately";
-      const text = printNode(group.expr);
-      if (group.zone === "n") {
-        if (target.kind === "under" || target.kind === "side") return divideBothT(treeEq, group.expr, text);
-        return null;
-      }
-      if (target.kind === "under") return "a denominator group multiplies — drop it beside the other side";
-      if (target.kind === "side") return multiplyBothT(treeEq, group.expr, text);
-      return null;
-    }
-    if (target.kind === "unit" && (payload.kind === "numer" || payload.kind === "den" || payload.kind === "coef")) {
-      // dropping a factor onto its reciprocal counterpart cancels the pair
-      const mine = treeFactorOf(payload.termId);
-      const theirs = treeFactorOf(target.unitId);
-      if (!mine || !theirs) return null;
-      if (keyOf(simplifyTree(mine.expr)) !== keyOf(simplifyTree(theirs.expr))) {
-        return "only an identical pair cancels — these factors don't match";
-      }
-      if (payload.termId.split("@")[0] !== target.unitId.split("@")[0]) {
-        return "cancel within one term — these factors live in different terms";
-      }
-      return cancelFactorT(treeEq, payload.termId.split("@")[0], mine.expr, printNode(mine.expr));
-    }
-    if (payload.kind === "coef") {
-      const expr = coefExprOf(payload.termId);
-      if (!expr) return null;
-      return divideBothT(treeEq, expr, printNode(expr));
-    }
-    if (payload.kind === "xdiv") {
-      // Legacy tree links used @x/@y variable handles. New tree products use
-      // the same @n factor contract for variables and composite expressions.
-      const v = payload.termId.split("@")[1] as Variable | undefined;
-      if (!v) return null;
-      if (target.kind === "under" || target.kind === "side") return divideBothT(treeEq, tv(v), v);
-      return null;
-    }
-    if (payload.kind === "numer") {
-      // a numerator factor (or the whole numerator product) is a multiplier:
-      // moving it across divides both sides by it
-      const f = treeFactorOf(payload.termId);
-      if (!f) return null;
-      if (target.kind === "under" || target.kind === "side")
-        return divideBothT(treeEq, f.expr, printNode(f.expr));
-      return null;
-    }
-    if (payload.kind === "lnbase") {
-      // the e of e^u dragged across: take ln of both sides
-      if (target.kind === "under" || target.kind === "side") return applyToolT("ln", treeEq);
-      return null;
-    }
-    if (payload.kind === "root") {
-      // the exponent n dragged across: take the n-th root of both sides
-      if (payload.n < 2) return null;
-      if (target.kind === "under" || target.kind === "side") return rootBothT(treeEq, payload.n);
-      return null;
-    }
-    if (payload.kind === "raise") {
-      // the exponent 1/n dragged across: raise both sides to the n-th power
-      if (payload.n < 2) return null;
-      if (target.kind === "under" || target.kind === "side") return raiseBothT(treeEq, payload.n);
-      return null;
-    }
-    if (payload.kind === "den") {
-      // a denominator factor multiplies both sides — its nonzero-ness is
-      // already part of the equation's own domain
-      const f = treeFactorOf(payload.termId);
-      if (!f) return null;
-      if (target.kind === "under") return "a denominator multiplies — drop it beside the other side";
-      if (target.kind === "side") return multiplyBothT(treeEq, f.expr, printNode(f.expr));
-      return null;
-    }
-    if (payload.kind === "terms") {
-      if (target.kind === "under") {
-        const a = treeAddend(payload.ids[0]);
-        if (!a) return null;
-        return divideBothT(treeEq, a, printNode(a));
-      }
-      if (target.kind === "side") return moveTermsT(treeEq, payload.ids, payload.from, target.side);
-      return null;
-    }
-    return null;
-  };
+  const computeTreeDrop = (payload: DragPayload, target: DropTarget): TreeMoveResult =>
+    treeEq ? computeTreeOperation(treeEq, payload, target) : null;
 
   /** The unit(s) the user grabbed, so the replay can pulse them (tree steps
    *  have no traveling actor — this is their fixation cue). */
@@ -3174,17 +3020,9 @@ const EquationBuilderTool = () => {
     o.story ? o : { ...o, story: emphasisStory(payload) };
 
   const commitTreeOutcome = (o: TreeOutcome) => {
-    if (o.flatNext) {
-      // the escape hatch: the equation fits the flat model again — the full
-      // move grammar takes over from here
-      setTreeEq(null);
-      setEquation(o.flatNext);
-      setHistory((h) => [...h, makeStep(o.label, o.flatNext!, o.dangerous, o.note, o.pill, o.story)]);
-    } else if (o.treeNext) {
-      setTreeEq(o.treeNext);
-      setEquation(TREE_DUMMY());
-      setHistory((h) => [...h, makeTreeStep(o.label, o.treeNext!, o.dangerous, o.note, o.pill, o.story)]);
-    }
+    setTreeEq(o.treeNext);
+    setEquation(TREE_DUMMY());
+    setHistory((h) => [...h, makeTreeStep(o.label, o.treeNext, o.dangerous, o.note, o.pill, o.story)]);
     setSelection(null);
     setNotice(null);
   };
@@ -3214,9 +3052,7 @@ const EquationBuilderTool = () => {
       const text =
         "next" in result
           ? equationText(result.next)
-          : result.flatNext
-            ? equationText(result.flatNext)
-            : printTreeEq(result.treeNext!);
+          : printTreeEq(result.treeNext);
       setDragPreview({ kind: "ok", text });
     }
   };
@@ -3231,6 +3067,9 @@ const EquationBuilderTool = () => {
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
   const pointerDragRef = useRef<{
     payload: DragPayload;
+    tapFactorId: string | null;
+    tapSide: Side | null;
+    tapAdditive: boolean;
     started: boolean;
     x0: number;
     y0: number;
@@ -3373,7 +3212,7 @@ const EquationBuilderTool = () => {
         eq.querySelectorAll<HTMLElement>("[data-symbol][data-role='numer'],[data-symbol][data-role='den'],[data-symbol][data-role='coef']")
       )) {
         const id = el.dataset.termId ?? "";
-        if (!id.includes("@") || id === payload.termId) continue;
+        if (!isAtomicTreeFactorId(id) || id === payload.termId) continue;
         if (zoneOfRole(el.dataset.role) === myZone) continue; // cancellation crosses the bar
         const r = el.getBoundingClientRect();
         if (x >= r.left - 4 && x <= r.right + 4 && y >= r.top - 4 && y <= r.bottom + 4) {
@@ -3472,12 +3311,20 @@ const EquationBuilderTool = () => {
     finishDrag();
   };
 
-  const beginDrag = (payload: DragPayload, e: ReactPointerEvent) => {
+  const beginDrag = (payload: DragPayload, e: ReactPointerEvent, sourceSymbol?: HTMLElement) => {
     const captureEl = e.currentTarget as HTMLElement;
     const pointerId = e.pointerId;
+    const tapFactorId = treeEq
+      ? (sourceSymbol?.closest<HTMLElement>("[data-factor-handle]")?.dataset.factorHandle ?? null)
+      : null;
     capturePointer(captureEl, pointerId);
     pointerDragRef.current = {
       payload,
+      tapFactorId,
+      tapSide: tapFactorId ? ((sourceSymbol?.dataset.side ?? null) as Side | null) : null,
+      // Touch has no modifier key: successive taps build a coherent chunk.
+      // Desktop keeps the familiar Ctrl/Cmd toggle, while a plain tap selects.
+      tapAdditive: e.pointerType === "touch" || e.ctrlKey || e.metaKey,
       started: false,
       x0: e.clientX,
       y0: e.clientY,
@@ -3512,6 +3359,10 @@ const EquationBuilderTool = () => {
       if (st?.started) {
         const target = findTarget(ev.clientX, ev.clientY, st.payload);
         if (target) performDrop(st.payload, target);
+      } else if (st?.tapFactorId && st.tapSide && treeEq) {
+        setSelection((current) =>
+          toggleTreeFactorSelection(treeEq, current, st.tapSide!, st.tapFactorId!, st.tapAdditive)
+        );
       }
       if (st) releasePointer(st.captureEl, st.pointerId);
       finishPointerDrag();

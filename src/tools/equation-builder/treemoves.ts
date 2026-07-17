@@ -4,32 +4,32 @@
  * identity (cancel x/x, undo a √ by squaring, e^(ln u) → u) can ONLY happen
  * here, never in the simplifier, and never without declaring itself.
  *
- * After every move the result tries to re-enter the flat model (flatNext):
- * the moment an equation becomes flat-representable it drops back into the
- * full flat game with all its moves.
+ * Every move returns the canonical tree model. Legacy flat equations are
+ * converted at the input/share boundary and never re-enter runtime dispatch.
  */
-import { combine, leaf, type EquationState, type Side } from "./model";
+import type { Side } from "./model";
 import type { MoveStory } from "./share";
+import { treeAddendById } from "./treeunits";
 import {
   TNode,
   TreeEq,
   addendsOf,
   constValue,
+  ensureTreeEqIds,
   keyOf,
   printNode,
   sideFromAddends,
   simplify,
+  tadd,
   tc,
   tfn,
   tmul,
   tpow,
-  treeSideToFlat,
   varsIn,
 } from "./tree";
 
 export interface TreeOutcome {
-  treeNext: TreeEq | null;
-  flatNext: EquationState | null;
+  treeNext: TreeEq;
   label: string;
   dangerous?: boolean;
   note?: string;
@@ -40,7 +40,7 @@ export interface TreeOutcome {
 
 export type TreeMoveResult = TreeOutcome | string | null;
 
-/** Simplify both sides, then try the escape hatch back to the flat model */
+/** Simplify both sides and return one uniquely identified canonical tree. */
 export function finalize(
   left: TNode,
   right: TNode,
@@ -61,26 +61,11 @@ export function finalize(
   }
   const l = simplify(tl.node);
   const r = simplify(tr.node);
-  const fl = treeSideToFlat(l);
-  const fr = treeSideToFlat(r);
-  if (fl && fr) {
-    return {
-      treeNext: null,
-      flatNext: { left: combine(fl.length ? fl : [leaf(0)]), right: combine(fr.length ? fr : [leaf(0)]) },
-      label,
-      ...extra,
-    };
-  }
-  return { treeNext: { left: l, right: r }, flatNext: null, label, ...extra };
+  return { treeNext: ensureTreeEqIds({ left: l, right: r }), label, ...extra };
 }
 
-const addendAt = (te: TreeEq, id: string): { node: TNode; side: Side; index: number } | null => {
-  const side: Side = id.startsWith("L") ? "left" : "right";
-  const index = parseInt(id.slice(1), 10); // ids may carry a handle suffix (L0@x)
-  const list = addendsOf(te[side]);
-  if (!Number.isInteger(index) || index < 0 || index >= list.length) return null;
-  return { node: list[index], side, index };
-};
+const addendAt = (te: TreeEq, id: string): { node: TNode; side: Side; index: number } | null =>
+  treeAddendById(te, id);
 
 /** Move addends across the equals sign — negate and carry. Unconditional. */
 export function moveTermsT(te: TreeEq, ids: string[], from: Side, to: Side): TreeMoveResult {
@@ -186,11 +171,11 @@ export function thawExpLn(n: TNode): { node: TNode; thawed: string[] } {
       case "var":
         return m;
       case "add":
-        return { kind: "add", terms: m.terms.map(walk) };
+        return { id: m.id, kind: "add", terms: m.terms.map(walk) };
       case "mul":
-        return { kind: "mul", factors: m.factors.map(walk) };
+        return { id: m.id, kind: "mul", factors: m.factors.map(walk) };
       case "pow":
-        return { kind: "pow", base: walk(m.base), exp: walk(m.exp) };
+        return { id: m.id, kind: "pow", base: walk(m.base), exp: walk(m.exp) };
       case "fn": {
         const arg = walk(m.arg);
         if (m.fn === "exp") {
@@ -205,12 +190,12 @@ export function thawExpLn(n: TNode): { node: TNode; thawed: string[] } {
             lnArgs.forEach((u) => thawed.push(printNode(u)));
             const factors: TNode[] = [...lnArgs];
             if (rest.length > 0) {
-              factors.push(tfn("exp", rest.length === 1 ? rest[0] : { kind: "add", terms: rest }));
+              factors.push(tfn("exp", rest.length === 1 ? rest[0] : tadd(...rest)));
             }
             return factors.length === 1 ? factors[0] : tmul(...factors);
           }
         }
-        return { kind: "fn", fn: m.fn, arg };
+        return { id: m.id, kind: "fn", fn: m.fn, arg };
       }
     }
   };
@@ -251,7 +236,7 @@ export function normalizeOnLoad(te: TreeEq): { te: TreeEq; pill?: string; note?:
   if (thawed.length > 0) pills.push(`${thawed.join(", ")} > 0`);
   const unique = Array.from(new Set(pills));
   return {
-    te: { left: simplify(tl.node), right: simplify(tr.node) },
+    te: ensureTreeEqIds({ left: simplify(tl.node), right: simplify(tr.node) }),
     pill: unique.length ? unique.join(", ") : undefined,
     note: unique.length ? "simplified on load — the assumptions it needs are recorded on this step" : undefined,
     changed: unique.length > 0,
