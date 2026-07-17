@@ -10,7 +10,8 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseEquation } from "../src/tools/equation-builder/parse";
-import { addendsOf, type TNode, simplify, tadd, tc, tfn, tmul, tnamed, tpow, tv } from "../src/tools/equation-builder/tree";
+import { addendsOf, type TNode, printNode, simplify, tadd, tc, tfn, tmul, tnamed, tpow, tv } from "../src/tools/equation-builder/tree";
+import type { FactorizationHintView } from "../src/tools/equation-builder/treeview";
 import { isAtomicTreeFactorId, treeFactorLayout } from "../src/tools/equation-builder/treeunits";
 
 let pass = 0;
@@ -56,7 +57,7 @@ async function main() {
     node: TNode,
     side: "left" | "right",
     selectedIds: string[] | null = null,
-    rewriteHintIds: string[] | null = null
+    factorizationHints: ReadonlyMap<string, FactorizationHintView> | null = null
   ) =>
     renderToStaticMarkup(
       React.createElement(TreeSideView, {
@@ -64,9 +65,23 @@ async function main() {
         side,
         hoveredTermId: null,
         selectedIds,
-        rewriteHintIds,
+        factorizationHints,
         onHover: () => undefined,
       })
+    );
+  const hintMap = (...hints: Array<{ before: TNode; after: TNode; label?: string }>) =>
+    new Map<string, FactorizationHintView>(
+      hints.map(({ before, after, label = "factor the expression" }) => [
+        before.id,
+        {
+          nodeId: before.id,
+          label,
+          before: printNode(before),
+          after: printNode(after),
+          onApply: () => undefined,
+          onDismiss: () => undefined,
+        },
+      ])
     );
 
   const reported = parseEquation("e^3*x = sin(y)*e^5/sqrt(3)");
@@ -222,12 +237,30 @@ async function main() {
     JSON.stringify({ handles: handlesIn(nestedSpecialHtml), specials: nestedSpecials })
   );
 
-  const rewriteExpr = simplify(tmul(tc(2), tadd(tv("x"), tc(3))));
-  const hintedHtml = renderSide(rewriteExpr, "left", null, [rewriteExpr.id]);
+  const variableExpHtml = renderSide(tfn("exp", tmul(tc(-1), tv("x"))), "right");
   check(
-    "S16 rewrite hints decorate structure without minting a drag handle",
-    hintedHtml.includes("data-rewrite-node=") &&
-      handlesIn(hintedHtml).length === handlesIn(renderSide(rewriteExpr, "left")).length,
+    "S16 e^(-x) keeps the e action above its passive exponent layer",
+    variableExpHtml.includes("data-special-hitbox=\"true\"") &&
+      variableExpHtml.includes("data-exponent-layer=\"passive\"") &&
+      variableExpHtml.includes("pointer-events-none") &&
+      specialAnchorsIn(variableExpHtml).some((special) => special.action === "ln"),
+    variableExpHtml
+  );
+
+  const factorableExpr = simplify(tadd(tmul(tc(2), tv("x")), tc(6)));
+  const factoredExpr = simplify(tmul(tc(2), tadd(tv("x"), tc(3))));
+  const hintedHtml = renderSide(
+    factorableExpr,
+    "left",
+    null,
+    hintMap({ before: factorableExpr, after: factoredExpr, label: "factor out the common term" })
+  );
+  check(
+    "S17 factorization cards sit above structure without minting a drag handle",
+    hintedHtml.includes("data-factorization-overlay=") &&
+      hintedHtml.includes("data-factorization-target=") &&
+      hintedHtml.includes('aria-label="Dismiss factorization suggestion"') &&
+      handlesIn(hintedHtml).length === handlesIn(renderSide(factorableExpr, "left")).length,
     hintedHtml
   );
 
@@ -237,12 +270,15 @@ async function main() {
     tadd(repeatedFirst, repeatedSecond),
     "left",
     null,
-    [repeatedFirst.id, repeatedSecond.id]
+    hintMap(
+      { before: repeatedFirst, after: simplify(tadd(tmul(tc(2), tv("x")), tc(6))) },
+      { before: repeatedSecond, after: simplify(tadd(tmul(tc(2), tv("x")), tc(6))) }
+    )
   );
   check(
-    "S17 identical-looking hints retain distinct semantic node ids",
-    repeatedHtml.includes(`data-rewrite-node="${repeatedFirst.id}"`) &&
-      repeatedHtml.includes(`data-rewrite-node="${repeatedSecond.id}"`),
+    "S18 identical-looking factorization cards retain distinct semantic node ids",
+    repeatedHtml.includes(`data-factorization-target="${repeatedFirst.id}"`) &&
+      repeatedHtml.includes(`data-factorization-target="${repeatedSecond.id}"`),
     repeatedHtml
   );
 

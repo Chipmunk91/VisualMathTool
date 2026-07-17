@@ -19,12 +19,21 @@ interface Ctx {
   side: Side;
   onHover: (id: string | null) => void;
   selectedIds?: ReadonlySet<string>;
-  /** Stable node ids with optional rewrite suggestions (Hints toggle). */
-  rewriteHintIds?: ReadonlySet<string>;
+  /** Opt-in factorization cards, addressed by stable semantic node id. */
+  factorizationHints?: ReadonlyMap<string, FactorizationHintView>;
   /** inside a factor handle: the handle is the one grab box, glyphs go quiet */
   inert?: boolean;
   /** Stable semantic owner for tap actions inside a display projection. */
   actionOwnerId?: string;
+}
+
+export interface FactorizationHintView {
+  nodeId: string;
+  label: string;
+  before: string;
+  after: string;
+  onApply: () => void;
+  onDismiss: () => void;
 }
 
 const TSym = ({
@@ -157,12 +166,13 @@ const SpecialActionAnchor = ({
   children: ReactNode;
 }) => (
   <span
+    data-special-hitbox
     data-special-action={action}
     data-special-node={nodeId}
     data-side={ctx.side}
     data-special-n={n}
     title={title}
-    className={`-m-[0.14em] cursor-pointer select-none p-[0.14em] transition-colors duration-150 hover:text-amber-500 ${className}`}
+    className={`relative z-20 -m-[0.14em] inline-flex cursor-pointer select-none items-center justify-center p-[0.14em] transition-colors duration-150 hover:text-amber-500 ${className}`}
   >
     {children}
   </span>
@@ -422,7 +432,12 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
             >
               e
             </SpecialActionAnchor>
-            <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
+            <span
+              data-exponent-layer={rootN === null ? "passive" : "action"}
+              className={`mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none ${
+                rootN === null ? "pointer-events-none" : "relative z-30"
+              }`}
+            >
               {rootN !== null ? (
                 <SpecialActionAnchor
                   ctx={ctx}
@@ -497,22 +512,71 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
   }
 }
 
-/** Decorate exactly the subtree a rewrite candidate matched, without making
- * the decoration another drag hitbox. */
+/**
+ * A detected factorization is deliberately a layer above the algebra rather
+ * than another algebra hitbox. The card applies the rewrite; dismissing it
+ * removes the whole layer so the underlying term is immediately available to
+ * the existing drag/tap engine again.
+ */
+const FactorizationDecoration = ({
+  hint,
+  side,
+  children,
+}: {
+  hint: FactorizationHintView;
+  side: Side;
+  children: ReactNode;
+}) => (
+  <span
+    data-factorization-target={hint.nodeId}
+    data-factorization-side={side}
+    className="relative z-[60] inline-flex rounded-md outline outline-1 outline-dashed outline-sky-400/70 outline-offset-2"
+  >
+    {children}
+    <span className="pointer-events-none absolute -right-1.5 -top-2 font-sans text-[0.22em] leading-none text-sky-500">
+      ✦
+    </span>
+    <span
+      data-ui
+      data-factorization-overlay={hint.nodeId}
+      role="group"
+      aria-label={`Factorization suggestion: ${hint.label}`}
+      className="absolute bottom-[calc(100%+0.65rem)] left-1/2 z-[80] w-[min(20rem,calc(100vw-2rem))] -translate-x-1/2 whitespace-normal rounded-2xl border border-sky-200 bg-card p-1.5 font-sans text-sm font-normal leading-normal tracking-normal text-foreground shadow-xl dark:border-sky-900"
+    >
+      <button
+        type="button"
+        aria-label={`Apply factorization: ${hint.label}`}
+        onClick={hint.onApply}
+        className="flex min-h-14 w-full flex-col justify-center rounded-xl px-3 py-2 pr-12 text-left transition-colors hover:bg-sky-50 active:bg-sky-50 dark:hover:bg-sky-950/30 dark:active:bg-sky-950/30"
+      >
+        <span className="font-semibold text-sky-700 dark:text-sky-300">{hint.label}</span>
+        <span className="mt-0.5 font-serif text-xs text-muted-foreground">
+          {hint.before} → {hint.after}
+        </span>
+      </button>
+      <button
+        type="button"
+        aria-label="Dismiss factorization suggestion"
+        title="Dismiss this factorization suggestion"
+        onClick={(event) => {
+          event.stopPropagation();
+          hint.onDismiss();
+        }}
+        className="absolute right-1.5 top-1.5 flex min-h-11 min-w-11 items-center justify-center rounded-xl text-xl leading-none text-muted-foreground transition-colors hover:bg-muted hover:text-foreground active:bg-muted"
+      >
+        ×
+      </button>
+    </span>
+  </span>
+);
+
+/** Decorate exactly the subtree a factorization candidate matched. */
 function TN(props: { node: TNode; ctx: Ctx; coefZone?: boolean }): ReactNode {
   const content = TNContent(props);
-  if (!props.ctx.rewriteHintIds?.has(props.node.id)) return content;
-  return (
-    <span
-      data-rewrite-node={props.node.id}
-      data-rewrite-side={props.ctx.side}
-      title="Tap to inspect a suggested rewrite"
-      className="relative inline-flex rounded-md outline outline-1 outline-dashed outline-sky-400/70 outline-offset-2"
-    >
-      {content}
-      <span className="pointer-events-none absolute -right-1.5 -top-2 font-sans text-[0.22em] leading-none text-sky-500">✦</span>
-    </span>
-  );
+  const hint = props.ctx.factorizationHints?.get(props.node.id);
+  return hint ? (
+    <FactorizationDecoration hint={hint} side={props.ctx.side}>{content}</FactorizationDecoration>
+  ) : content;
 }
 
 export function TreeSideView({
@@ -520,43 +584,32 @@ export function TreeSideView({
   side,
   hoveredTermId,
   selectedIds,
-  rewriteHintIds,
+  factorizationHints,
   onHover,
 }: {
   node: TNode;
   side: Side;
   hoveredTermId: string | null;
   selectedIds: string[] | null;
-  rewriteHintIds?: string[] | null;
+  factorizationHints?: ReadonlyMap<string, FactorizationHintView> | null;
   onHover: (id: string | null) => void;
 }) {
   const addends = addendsOf(node);
   const selectedSet = new Set(selectedIds ?? []);
-  const hintSet = new Set(rewriteHintIds ?? []);
   if (addends.length === 0) {
-    const ctx: Ctx = { id: node.id, side, onHover, selectedIds: selectedSet, rewriteHintIds: hintSet };
+    const ctx: Ctx = { id: node.id, side, onHover, selectedIds: selectedSet, factorizationHints: factorizationHints ?? undefined };
     return (
       <span className="inline-flex items-center">
         <TSym ctx={ctx}>0</TSym>
       </span>
     );
   }
-  const rootRewriteId = node.kind === "add" && hintSet.has(node.id) ? node.id : null;
-  return (
-    <span
-      data-rewrite-node={rootRewriteId || undefined}
-      data-rewrite-side={rootRewriteId ? side : undefined}
-      title={rootRewriteId ? "Tap to inspect a suggested rewrite" : undefined}
-      className={`relative inline-flex items-center ${
-        rootRewriteId ? "rounded-md outline outline-1 outline-dashed outline-sky-400/70 outline-offset-2" : ""
-      }`}
-    >
-      {rootRewriteId && (
-        <span className="pointer-events-none absolute -right-1.5 -top-2 font-sans text-[0.22em] leading-none text-sky-500">✦</span>
-      )}
+  const rootHint = node.kind === "add" ? factorizationHints?.get(node.id) : undefined;
+  const expression = (
+    <span className="relative inline-flex items-center">
       {addends.map((a, i) => {
         const id = a.id;
-        const ctx: Ctx = { id, side, onHover, selectedIds: selectedSet, rewriteHintIds: hintSet };
+        const ctx: Ctx = { id, side, onHover, selectedIds: selectedSet, factorizationHints: factorizationHints ?? undefined };
         const { neg, body } = signSplit(a);
         const highlighted = hoveredTermId === id || (selectedIds?.includes(id) ?? false);
         return (
@@ -584,4 +637,7 @@ export function TreeSideView({
       })}
     </span>
   );
+  return rootHint ? (
+    <FactorizationDecoration hint={rootHint} side={side}>{expression}</FactorizationDecoration>
+  ) : expression;
 }

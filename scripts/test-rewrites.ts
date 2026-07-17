@@ -1,11 +1,12 @@
 /**
  * Tests for the rewrite-suggestion engine (src/tools/equation-builder/rewrites.ts).
- * The engine powers the opt-in Hints UI; this suite verifies its pure layer.
+ * Product UI currently exposes the factoring subset; this suite verifies the
+ * complete pure rewrite engine independently of presentation.
  *
  * Run: npx tsx scripts/test-rewrites.ts
  */
 import { tc, tv, tadd, tmul, tpow, tfn, simplify, printNode, evalNode, type TNode } from "../src/tools/equation-builder/tree";
-import { detectRewrites, applyRewrite, verifyRewrite, describeRewrite, type Rewrite } from "../src/tools/equation-builder/rewrites";
+import { detectRewrites, detectFactorizationsEq, applyRewrite, verifyRewrite, describeRewrite, type Rewrite } from "../src/tools/equation-builder/rewrites";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, detail?: string) => {
@@ -90,6 +91,20 @@ console.log("\n== detection: identity rewrites (with pills) ==");
   const rs = detectRewrites(n);
   const r = rs.find((x) => x.kind === "identity");
   check("cos(−x) offers cos x (even)", !!r && printNode(simplify(r.after)) === "cos(x)", r ? describeRewrite(r) : "none");
+}
+
+console.log("\n== focused product surface ==");
+{
+  const te = {
+    left: tmul(tc(2), tadd(tv("x"), tc(3))),
+    right: tadd(tpow(tv("x"), 2), tmul(tc(3), tv("x")), tc(2)),
+  };
+  const candidates = detectFactorizationsEq(te);
+  check(
+    "factorization detection excludes expansion and identity suggestions",
+    candidates.length > 0 && candidates.every(({ side, rewrite }) => side === "right" && rewrite.kind === "factor"),
+    candidates.map(({ side, rewrite }) => `${side}:${rewrite.kind}:${rewrite.label}`).join(" | ")
+  );
 }
 
 console.log("\n== application: apply and land the rewrite ==");

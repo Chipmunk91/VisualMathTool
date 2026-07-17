@@ -1,12 +1,13 @@
 /**
- * The rewrite-suggestion engine behind the opt-in Hints UI.
+ * The rewrite-suggestion engine behind opt-in algebra assistance.
  *
  * The simplifier deliberately leaves things factored (2(x+3) stays, products
  * don't FOIL, log/trig identities don't auto-apply) because those directions
  * are the STUDENT's choice, not a canonical form. This engine is the other
  * half: given a state, it DETECTS the rewrites available at each subtree —
  * expand ⇄ factor, and the conditional identity rewrites — and returns them as
- * candidates. The optional Hints UI offers them; the user takes them or not.
+ * candidates. Product UI can expose a focused subset (currently
+ * factorization detection); the user takes a rewrite or leaves it alone.
  *
  * Every candidate is value-preserving on its stated domain: the conditional
  * ones (log laws) carry a pill, exactly like the moves. `verifyRewrite` below
@@ -299,6 +300,11 @@ export function detectRewritesEq(te: TreeEq): { side: "left" | "right"; rewrite:
     ...detectRewrites(te.left).map((rewrite) => ({ side: "left" as const, rewrite })),
     ...detectRewrites(te.right).map((rewrite) => ({ side: "right" as const, rewrite })),
   ];
+}
+
+/** The focused product surface: detect factorable groups, not every rewrite. */
+export function detectFactorizationsEq(te: TreeEq): { side: "left" | "right"; rewrite: Rewrite }[] {
+  return detectRewritesEq(te).filter(({ rewrite }) => rewrite.kind === "factor");
 }
 
 /** Apply a candidate: replace the exact semantic occurrence that was offered. */
