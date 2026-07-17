@@ -64,6 +64,20 @@ const TREE_FN: Record<string, "sin" | "cos" | "tan" | "ln" | "exp" | "sqrt"> = {
   sqrt: "sqrt",
 };
 
+type VariableName = "x" | "y";
+
+/**
+ * mathjs reads pencil-style `xy` as one SymbolNode, not as implicit
+ * multiplication. Split it only when every character is a variable that the
+ * playground actually supports. This keeps names such as `velocity` invalid
+ * instead of silently assigning them an unintended algebraic meaning.
+ */
+function splitVariableProduct(name: string): VariableName[] | null {
+  if (name.length < 2) return null;
+  const names = Array.from(name);
+  return names.every((part): part is VariableName => part === "x" || part === "y") ? names : null;
+}
+
 function mathToTree(node: Node): TNode {
   const constant = tryConst(node);
   if (constant) return tc(constant.num, constant.den);
@@ -71,6 +85,10 @@ function mathToTree(node: Node): TNode {
     case "SymbolNode":
       if (node.name === "x" || node.name === "y") return tv(node.name);
       if (node.name === "pi" || node.name === "π") return tnamed("pi");
+      {
+        const variables = splitVariableProduct(node.name);
+        if (variables) return tmul(...variables.map(tv));
+      }
       throw new Unsupported(`the constant "${node.name}" isn't playable yet`);
     case "ParenthesisNode":
       return mathToTree(node.content);
@@ -89,6 +107,17 @@ function mathToTree(node: Node): TNode {
       if (node.op === "*") return tmul(mathToTree(a), mathToTree(b));
       if (node.op === "/") return tmul(mathToTree(a), tpow(mathToTree(b), -1));
       if (node.op === "^") {
+        // In pencil notation xy² means x·y²; only explicit (xy)² raises the
+        // complete product. mathjs otherwise gives both forms the same
+        // SymbolNode-shaped base after parsing, so preserve that distinction
+        // before unwrapping parentheses.
+        if (a.type === "SymbolNode") {
+          const variables = splitVariableProduct(a.name);
+          if (variables) {
+            const last = variables[variables.length - 1];
+            return tmul(...variables.slice(0, -1).map(tv), tpow(tv(last), mathToTree(b)));
+          }
+        }
         const base = unwrapParens(a);
         if (base.type === "SymbolNode" && base.name === "e") return tfn("exp", mathToTree(b));
         return tpow(mathToTree(a), mathToTree(b));
@@ -140,6 +169,21 @@ const PreviewNode = ({ node }: { node: Node }): ReactNode => {
       return <span>{String(node.value)}</span>;
     case "SymbolNode":
       if (node.name === "pi" || node.name === "π") return <span className="italic">π</span>;
+      {
+        const variables = splitVariableProduct(node.name);
+        if (variables) {
+          return (
+            <span className="inline-flex items-center">
+              {variables.map((variable, index) => (
+                <span key={`${variable}-${index}`} className="inline-flex items-center">
+                  {index > 0 && <span className="mx-1">·</span>}
+                  <span className="italic">{variable}</span>
+                </span>
+              ))}
+            </span>
+          );
+        }
+      }
       return <span className={isWordSymbol(node.name) ? "" : "italic"}>{node.name}</span>;
     case "ParenthesisNode":
       return (
@@ -221,6 +265,24 @@ const PreviewNode = ({ node }: { node: Node }): ReactNode => {
       }
       if (node.op === "^") {
         const exponent = b.type === "ParenthesisNode" ? b.content : b;
+        if (a.type === "SymbolNode") {
+          const variables = splitVariableProduct(a.name);
+          if (variables) {
+            const last = variables[variables.length - 1];
+            return (
+              <span className="inline-flex items-center">
+                {variables.slice(0, -1).map((variable, index) => (
+                  <span key={`${variable}-${index}`} className="inline-flex items-center">
+                    {index > 0 && <span className="mx-1">·</span>}
+                    <span className="italic">{variable}</span>
+                  </span>
+                ))}
+                <span className="mx-1">·</span>
+                <Sup base={<span className="italic">{last}</span>} exp={<PreviewNode node={exponent} />} />
+              </span>
+            );
+          }
+        }
         return <Sup base={<PreviewNode node={a} />} exp={<PreviewNode node={exponent} />} />;
       }
       return <span>{node.toString()}</span>;

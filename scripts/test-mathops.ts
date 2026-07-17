@@ -265,6 +265,34 @@ console.log("\n== L. search catalog integrity ==");
   }
 }
 
+console.log("\n== L2. pencil-style cross-variable products ==");
+{
+  const xy = parsedTree("xy = 1");
+  check("L2.1 xy parses as two multiplied variables", printTreeEq(xy) === "x·y = 1", printTreeEq(xy));
+  check("L2.2 yx canonicalizes to the same product", printTreeEq(parsedTree("yx = 1")) === "x·y = 1");
+  check("L2.3 a numeric coefficient works with juxtaposition", printTreeEq(parsedTree("2xy = 1")) === "2x·y = 1");
+  check("L2.4 repeated variables simplify recursively", printTreeEq(parsedTree("xxy = 1")) === "x²·y = 1");
+  check(
+    "L2.5 a power binds to the adjacent variable",
+    printTreeEq(parsedTree("xy^2 = 1")) === printTreeEq(parsedTree("x*y^2 = 1"))
+  );
+  check("L2.6 parentheses raise the complete product", printTreeEq(parsedTree("(xy)^2 = 1")) === "x²·y² = 1");
+  const unknown = parseEquation("velocity = 1");
+  check(
+    "L2.7 unknown multi-letter symbols remain unsupported",
+    !unknown.ok && unknown.stage === "convert" && unknown.message.includes('"velocity"')
+  );
+
+  const factorLayout = treeFactorLayout(xy.left.id, xy.left);
+  const xFactor = factorLayout.numerator.find((unit) => printNode(unit.expr) === "x");
+  const yFactor = factorLayout.numerator.find((unit) => printNode(unit.expr) === "y");
+  check("L2.8 x and y receive independent semantic factor handles", Boolean(xFactor && yFactor));
+  if (xFactor && yFactor) {
+    move("L2.9 moving x divides the other side", divideBothT(xy, xFactor.expr, "x"), "y = 1/x", "x ≠ 0");
+    move("L2.10 moving y divides the other side", divideBothT(xy, yFactor.expr, "y"), "x = 1/y", "y ≠ 0");
+  }
+}
+
 console.log("\n== M. symbol operations: displayed factor contract ==");
 {
   const inventory = (layout: ReturnType<typeof treeFactorLayout>) =>
