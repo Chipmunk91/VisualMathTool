@@ -79,7 +79,8 @@ function Cell({
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
       spellCheck={false}
-      className="w-10 select-text rounded bg-transparent text-center font-serif text-base outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60 sm:w-14 sm:text-lg"
+      inputMode="decimal"
+      className="w-12 select-text rounded bg-transparent py-1.5 text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60 sm:w-14 sm:py-0"
     />
   );
 }
@@ -98,7 +99,7 @@ function MatrixCells({
     <Bracketed>
       <div
         className="grid gap-x-1 gap-y-1 px-1.5 py-1"
-        style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+        style={{ gridTemplateColumns: `repeat(${cols}, max-content)` }}
       >
         {Array.from({ length: rows }, (_, row) =>
           Array.from({ length: cols }, (_, col) => {
@@ -565,7 +566,8 @@ function VectorCell({
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
       spellCheck={false}
-      className="w-10 select-text rounded bg-transparent text-center font-serif text-base outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60 sm:w-14 sm:text-lg"
+      inputMode="decimal"
+      className="w-12 select-text rounded bg-transparent py-1.5 text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60 sm:w-14 sm:py-0"
     />
   );
 }
