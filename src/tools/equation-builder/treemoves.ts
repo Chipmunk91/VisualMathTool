@@ -16,6 +16,7 @@ import {
   addendsOf,
   constValue,
   ensureTreeEqIds,
+  freshNodeId,
   keyOf,
   printNode,
   sideFromAddends,
@@ -30,6 +31,12 @@ import {
 
 export interface TreeOutcome {
   treeNext: TreeEq;
+  /**
+   * The literal paper state immediately after applying the operation, before
+   * canonical simplification. Replay renders this first so students can see
+   * what moved and only then see what cancelled or combined.
+   */
+  treeIntermediate?: TreeEq;
   label: string;
   dangerous?: boolean;
   note?: string;
@@ -45,23 +52,35 @@ export function finalize(
   left: TNode,
   right: TNode,
   label: string,
-  extra?: { dangerous?: boolean; note?: string; pill?: string }
+  extra?: { dangerous?: boolean; note?: string; pill?: string; assume?: Set<string> }
 ): TreeOutcome {
+  const intermediate = ensureTreeEqIds({ left, right });
+  const assume = extra?.assume;
+  let outcomeExtra: Omit<NonNullable<typeof extra>, "assume"> = {
+    dangerous: extra?.dangerous,
+    note: extra?.note,
+    pill: extra?.pill,
+  };
   // every move-produced state thaws e^(ln u) — with the assumption reported
-  const tl = thawExpLn(simplify(left));
-  const tr = thawExpLn(simplify(right));
+  const tl = thawExpLn(simplify(intermediate.left, assume));
+  const tr = thawExpLn(simplify(intermediate.right, assume));
   const thawed = Array.from(new Set([...tl.thawed, ...tr.thawed]));
   if (thawed.length > 0) {
     const thawNote = `e^(ln u) = u used — ${thawed.join(", ")} > 0 assumed`;
-    extra = {
+    outcomeExtra = {
       dangerous: true,
-      note: extra?.note ? `${extra.note}; ${thawNote}` : thawNote,
-      pill: extra?.pill ?? `${thawed.join(", ")} > 0`,
+      note: outcomeExtra.note ? `${outcomeExtra.note}; ${thawNote}` : thawNote,
+      pill: outcomeExtra.pill ?? `${thawed.join(", ")} > 0`,
     };
   }
-  const l = simplify(tl.node);
-  const r = simplify(tr.node);
-  return { treeNext: ensureTreeEqIds({ left: l, right: r }), label, ...extra };
+  const l = simplify(tl.node, assume);
+  const r = simplify(tr.node, assume);
+  return {
+    treeNext: ensureTreeEqIds({ left: l, right: r }),
+    treeIntermediate: intermediate,
+    label,
+    ...outcomeExtra,
+  };
 }
 
 const addendAt = (te: TreeEq, id: string): { node: TNode; side: Side; index: number } | null =>
@@ -77,7 +96,14 @@ export function moveTermsT(te: TreeEq, ids: string[], from: Side, to: Side): Tre
     .sort((a, b) => a.index - b.index);
   if (picks.length === 0) return null;
   const fromList = addendsOf(te[from]).filter((_, i) => !picks.some((p) => p.index === i));
-  const moved = picks.map((p) => simplify(tmul(tc(-1), p.node)));
+  // Keep the moved addend's semantic id at the new location. Its inner copy
+  // receives a fresh root id so the intermediate remains a valid tree with no
+  // duplicate occurrences. This is the actor link used by replay.
+  const moved = picks.map((p) => ({
+    id: p.node.id,
+    kind: "mul" as const,
+    factors: [tc(-1), { ...p.node, id: freshNodeId() }],
+  }));
   const toList = [...addendsOf(te[to]), ...moved];
   const text = picks.map((p) => printNode(p.node)).join(", ");
   const next: TreeEq = { ...te, [from]: sideFromAddends(fromList), [to]: sideFromAddends(toList) };
@@ -106,12 +132,13 @@ export function divideBothT(te: TreeEq, expr: TNode, exprText: string): TreeMove
   // cancel opposite powers of exactly its factors, and nothing else
   const assume = hasVars ? nonzeroKeys(expr) : undefined;
   const divide = (side: TNode): TNode =>
-    sideFromAddends(addendsOf(side).map((a) => simplify(tmul(a, tpow(expr, -1)), assume)));
+    sideFromAddends(addendsOf(side).map((a) => tmul(a, tpow(expr, -1))));
   const dividedZero = (side: TNode): TNode => (addendsOf(side).length === 0 ? tc(0) : divide(side));
   return finalize(dividedZero(te.left), dividedZero(te.right), `divided both sides by ${exprText}`, {
     dangerous: hasVars,
     note: hasVars ? `only valid where ${exprText} ≠ 0 — a solution could hide there` : undefined,
     pill: hasVars ? `${exprText} ≠ 0` : undefined,
+    assume,
   });
 }
 
@@ -127,8 +154,8 @@ export function multiplyBothT(te: TreeEq, expr: TNode, exprText: string): TreeMo
   const times = (side: TNode): TNode =>
     addendsOf(side).length === 0
       ? tc(0)
-      : sideFromAddends(addendsOf(side).map((a) => simplify(tmul(a, expr), assume)));
-  return finalize(times(te.left), times(te.right), `multiplied both sides by ${exprText}`);
+      : sideFromAddends(addendsOf(side).map((a) => tmul(a, expr)));
+  return finalize(times(te.left), times(te.right), `multiplied both sides by ${exprText}`, { assume });
 }
 
 /**

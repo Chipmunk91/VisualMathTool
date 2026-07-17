@@ -81,6 +81,7 @@ import {
   type ToolKind,
 } from "./operations";
 import { toggleTreeFactorSelection, type SymbolSelection } from "./selection";
+import { treeActorDestinationTerm, treeAnimationStages, treeMoveStory } from "./treeanimation";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -224,6 +225,8 @@ interface Step {
   state: EquationState;
   /** Present when this step lives in the expression tree (frontier mode) */
   tree?: TreeEq;
+  /** Literal operation result before simplification; replay's paper state. */
+  intermediateTree?: TreeEq;
   /** how this step's move happened — drives the replay choreography */
   story?: MoveStory;
   text: string;
@@ -292,7 +295,15 @@ const makeStep = (
 /** A harmless flat placeholder while the equation lives in the tree */
 const TREE_DUMMY = (): EquationState => ({ left: [leaf(0)], right: [leaf(0)] });
 
-const makeTreeStep = (label: string, tree: TreeEq, dangerous?: boolean, note?: string, pill?: string, story?: MoveStory): Step => ({
+const makeTreeStep = (
+  label: string,
+  tree: TreeEq,
+  dangerous?: boolean,
+  note?: string,
+  pill?: string,
+  story?: MoveStory,
+  intermediateTree?: TreeEq
+): Step => ({
   id: stepCounter++,
   label,
   note,
@@ -301,6 +312,7 @@ const makeTreeStep = (label: string, tree: TreeEq, dangerous?: boolean, note?: s
   story,
   state: TREE_DUMMY(),
   tree: cloneTreeEq(tree),
+  intermediateTree: intermediateTree ? cloneTreeEq(intermediateTree) : undefined,
   text: printTreeEq(tree),
 });
 
@@ -580,6 +592,7 @@ const EquationBuilderTool = () => {
     /** which term this glyph belongs to, and its role — provenance anchors */
     term: string | null;
     role: string | null;
+    side: Side | null;
   }
 
   const snapshotGlyphs = (): Glyph[] => {
@@ -601,7 +614,8 @@ const EquationBuilderTool = () => {
         color: cs.color,
         isBar,
         term: owner?.dataset.termId ?? owner?.dataset.termWrap ?? null,
-        role: el.dataset.role ?? null,
+        role: el.dataset.role ?? owner?.dataset.role ?? null,
+        side: (owner?.dataset.side as Side | undefined) ?? null,
       });
     });
     return out;
@@ -715,6 +729,25 @@ const EquationBuilderTool = () => {
               actorNewByTerm.get(g.term)!.push(g);
             }
           });
+          // A tree factor's handle encodes its owner and fraction zone. After
+          // crossing the equals sign both legitimately change, even though the
+          // mathematical factor is the same. Match that destination as one
+          // semantic chunk by its glyph sequence on the named target side.
+          if (story?.to && actorClones.length > 0 && actorNewByTerm.size === 0) {
+            const destinationTerm = treeActorDestinationTerm(
+              actorClones.map((clone) => clone.g),
+              restNews,
+              story
+            );
+            const destination = destinationTerm
+              ? restNews.filter((glyph) => glyph.term === destinationTerm)
+              : null;
+            if (destination) {
+              actorClones.forEach((c) => {
+                if (c.g.term) actorNewByTerm.set(c.g.term, destination);
+              });
+            }
+          }
           const claimedNew = new Set<Glyph>();
 
           // pair followers by term id first, then by content, nearest-first
@@ -738,7 +771,7 @@ const EquationBuilderTool = () => {
             const usedHome = new Set<Glyph>();
             const leftoverClones: Clone[] = [];
             for (const c of termClones) {
-              const match = homes.find((h) => !usedHome.has(h) && h.key === c.g.key);
+              const match = homes.find((h) => !usedHome.has(h) && !claimedNew.has(h) && h.key === c.g.key);
               if (match) {
                 usedHome.add(match);
                 claimedNew.add(match);
@@ -928,7 +961,7 @@ const EquationBuilderTool = () => {
 
           let sinkTermId: string | null = null;
           if (!divideDest && consumedActors.length > 0 && actorUnion) {
-            if (story?.sink && oldTermText.has(story.sink) && newTermText.has(story.sink)) {
+            if (story?.sink && oldTermText.has(story.sink)) {
               // the script NAMES its sink — recorded by the operation itself
               sinkTermId = story.sink;
             } else if (mutatedTermIds.length > 0) {
@@ -1501,27 +1534,51 @@ const EquationBuilderTool = () => {
       let i = 0;
       const showStep = () => {
         const step = h[i];
-        if (capturingRef.current && i > 0) {
-          captureLabelRef.current = {
-            label: step.label,
-            from: h[i - 1].text,
-            to: step.text,
-          };
-        }
-        // the overlay takes the stage BEFORE the state switches — no blank frame
-        const retarget = i > 0 ? beginGlyphTransition(step.story) : null;
-        setEquation(TREE_DUMMY());
-        setTreeEq(step.tree ? cloneTreeEq(step.tree) : cloneTreeEq(BOOT_TREE));
-        setPlayIndex(i);
-        retarget?.();
-        if (i >= h.length - 1) {
-          playTimer.current = setTimeout(stopPlayback, 2200);
+        if (i === 0) {
+          setEquation(TREE_DUMMY());
+          setTreeEq(step.tree ? cloneTreeEq(step.tree) : cloneTreeEq(BOOT_TREE));
+          setPlayIndex(0);
+          i++;
+          playTimer.current = setTimeout(showStep, 450);
           return;
         }
-        i++;
-        // the longest transition (divide, ~1660ms) plus a ~500ms breath
-        // between steps — replay pacing per spec §13
-        playTimer.current = setTimeout(showStep, 2200);
+        const finalTree = step.tree ? cloneTreeEq(step.tree) : cloneTreeEq(BOOT_TREE);
+        const stages = treeAnimationStages(finalTree, step.intermediateTree, step.story);
+        let stageIndex = 0;
+        const showStage = () => {
+          const stage = stages[stageIndex];
+          if (capturingRef.current) {
+            const from =
+              stageIndex === 0
+                ? h[i - 1].text
+                : printTreeEq(stages[stageIndex - 1].tree);
+            captureLabelRef.current = {
+              label: `${step.label} — ${stage.kind}`,
+              from,
+              to: printTreeEq(stage.tree),
+            };
+          }
+          // Snapshot the current paper state, switch the real DOM, then let
+          // the overlay carry it into the next state. A simplification stage
+          // starts only after the literal moved form has been readable.
+          const retarget = beginGlyphTransition(stage.story);
+          setEquation(TREE_DUMMY());
+          setTreeEq(cloneTreeEq(stage.tree));
+          setPlayIndex(i);
+          retarget();
+
+          const stageMs = stage.kind === "simplify" ? 760 : 1780;
+          if (stageIndex < stages.length - 1) {
+            stageIndex++;
+            playTimer.current = setTimeout(showStage, stageMs);
+          } else if (i >= h.length - 1) {
+            playTimer.current = setTimeout(stopPlayback, stageMs + 300);
+          } else {
+            i++;
+            playTimer.current = setTimeout(showStep, stageMs + 300);
+          }
+        };
+        showStage();
       };
       showStep();
       return h;
@@ -1538,6 +1595,7 @@ const EquationBuilderTool = () => {
         dangerous: s.dangerous,
         pill: s.pill,
         tree: s.tree ?? ensureTreeEqIds({ left: flatToTree(s.state.left), right: flatToTree(s.state.right) }),
+        intermediateTree: s.intermediateTree,
         story: s.story,
       })),
     });
@@ -1567,6 +1625,7 @@ const EquationBuilderTool = () => {
         story: s.story,
         state: TREE_DUMMY(),
         tree,
+        intermediateTree: s.intermediateTree ? cloneTreeEq(s.intermediateTree) : undefined,
         text: printTreeEq(tree),
       };
     });
@@ -3009,20 +3068,16 @@ const EquationBuilderTool = () => {
   const computeTreeDrop = (payload: DragPayload, target: DropTarget): TreeMoveResult =>
     treeEq ? computeTreeOperation(treeEq, payload, target) : null;
 
-  /** The unit(s) the user grabbed, so the replay can pulse them (tree steps
-   *  have no traveling actor — this is their fixation cue). */
-  const emphasisStory = (payload: DragPayload): MoveStory => {
-    const ids =
-      "ids" in payload ? payload.ids : "termId" in payload && payload.termId ? [payload.termId] : [];
-    return { actors: [], site: [], born: [], emphasize: ids.filter(Boolean) };
-  };
-  const withEmphasis = (o: TreeOutcome, payload: DragPayload): TreeOutcome =>
-    o.story ? o : { ...o, story: emphasisStory(payload) };
+  const withTreeStory = (o: TreeOutcome, payload: DragPayload, target: DropTarget): TreeOutcome =>
+    o.story || !treeEq ? o : { ...o, story: treeMoveStory(treeEq, payload, target) };
 
   const commitTreeOutcome = (o: TreeOutcome) => {
     setTreeEq(o.treeNext);
     setEquation(TREE_DUMMY());
-    setHistory((h) => [...h, makeTreeStep(o.label, o.treeNext, o.dangerous, o.note, o.pill, o.story)]);
+    setHistory((h) => [
+      ...h,
+      makeTreeStep(o.label, o.treeNext, o.dangerous, o.note, o.pill, o.story, o.treeIntermediate),
+    ]);
     setSelection(null);
     setNotice(null);
   };
@@ -3469,7 +3524,7 @@ const EquationBuilderTool = () => {
         flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
         return;
       }
-      commitTreeOutcome(withEmphasis(result, payload));
+      commitTreeOutcome(withTreeStory(result, payload, target));
       return;
     }
     if (!treeEq && payload.kind === "group" && (target.kind === "side" || target.kind === "under")) {
@@ -3479,7 +3534,7 @@ const EquationBuilderTool = () => {
         flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
         return;
       }
-      commitTreeOutcome(withEmphasis(result, payload));
+      commitTreeOutcome(withTreeStory(result, payload, target));
       return;
     }
     if (treeEq) {
@@ -3489,7 +3544,7 @@ const EquationBuilderTool = () => {
         flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
         return;
       }
-      commitTreeOutcome(withEmphasis(result, payload));
+      commitTreeOutcome(withTreeStory(result, payload, target));
       return;
     }
     const result = computeDrop(payload, target);
