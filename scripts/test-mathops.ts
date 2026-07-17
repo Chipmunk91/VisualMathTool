@@ -63,8 +63,7 @@ const outcomeText = (r: TreeMoveResult): string => {
   if (r === null) return "(null)";
   if (typeof r === "string") return `refusal: ${r}`;
   const o: TreeOutcome = r;
-  if (o.treeNext) return printTreeEq(o.treeNext);
-  return `${printNode(flatToTree(o.flatNext!.left))} = ${printNode(flatToTree(o.flatNext!.right))}`;
+  return printTreeEq(o.treeNext);
 };
 const move = (name: string, r: TreeMoveResult, want: string, wantPill?: string) => {
   const got = outcomeText(r);
@@ -77,10 +76,7 @@ const move = (name: string, r: TreeMoveResult, want: string, wantPill?: string) 
 const parsedTree = (text: string): TreeEq => {
   const parsed = parseEquation(text);
   if (!parsed.ok) throw new Error(`test equation did not parse: ${text} — ${parsed.message}`);
-  return parsed.tree ?? {
-    left: flatToTree(parsed.state.left),
-    right: flatToTree(parsed.state.right),
-  };
+  return parsed.tree;
 };
 const unitText = (te: TreeEq, id: string): string | null => {
   const unit = resolveTreeFactor(te, id);
@@ -151,9 +147,10 @@ simp("D7 x² does NOT silently become |x| under √", tpow(tpow(tv("x"), 2), tc(
 console.log("\n== E. tree moves: additive ==");
 {
   const te: TreeEq = { left: tadd(tv("x"), tc(3)), right: tc(7) };
-  move("E1 move +3 across: x + 3 = 7 → x = 4", moveTermsT(te, ["L1"], "left", "right"), "x = 4");
-  move("E2 move x across: → 3 = 7 − x", moveTermsT(te, ["L0"], "left", "right"), "3 = −x + 7");
-  check("E3 same-side move refuses", moveTermsT(te, ["L0"], "left", "left") === null);
+  const [xId, threeId] = addendsOf(te.left).map((addend) => addend.id);
+  move("E1 move +3 across: x + 3 = 7 → x = 4", moveTermsT(te, [threeId], "left", "right"), "x = 4");
+  move("E2 move x across: → 3 = 7 − x", moveTermsT(te, [xId], "left", "right"), "3 = −x + 7");
+  check("E3 same-side move refuses", moveTermsT(te, [xId], "left", "left") === null);
 }
 
 console.log("\n== F. tree moves: multiplicative ==");
@@ -195,14 +192,15 @@ console.log("\n== I. cancellation: the gesture the simplifier refuses silently =
   const xp2 = tadd(tv("x"), tc(2));
   const redundant: TreeEq = { left: tmul(xp2, tpow(xp2, -1)), right: tv("y") };
   simp("I1 (x+2)/(x+2) honestly STAYS in the simplifier", tmul(xp2, tpow(xp2, -1)), "((x + 2))/((x + 2))");
-  const cancelled = cancelFactorT(redundant, "L0", xp2, "x + 2");
+  const cancelled = cancelFactorT(redundant, addendsOf(redundant.left)[0].id, xp2, "x + 2");
   move("I2 the cancel gesture resolves it, pilled", cancelled, "1 = y", "x + 2 ≠ 0");
-  const mismatch = cancelFactorT({ left: tmul(xp2, tpow(tfn("sin", tv("x")), -1)), right: tv("y") }, "L0", xp2, "x + 2");
+  const mismatchEq = { left: tmul(xp2, tpow(tfn("sin", tv("x")), -1)), right: tv("y") };
+  const mismatch = cancelFactorT(mismatchEq, addendsOf(mismatchEq.left)[0].id, xp2, "x + 2");
   check("I3 a non-matching pair refuses", typeof mismatch === "string", String(mismatch));
   // constants (3/3) never persist — combine folds them — so the gesture
   // only ever fires on var-bearing pairs, always pilled
   const sinPair: TreeEq = { left: tmul(tfn("sin", tv("x")), tv("y"), tpow(tfn("sin", tv("x")), -1)), right: tc(2) };
-  const sinCancel = cancelFactorT(sinPair, "L0", tfn("sin", tv("x")), "sin(x)");
+  const sinCancel = cancelFactorT(sinPair, addendsOf(sinPair.left)[0].id, tfn("sin", tv("x")), "sin(x)");
   move("I4 sin(x)/sin(x) cancels with its pill", sinCancel, "y = 2", "sin(x) ≠ 0");
 }
 
@@ -269,42 +267,50 @@ console.log("\n== L. search catalog integrity ==");
 
 console.log("\n== M. symbol operations: displayed factor contract ==");
 {
+  const inventory = (layout: ReturnType<typeof treeFactorLayout>) =>
+    [...layout.numerator, ...layout.denominator].map((u) => `${u.role}:${printNode(u.expr)}`).join(" | ");
+  const unitByText = (layout: ReturnType<typeof treeFactorLayout>, text: string, zone?: "n" | "d") =>
+    [...layout.numerator, ...layout.denominator].find(
+      (unit) => printNode(unit.expr) === text && (!zone || unit.zone === zone)
+    );
+
   // Owner-reported regression: both right-side factors must be independently
-  // draggable, including e^5 (which used to contain overlapping ln/root boxes).
+  // draggable, while the exponent remains a nested structural action.
   const reported = parsedTree("e^3*x = sin(y)*e^5/sqrt(3)");
   check("M1 reported equation reaches the expected tree", printTreeEq(reported) === "e^3·x = (e^5·sin(y))/√(3)", printTreeEq(reported));
 
-  const left = treeFactorLayout("L0", addendsOf(reported.left)[0]);
-  const right = treeFactorLayout("R0", addendsOf(reported.right)[0]);
-  const inventory = (layout: ReturnType<typeof treeFactorLayout>) =>
-    [...layout.numerator, ...layout.denominator].map((u) => `${u.id}:${u.role}:${printNode(u.expr)}`).join(" | ");
+  const reportedLeft = addendsOf(reported.left)[0];
+  const reportedRight = addendsOf(reported.right)[0];
+  const left = treeFactorLayout(reportedLeft.id, reportedLeft);
+  const right = treeFactorLayout(reportedRight.id, reportedRight);
   check(
     "M2 every left product factor is its own unit",
-    inventory(left) === "L0@n0:coef:e^3 | L0@n1:numer:x",
+    inventory(left) === "coef:e^3 | numer:x",
     inventory(left)
   );
   check(
     "M3 function, exponential, and radical resolve independently",
-    inventory(right) === "R0@n0:coef:e^5 | R0@n1:numer:sin(y) | R0@d0:den:√(3)",
+    inventory(right) === "coef:e^5 | numer:sin(y) | den:√(3)",
     inventory(right)
   );
-  check("M4 the numerator gap resolves to the whole product", unitText(reported, "R0@N") === "e^5·sin(y)", unitText(reported, "R0@N") ?? "null");
+  const wholeRight = right.wholeNumerator?.id ?? "";
+  check("M4 the numerator gap resolves to the whole product", unitText(reported, wholeRight) === "e^5·sin(y)", unitText(reported, wholeRight) ?? "null");
   check("M5 old variable-specific ids are not minted by the factor contract", unitText(reported, "L0@x") === null);
 
-  const sinY = resolveTreeFactor(reported, "R0@n1")!;
+  const sinY = resolveTreeFactor(reported, unitByText(right, "sin(y)")!.id)!;
   move(
     "M6 move only sin(y)",
     divideBothT(reported, sinY.expr, printNode(sinY.expr)),
     "(e^3·x)/sin(y) = e^5/√(3)",
     "sin(y) ≠ 0"
   );
-  const e5 = resolveTreeFactor(reported, "R0@n0")!;
+  const e5 = resolveTreeFactor(reported, unitByText(right, "e^5")!.id)!;
   move(
     "M7 move only e^5",
     divideBothT(reported, e5.expr, printNode(e5.expr)),
     "e^(−2)·x = sin(y)/√(3)"
   );
-  const sqrt3 = resolveTreeFactor(reported, "R0@d0")!;
+  const sqrt3 = resolveTreeFactor(reported, unitByText(right, "√(3)", "d")!.id)!;
   move(
     "M8 move only denominator √3",
     multiplyBothT(reported, sqrt3.expr, printNode(sqrt3.expr)),
@@ -317,13 +323,14 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
     left: simplify(tmul(tc(-2), tfn("sin", tv("x")))),
     right: tv("y"),
   };
-  const signedLayout = treeFactorLayout("L0", signed.left);
+  const signedLayout = treeFactorLayout(signed.left.id, signed.left);
+  const signedCoef = signedLayout.numerator[0];
   check(
     "M9 a signed product's visible coefficient resolves to its magnitude",
-    printNode(signedLayout.numerator[0].expr) === "2" && unitText(signed, "L0@n0") === "2",
+    printNode(signedCoef.expr) === "2" && unitText(signed, signedCoef.id) === "2",
     inventory(signedLayout)
   );
-  move("M10 moving that visible 2 divides by +2", divideBothT(signed, signedLayout.numerator[0].expr, "2"), "−sin(x) = y/2");
+  move("M10 moving that visible 2 divides by +2", divideBothT(signed, signedCoef.expr, "2"), "−sin(x) = y/2");
 
   // A denominator-only product displays a literal 1 above the bar. That 1 is
   // not a meaningful factor move and must not get a phantom @N handle.
@@ -331,13 +338,13 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
     left: simplify(tmul(tpow(tfn("sin", tv("x")), -1), tpow(tadd(tv("x"), tc(1)), -1))),
     right: tv("y"),
   };
-  const denominatorLayout = treeFactorLayout("L0", denominatorOnly.left);
+  const denominatorLayout = treeFactorLayout(denominatorOnly.left.id, denominatorOnly.left);
   check(
     "M11 reciprocal-only products expose denominator factors without a phantom numerator",
     denominatorLayout.numerator.length === 0 &&
       denominatorLayout.denominator.length === 2 &&
       denominatorLayout.wholeNumerator === null &&
-      unitText(denominatorOnly, "L0@N") === null,
+      denominatorLayout.wholeNumerator === null,
     inventory(denominatorLayout)
   );
 
@@ -353,10 +360,10 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
     ),
     right: tc(7),
   };
-  const compositeLayout = treeFactorLayout("L0", composite.left);
+  const compositeLayout = treeFactorLayout(composite.left.id, composite.left);
   check(
     "M12 powers, functions, and grouped denominators stay atomic",
-    inventory(compositeLayout) === "L0@n0:numer:x³ | L0@n1:numer:sin(y + 1) | L0@d0:den:x + 1",
+    inventory(compositeLayout) === "numer:x³ | numer:sin(y + 1) | den:x + 1",
     inventory(compositeLayout)
   );
 
@@ -364,16 +371,17 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
     left: simplify(tmul(tfn("exp", tc(5)), tfn("ln", tc(2)), tfn("sqrt", tc(3)))),
     right: tv("x"),
   };
-  const constantLayout = treeFactorLayout("L0", constants.left);
+  const constantLayout = treeFactorLayout(constants.left.id, constants.left);
   check(
     "M13 every constant-valued composite is a precise coefficient unit",
     constantLayout.numerator.length === 3 && constantLayout.numerator.every((u) => u.role === "coef"),
     inventory(constantLayout)
   );
 
-  const oneFactor = treeFactorLayout("L0", tfn("sin", tv("x")));
+  const oneFactorNode = tfn("sin", tv("x"));
+  const oneFactor = treeFactorLayout(oneFactorNode.id, oneFactorNode);
   check("M14 a single factor has no redundant whole-numerator hitbox", oneFactor.wholeNumerator === null);
-  check("M15 malformed and out-of-range ids resolve safely", unitText(reported, "R0@n9") === null && unitText(reported, "Q0@n0") === null);
+  check("M15 malformed ids resolve safely", unitText(reported, "factor:missing:n:missing") === null && unitText(reported, "not-a-handle") === null);
 
   // Generated shape matrix: run the same renderer/resolver/move contract over
   // the factor families students can currently type, rather than protecting
@@ -396,7 +404,7 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
       left: simplify(tmul(tc(11), shape, tpow(tfn("cos", tadd(tv("y"), tc(2))), -1))),
       right: tfn("exp", tadd(tv("x"), tc(4))),
     };
-    const layout = treeFactorLayout("L0", te.left);
+    const layout = treeFactorLayout(te.left.id, te.left);
     const picked = layout.numerator.find((u) => keyOf(u.expr) === keyOf(simplify(shape)));
     const denominator = layout.denominator[0];
     const resolved = picked ? resolveTreeFactor(te, picked.id) : null;
@@ -418,7 +426,14 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
   check(`M16 generated ${shapes.length}-shape factor matrix resolves and moves`, matrixFailure === "", matrixFailure);
 
   const screenshotEq = parsedTree("e^5/x = 3*e^2*sin(y)");
-  const coefficientAndExp = resolveTreeFactorGroup(screenshotEq, ["R0@n0", "R0@n1"]);
+  const screenshotLeft = treeFactorLayout(screenshotEq.left.id, screenshotEq.left);
+  const screenshotRight = treeFactorLayout(screenshotEq.right.id, screenshotEq.right);
+  const threeId = unitByText(screenshotRight, "3")!.id;
+  const e2Id = unitByText(screenshotRight, "e^2")!.id;
+  const sinId = unitByText(screenshotRight, "sin(y)")!.id;
+  const e5Id = unitByText(screenshotLeft, "e^5")!.id;
+  const xDenId = unitByText(screenshotLeft, "x", "d")!.id;
+  const coefficientAndExp = resolveTreeFactorGroup(screenshotEq, [threeId, e2Id]);
   check(
     "M17 a selected coefficient + exponential resolves as one numerator chunk",
     coefficientAndExp?.zone === "n" && printNode(coefficientAndExp.expr) === "3e^2",
@@ -429,7 +444,7 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
     coefficientAndExp && divideBothT(screenshotEq, coefficientAndExp.expr, printNode(coefficientAndExp.expr)),
     "e^3/(3x) = sin(y)"
   );
-  const expAndSin = resolveTreeFactorGroup(screenshotEq, ["R0@n1", "R0@n2"]);
+  const expAndSin = resolveTreeFactorGroup(screenshotEq, [e2Id, sinId]);
   move(
     "M19 moving e²sin(y) together preserves the unselected 3",
     expAndSin && divideBothT(screenshotEq, expAndSin.expr, printNode(expAndSin.expr)),
@@ -438,16 +453,16 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
   );
   check(
     "M20 mixed numerator/denominator selections are rejected as ambiguous",
-    resolveTreeFactorGroup(screenshotEq, ["L0@n0", "L0@d0"]) === null
+    resolveTreeFactorGroup(screenshotEq, [e5Id, xDenId]) === null
   );
-  check("M21 only exact factor ids enter a factor group", isAtomicTreeFactorId("R0@n1") && !isAtomicTreeFactorId("R0@N"));
+  check("M21 only exact factor ids enter a factor group", isAtomicTreeFactorId(e2Id) && !isAtomicTreeFactorId(screenshotRight.wholeNumerator?.id ?? ""));
   check(
     "M21b marquee policy preserves an exact factor chunk instead of its addend",
-    treeMarqueeSelection(screenshotEq, ["R0@n1", "R0@n2"], ["R0"]).join(",") === "R0@n1,R0@n2"
+    treeMarqueeSelection(screenshotEq, [e2Id, sinId], [screenshotEq.right.id]).join(",") === [e2Id, sinId].join(",")
   );
   check(
     "M21c an ambiguous mixed-zone marquee falls back to its owning addend",
-    treeMarqueeSelection(screenshotEq, ["L0@n0", "L0@d0"], []).join(",") === "L0"
+    treeMarqueeSelection(screenshotEq, [e5Id, xDenId], []).join(",") === screenshotEq.left.id
   );
 
   const dividedByThree = divideBothT(screenshotEq, tc(3), "3");
@@ -458,17 +473,18 @@ console.log("\n== M. symbol operations: displayed factor contract ==");
     dividedTree ? printTreeEq(dividedTree) : String(dividedByThree)
   );
   if (dividedTree) {
-    const layout = treeFactorLayout("L0", addendsOf(dividedTree.left)[0]);
+    const dividedLeft = addendsOf(dividedTree.left)[0];
+    const layout = treeFactorLayout(dividedLeft.id, dividedLeft);
     check(
       "M23 the landed 3 and x are independently selectable denominator factors",
-      inventory(layout) === "L0@n0:coef:e^5 | L0@d0:den:3 | L0@d1:den:x",
+      inventory(layout) === "coef:e^5 | den:3 | den:x",
       inventory(layout)
     );
-    const denominatorGroup = resolveTreeFactorGroup(dividedTree, ["L0@d0", "L0@d1"]);
+    const denominatorGroup = resolveTreeFactorGroup(dividedTree, layout.denominator.map((unit) => unit.id));
     move(
       "M24 moving a selected denominator chunk multiplies by its exact product",
       denominatorGroup && multiplyBothT(dividedTree, denominatorGroup.expr, printNode(denominatorGroup.expr)),
-      "e^5 = 3e^2·sin(y)·x"
+      "e^5 = 3e^2·x·sin(y)"
     );
   } else {
     check("M23 the landed 3 and x are independently selectable denominator factors", false, "no tree result");
@@ -482,7 +498,8 @@ console.log("\n== N. symbolic constants: pi ==");
   check("N1 typed pi enters tree mode and prints as π", printTreeEq(piEq) === "π·x = y", printTreeEq(piEq));
   check("N1b a typed π glyph is accepted too", printTreeEq(parsedTree("π*x = y")) === "π·x = y");
   check("N2 π evaluates exactly as the runtime constant", Math.abs(evalNode(tnamed("pi"), {}) - Math.PI) < 1e-12);
-  const layout = treeFactorLayout("L0", addendsOf(piEq.left)[0]);
+  const piLeft = addendsOf(piEq.left)[0];
+  const layout = treeFactorLayout(piLeft.id, piLeft);
   check(
     "N3 π is an independently movable symbolic coefficient",
     layout.numerator[0]?.role === "coef" && printNode(layout.numerator[0].expr) === "π",

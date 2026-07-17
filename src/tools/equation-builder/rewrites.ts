@@ -19,6 +19,7 @@ import {
   addendsOf,
   cloneTree,
   constValue,
+  ensureTreeIds,
   evalNode,
   keyOf,
   printNode,
@@ -311,18 +312,20 @@ export function applyRewrite(root: TNode, r: Rewrite): TNode {
     }
     switch (n.kind) {
       case "add":
-        return { kind: "add", terms: n.terms.map(rec) };
+        return { id: n.id, kind: "add", terms: n.terms.map(rec) };
       case "mul":
-        return { kind: "mul", factors: n.factors.map(rec) };
+        return { id: n.id, kind: "mul", factors: n.factors.map(rec) };
       case "pow":
-        return { kind: "pow", base: rec(n.base), exp: rec(n.exp) };
+        return { id: n.id, kind: "pow", base: rec(n.base), exp: rec(n.exp) };
       case "fn":
-        return { kind: "fn", fn: n.fn, arg: rec(n.arg) };
+        return { id: n.id, kind: "fn", fn: n.fn, arg: rec(n.arg) };
       default:
         return n;
     }
   };
-  return rec(root);
+  // A candidate can reuse ids from the matched subtree. Rehydrate the whole
+  // result once so the replacement cannot alias a surviving occurrence.
+  return ensureTreeIds(rec(root));
 }
 
 /**

@@ -1,6 +1,7 @@
 /**
- * The expression tree — the model behind "frontier" equations that the flat
- * term model can't hold: 1/(x+1), 2^x, √(x+1), x·y.
+ * The expression tree — the canonical equation model. It handles ordinary
+ * school algebra and the shapes the legacy flat adapter cannot hold:
+ * 1/(x+1), 2^x, √(x+1), x·y.
  *
  * The one architectural rule, enforced by construction:
  *
@@ -25,15 +26,22 @@ import {
 
 export type TFnName = FuncName | "sqrt";
 export type TNamedConstant = "pi";
+export type TNodeId = string;
 
-export type TNode =
+export interface TNodeMeta {
+  /** Stable semantic identity. Never derived from a render position. */
+  id: TNodeId;
+}
+
+export type TNode = TNodeMeta & (
   | { kind: "const"; num: number; den: number }
   | { kind: "named"; name: TNamedConstant }
   | { kind: "var"; name: Variable }
   | { kind: "add"; terms: TNode[] }
   | { kind: "mul"; factors: TNode[] }
   | { kind: "pow"; base: TNode; exp: TNode }
-  | { kind: "fn"; fn: TFnName; arg: TNode };
+  | { kind: "fn"; fn: TFnName; arg: TNode }
+);
 
 export interface TreeEq {
   left: TNode;
@@ -42,29 +50,67 @@ export interface TreeEq {
 
 /* --- constructors ------------------------------------------------------- */
 
+const NODE_SESSION = Math.random().toString(36).slice(2, 8);
+let nodeCounter = 0;
+export const freshNodeId = (): TNodeId => `n_${NODE_SESSION}_${(nodeCounter++).toString(36)}`;
+
 export const tc = (num: number, den = 1): TNode => normRat({ kind: "const", num, den });
-export const tnamed = (name: TNamedConstant): TNode => ({ kind: "named", name });
-export const tv = (name: Variable): TNode => ({ kind: "var", name });
-export const tadd = (...terms: TNode[]): TNode => ({ kind: "add", terms });
-export const tmul = (...factors: TNode[]): TNode => ({ kind: "mul", factors });
+export const tnamed = (name: TNamedConstant): TNode => ({ id: freshNodeId(), kind: "named", name });
+export const tv = (name: Variable): TNode => ({ id: freshNodeId(), kind: "var", name });
+export const tadd = (...terms: TNode[]): TNode => ({ id: freshNodeId(), kind: "add", terms });
+export const tmul = (...factors: TNode[]): TNode => ({ id: freshNodeId(), kind: "mul", factors });
 export const tpow = (base: TNode, exp: TNode | number): TNode => ({
+  id: freshNodeId(),
   kind: "pow",
   base,
   exp: typeof exp === "number" ? tc(exp) : exp,
 });
-export const tfn = (fn: TFnName, arg: TNode): TNode => ({ kind: "fn", fn, arg });
+export const tfn = (fn: TFnName, arg: TNode): TNode => ({ id: freshNodeId(), kind: "fn", fn, arg });
 
-export const cloneTree = (n: TNode): TNode => JSON.parse(JSON.stringify(n));
-export const cloneTreeEq = (te: TreeEq): TreeEq => ({ left: cloneTree(te.left), right: cloneTree(te.right) });
+/**
+ * Old shared histories have no tree ids, and expression constructors may reuse
+ * a subtree on both sides. Rehydrate them as a real tree of unique occurrences:
+ * the first occurrence keeps its id; every duplicate receives a fresh one.
+ */
+export function ensureTreeIds(n: TNode, seen = new Set<TNodeId>()): TNode {
+  const rawId = (n as Partial<TNodeMeta>).id;
+  const id = typeof rawId === "string" && rawId.length > 0 && !seen.has(rawId) ? rawId : freshNodeId();
+  seen.add(id);
+  switch (n.kind) {
+    case "const":
+      return { id, kind: "const", num: n.num, den: n.den };
+    case "named":
+      return { id, kind: "named", name: n.name };
+    case "var":
+      return { id, kind: "var", name: n.name };
+    case "add":
+      return { id, kind: "add", terms: n.terms.map((term) => ensureTreeIds(term, seen)) };
+    case "mul":
+      return { id, kind: "mul", factors: n.factors.map((factor) => ensureTreeIds(factor, seen)) };
+    case "pow":
+      return { id, kind: "pow", base: ensureTreeIds(n.base, seen), exp: ensureTreeIds(n.exp, seen) };
+    case "fn":
+      return { id, kind: "fn", fn: n.fn, arg: ensureTreeIds(n.arg, seen) };
+  }
+}
 
-function normRat(n: { kind: "const"; num: number; den: number }): TNode {
+export function ensureTreeEqIds(te: TreeEq): TreeEq {
+  const seen = new Set<TNodeId>();
+  return { left: ensureTreeIds(te.left, seen), right: ensureTreeIds(te.right, seen) };
+}
+
+export const cloneTree = (n: TNode): TNode => ensureTreeIds(JSON.parse(JSON.stringify(n)) as TNode);
+export const cloneTreeEq = (te: TreeEq): TreeEq =>
+  ensureTreeEqIds(JSON.parse(JSON.stringify(te)) as TreeEq);
+
+function normRat(n: { id?: TNodeId; kind: "const"; num: number; den: number }): TNode {
   let { num, den } = n;
   if (den < 0) {
     num = -num;
     den = -den;
   }
   const g = gcd(num, den) || 1;
-  return { kind: "const", num: num / g, den: den / g };
+  return { id: n.id ?? freshNodeId(), kind: "const", num: num / g, den: den / g };
 }
 
 /** Is this node exactly the integer `num`? (plain boolean — no narrowing) */
@@ -112,8 +158,25 @@ export function varsIn(n: TNode): Set<Variable> {
   return out;
 }
 
-/** Canonical key for like-term matching — pure structure, no ids to strip */
-export const keyOf = (n: TNode): string => JSON.stringify(n);
+/** Canonical structural key for matching — semantic ids are deliberately omitted. */
+export function keyOf(n: TNode): string {
+  switch (n.kind) {
+    case "const":
+      return JSON.stringify({ kind: n.kind, num: n.num, den: n.den });
+    case "named":
+      return JSON.stringify({ kind: n.kind, name: n.name });
+    case "var":
+      return JSON.stringify({ kind: n.kind, name: n.name });
+    case "add":
+      return `{"kind":"add","terms":[${n.terms.map(keyOf).join(",")}]}`;
+    case "mul":
+      return `{"kind":"mul","factors":[${n.factors.map(keyOf).join(",")}]}`;
+    case "pow":
+      return `{"kind":"pow","base":${keyOf(n.base)},"exp":${keyOf(n.exp)}}`;
+    case "fn":
+      return `{"kind":"fn","fn":${JSON.stringify(n.fn)},"arg":${keyOf(n.arg)}}`;
+  }
+}
 
 /** Split a term into (rational coefficient, remaining factors sorted by key) */
 export function splitCoef(n: TNode): { num: number; den: number; core: TNode[] } {
@@ -148,23 +211,49 @@ export const sideFromAddends = (terms: TNode[]): TNode =>
  * rendering, factor selection and drag resolution on the same boundary.
  * Callers strip a leading sign first, so the returned units are magnitudes.
  */
-export function displayedProductFactors(body: TNode): { numerator: TNode[]; denominator: TNode[] } {
+export interface DisplayedProductUnit {
+  /** The expression printed in this position (for example 3 from 1/3). */
+  expr: TNode;
+  /** The persistent AST occurrence that owns the printed unit. */
+  sourceId: TNodeId;
+}
+
+/**
+ * Display projection with semantic provenance. A rational or negative power
+ * can create a synthetic printed expression, but its handle still belongs to
+ * the persistent source node rather than to a render-time temporary node.
+ */
+export function displayedProductUnits(
+  body: TNode
+): { numerator: DisplayedProductUnit[]; denominator: DisplayedProductUnit[] } {
   const factors = body.kind === "mul" ? body.factors : [body];
-  const numerator: TNode[] = [];
-  const denominator: TNode[] = [];
+  const numerator: DisplayedProductUnit[] = [];
+  const denominator: DisplayedProductUnit[] = [];
 
   for (const factor of factors) {
     if (factor.kind === "const" && factor.den !== 1) {
-      if (factor.num !== 1) numerator.push(tc(factor.num));
-      denominator.push(tc(factor.den));
+      if (factor.num !== 1) numerator.push({ expr: tc(factor.num), sourceId: factor.id });
+      denominator.push({ expr: tc(factor.den), sourceId: factor.id });
     } else if (factor.kind === "pow" && factor.exp.kind === "const" && factor.exp.num < 0) {
-      denominator.push(simplify(tpow(factor.base, tc(-factor.exp.num, factor.exp.den))));
+      denominator.push({
+        expr: simplify(tpow(factor.base, tc(-factor.exp.num, factor.exp.den))),
+        sourceId: factor.id,
+      });
     } else {
-      numerator.push(factor);
+      numerator.push({ expr: factor, sourceId: factor.id });
     }
   }
 
   return { numerator, denominator };
+}
+
+/** Expressions-only compatibility view used by the plain-text printer. */
+export function displayedProductFactors(body: TNode): { numerator: TNode[]; denominator: TNode[] } {
+  const projected = displayedProductUnits(body);
+  return {
+    numerator: projected.numerator.map((unit) => unit.expr),
+    denominator: projected.denominator.map((unit) => unit.expr),
+  };
 }
 
 /* --- the whitelist simplifier -------------------------------------------- */
@@ -179,7 +268,7 @@ export function displayedProductFactors(body: TNode): { numerator: TNode[]; deno
  * pill is already emitted) — only then may opposite-sign powers of that
  * base cancel. Constant bases that are provably nonzero cancel freely.
  */
-export function simplify(n: TNode, assume?: Set<string>): TNode {
+function simplifyPass(n: TNode, assume?: Set<string>): TNode {
   switch (n.kind) {
     case "const":
       return normRat(n);
@@ -187,7 +276,7 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
     case "var":
       return n;
     case "fn": {
-      const arg = simplify(n.arg, assume);
+      const arg = simplifyPass(n.arg, assume);
       if (n.fn === "ln") {
         if (arg.kind === "fn" && arg.fn === "exp") return arg.arg; // ln(e^u) = u — e^u is always > 0
         if (isNum(arg, 1)) return tc(0);
@@ -198,11 +287,11 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
         const rd = Math.sqrt(arg.den);
         if (Number.isInteger(rn) && Number.isInteger(rd)) return tc(rn, rd); // √4 = 2 exactly
       }
-      return { kind: "fn", fn: n.fn, arg };
+      return { id: n.id, kind: "fn", fn: n.fn, arg };
     }
     case "pow": {
-      const base = simplify(n.base, assume);
-      const exp = simplify(n.exp, assume);
+      const base = simplifyPass(n.base, assume);
+      const exp = simplifyPass(n.exp, assume);
       if (isNum(exp, 1)) return base;
       if (base.kind === "const" && exp.kind === "const" && exp.den === 1) {
         const p = exp.num;
@@ -240,13 +329,13 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
         const m = base.exp.num;
         const p = exp.num;
         if ((m > 0 && p > 0) || m * p < 0 || nonzeroNode(base.base, assume)) {
-          return simplify(tpow(base.base, m * p), assume);
+          return simplifyPass(tpow(base.base, m * p), assume);
         }
       }
       // (a·b)^n = a^n·b^n for integer n — equal wherever either side is
       // defined; without this, dividing by a product can never cancel it
       if (base.kind === "mul" && exp.kind === "const" && exp.den === 1) {
-        return simplify({ kind: "mul", factors: base.factors.map((f) => tpow(f, exp)) }, assume);
+        return simplifyPass(tmul(...base.factors.map((f) => tpow(f, exp))), assume);
       }
       // roots distribute where SIGNS allow: an odd root of a product splits
       // freely (odd roots preserve sign — (ab)^(1/3) = a^(1/3)·b^(1/3) for
@@ -268,7 +357,7 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
             ...pulled.map((f) => tpow(f, exp)),
             ...(kept.length > 0 ? [tpow(kept.length === 1 ? kept[0] : tmul(...kept), exp)] : []),
           ];
-          return simplify({ kind: "mul", factors }, assume);
+          return simplifyPass(tmul(...factors), assume);
         }
       }
       // an odd root of an ODD integer power folds by dividing exponents —
@@ -283,7 +372,7 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
         exp.den > 1 &&
         exp.den % 2 === 1
       ) {
-        return simplify(tpow(base.base, tc(base.exp.num, exp.den)), assume);
+        return simplifyPass(tpow(base.base, tc(base.exp.num, exp.den)), assume);
       }
       // …and the reverse: an integer power of an odd-root power multiplies
       // exponents — (b^(1/3))³ = b. Odd roots preserve sign, domains match.
@@ -295,30 +384,35 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
         exp.kind === "const" &&
         exp.den === 1
       ) {
-        return simplify(tpow(base.base, tc(base.exp.num * exp.num, base.exp.den)), assume);
+        return simplifyPass(tpow(base.base, tc(base.exp.num * exp.num, base.exp.den)), assume);
       }
       // (e^u)^v = e^(uv) — e^u is positive for every real u, so this holds
       // unconditionally (no domain fine print like variable bases)
       if (base.kind === "fn" && base.fn === "exp") {
-        return simplify({ kind: "fn", fn: "exp", arg: tmul(exp, base.arg) }, assume);
+        return simplifyPass(tfn("exp", tmul(exp, base.arg)), assume);
       }
-      return { kind: "pow", base, exp };
+      return { id: n.id, kind: "pow", base, exp };
     }
     case "mul": {
       // flatten, fold rational constants
       const flat: TNode[] = [];
       const push = (m: TNode) => (m.kind === "mul" ? m.factors.forEach(push) : flat.push(m));
-      n.factors.map((f) => simplify(f, assume)).forEach(push);
+      n.factors.map((f) => simplifyPass(f, assume)).forEach(push);
       let num = 1;
       let den = 1;
       const rest: TNode[] = [];
+      const constantInputs: TNode[] = [];
       for (const f of flat) {
         if (f.kind === "const") {
+          constantInputs.push(f);
           num *= f.num;
           den *= f.den;
         } else rest.push(f);
       }
       if (num === 0) return tc(0);
+      // Rebuilt power/exponential groups are matched back to these simplified
+      // occurrences when their structure did not actually change.
+      const originalRest = [...rest];
       // e^a · e^b · (e^c)^k … = e^(a + b + kc …): exponentials merge by
       // ADDING arguments. e^u is never zero or negative, so this needs no
       // sign-class guard — it's how e³/e² becomes plain e.
@@ -332,8 +426,8 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
           } else kept.push(f);
         }
         if (expArgs.length > 0) {
-          const merged = simplify(
-            { kind: "fn", fn: "exp", arg: expArgs.length === 1 ? expArgs[0] : { kind: "add", terms: expArgs } },
+          const merged = simplifyPass(
+            tfn("exp", expArgs.length === 1 ? expArgs[0] : tadd(...expArgs)),
             assume
           );
           if (!isNum(merged, 1)) kept.push(merged);
@@ -373,27 +467,68 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
         }
         for (const acc of accs) {
           const e = normRat({ kind: "const", num: acc.n, den: acc.d });
-          out.push(isNum(e, 1) ? base : simplify(tpow(base, e)));
+          out.push(isNum(e, 1) ? base : simplifyPass(tpow(base, e), assume));
         }
         out.push(...other);
       }
+      // A canonical pass must not replace an unchanged occurrence with a new
+      // id merely because the grouping algorithm rebuilt the same shape.
+      const originalsByKey = new Map<string, TNode[]>();
+      for (const factor of originalRest) {
+        const key = keyOf(factor);
+        const bucket = originalsByKey.get(key) ?? [];
+        bucket.push(factor);
+        originalsByKey.set(key, bucket);
+      }
+      for (let i = 0; i < out.length; i++) {
+        const bucket = originalsByKey.get(keyOf(out[i]));
+        if (bucket?.length) out[i] = bucket.shift()!;
+      }
       // constant-valued factors (ln 2, √2 …) read as coefficients — put them first
-      out.sort((a, b) => Number(varsIn(a).size > 0) - Number(varsIn(b).size > 0));
-      const coef = normRat({ kind: "const", num, den });
+      const factorRank = (factor: TNode): number => {
+        const constantValued = varsIn(factor).size === 0;
+        if (constantValued) {
+          if (factor.kind === "named") return 0;
+          if (factor.kind === "fn" && factor.fn === "sqrt") return 1;
+          if (factor.kind === "fn" && factor.fn === "exp") return 2;
+          return 3;
+        }
+        const visibleBase = factor.kind === "pow" ? factor.base : factor;
+        if (visibleBase.kind === "var") return 10;
+        if (visibleBase.kind === "pow") return 11;
+        if (visibleBase.kind === "add") return 12;
+        if (visibleBase.kind === "fn") return 13;
+        return 14;
+      };
+      out.sort((a, b) => factorRank(a) - factorRank(b) || keyOf(a).localeCompare(keyOf(b)));
+      let coef = normRat({ kind: "const", num, den });
+      const unchangedCoef = constantInputs.find(
+        (factor) =>
+          factor.kind === "const" &&
+          coef.kind === "const" &&
+          factor.num === coef.num &&
+          factor.den === coef.den
+      );
+      if (unchangedCoef) coef = unchangedCoef;
       if (out.length === 0) return coef;
-      if (isNum(coef, 1)) return out.length === 1 ? out[0] : { kind: "mul", factors: out };
-      return { kind: "mul", factors: [coef, ...out] };
+      if (isNum(coef, 1)) return out.length === 1 ? out[0] : { id: n.id, kind: "mul", factors: out };
+      return { id: n.id, kind: "mul", factors: [coef, ...out] };
     }
     case "add": {
       const flat: TNode[] = [];
       const push = (m: TNode) => (m.kind === "add" ? m.terms.forEach(push) : flat.push(m));
-      n.terms.map((t) => simplify(t, assume)).forEach(push);
+      n.terms.map((t) => simplifyPass(t, assume)).forEach(push);
       let cn = 0;
       let cd = 1;
-      const groups = new Map<string, { num: number; den: number; core: TNode[] }>();
+      const constantInputs: TNode[] = [];
+      const groups = new Map<
+        string,
+        { id: TNodeId; num: number; den: number; core: TNode[]; source: TNode; count: number }
+      >();
       const order: string[] = [];
       for (const t of flat) {
         if (t.kind === "const") {
+          constantInputs.push(t);
           cn = cn * t.den + t.num * cd;
           cd *= t.den;
           continue;
@@ -401,30 +536,62 @@ export function simplify(n: TNode, assume?: Set<string>): TNode {
         const { num, den, core } = splitCoef(t);
         const k = core.map(keyOf).join("*");
         if (!groups.has(k)) {
-          groups.set(k, { num: 0, den: 1, core });
+          groups.set(k, { id: t.id, num: 0, den: 1, core, source: t, count: 0 });
           order.push(k);
         }
         const slot = groups.get(k)!;
+        slot.count++;
         slot.num = slot.num * den + num * slot.den;
         slot.den *= den;
       }
       const terms: TNode[] = [];
       for (const k of order) {
-        const { num, den, core } = groups.get(k)!;
+        const { id, num, den, core, source, count } = groups.get(k)!;
         if (num === 0) continue;
         const coef = normRat({ kind: "const", num, den });
-        terms.push(
+        const candidate: TNode =
           isNum(coef, 1)
             ? core.length === 1
               ? core[0]
-              : { kind: "mul", factors: core }
-            : { kind: "mul", factors: [coef, ...core] }
-        );
+              : { id, kind: "mul" as const, factors: core }
+            : { id, kind: "mul" as const, factors: [coef, ...core] };
+        // `source` was already recursively simplified above. With one member
+        // there is no like-term arithmetic to perform, so keep the complete
+        // occurrence (including every factor id and its pedagogical order).
+        terms.push(count === 1 ? source : candidate);
       }
-      if (cn !== 0) terms.push(normRat({ kind: "const", num: cn, den: cd }));
-      return sideFromAddends(terms);
+      if (cn !== 0) {
+        let constant = normRat({ kind: "const", num: cn, den: cd });
+        if (constantInputs.length === 1) {
+          const original = constantInputs[0];
+          if (keyOf(original) === keyOf(constant)) constant = original;
+        }
+        terms.push(constant);
+      }
+      if (terms.length === 0) return tc(0);
+      if (terms.length === 1) return terms[0];
+      return { id: n.id, kind: "add", terms };
     }
   }
+}
+
+/**
+ * Canonical, idempotent normalization. `simplifyPass` is recursive and each
+ * rewrite is directionally reducing; this outer fixed-point closes the few
+ * cases where rebuilding a parent exposes a new canonical ordering.
+ */
+export function simplify(n: TNode, assume?: Set<string>): TNode {
+  let current = n;
+  const seen = new Set<string>();
+  for (let pass = 0; pass < 8; pass++) {
+    const before = keyOf(current);
+    if (seen.has(before)) return current;
+    seen.add(before);
+    const next = simplifyPass(current, assume);
+    if (keyOf(next) === before) return next;
+    current = next;
+  }
+  return current;
 }
 
 /* --- evaluation ----------------------------------------------------------- */
@@ -554,17 +721,19 @@ export const printTreeEq = (te: TreeEq): string => `${printNode(te.left)} = ${pr
 
 /** Pull a leading negative out of a term, for display (−2x → "−", 2x) */
 export function signSplit(n: TNode): { neg: boolean; body: TNode } {
-  if (n.kind === "const" && n.num < 0) return { neg: true, body: tc(-n.num, n.den) };
+  if (n.kind === "const" && n.num < 0) {
+    return { neg: true, body: { id: n.id, kind: "const", num: -n.num, den: n.den } };
+  }
   if (n.kind === "mul") {
     const first = n.factors[0];
     if (first && first.kind === "const" && first.num < 0) {
-      const pos = tc(-first.num, first.den);
+      const pos: TNode = { id: first.id, kind: "const", num: -first.num, den: first.den };
       const rest = n.factors.slice(1);
       const body = isNum(pos, 1)
         ? rest.length === 1
           ? rest[0]
-          : { kind: "mul" as const, factors: rest }
-        : { kind: "mul" as const, factors: [pos, ...rest] };
+          : { id: n.id, kind: "mul" as const, factors: rest }
+        : { id: n.id, kind: "mul" as const, factors: [pos, ...rest] };
       return { neg: true, body };
     }
   }

@@ -20,6 +20,8 @@ interface Ctx {
   selectedIds?: ReadonlySet<string>;
   /** inside a factor handle: the handle is the one grab box, glyphs go quiet */
   inert?: boolean;
+  /** Structural sub-actions (an exponent or the base e) stay playable. */
+  nestedActions?: boolean;
 }
 
 const TSym = ({
@@ -88,6 +90,7 @@ const FactorHandle = ({
   <span
     data-symbol
     data-term-id={id}
+    data-factor-handle={id}
     data-side={ctx.side}
     data-role={role}
     data-selected={ctx.selectedIds?.has(id) || undefined}
@@ -222,7 +225,7 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
                   <TN node={unit.expr} ctx={ctx} />
                 ) : (
                   <FactorHandle ctx={ctx} id={unit.id} role={unit.role}>
-                    <TN node={unit.expr} ctx={{ ...ctx, inert: true }} />
+                    <TN node={unit.expr} ctx={{ ...ctx, inert: true, nestedActions: true }} />
                   </FactorHandle>
                 );
               return (
@@ -282,15 +285,16 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
       // a bare negative power is a fraction: (x+1)⁻¹ reads as 1/(x+1)
       if (node.exp.kind === "const" && node.exp.num < 0) {
         const inv = simplify(tpow(node.base, tc(-node.exp.num, node.exp.den)));
+        const denominatorId = treeFactorLayout(ctx.id, node).denominator[0]?.id;
         return (
           <span className="mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
             <TSym ctx={ctx} className="px-[0.15em]">1</TSym>
             <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.15em] rounded bg-current" aria-hidden />
             <span className="px-[0.15em]">
-              {ctx.inert ? (
+              {ctx.inert || !denominatorId ? (
                 <TN node={inv} ctx={ctx} />
               ) : (
-                <FactorHandle ctx={ctx} id={`${ctx.id}@d0`} role="den">
+                <FactorHandle ctx={ctx} id={denominatorId} role="den">
                   <TN node={inv} ctx={{ ...ctx, inert: true }} />
                 </FactorHandle>
               )}
@@ -301,6 +305,7 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
       // add renders its own parens; mul/pow bases need explicit ones
       const wrapBase = node.base.kind === "mul" || node.base.kind === "pow";
       const expInt = node.exp.kind === "const" && node.exp.den === 1;
+      const structureActive = !ctx.inert || !!ctx.nestedActions;
       const inner = { ...ctx, inert: true };
       return (
         <span className="inline-flex items-start">
@@ -318,13 +323,13 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
             </TermRegion>
           )}
           <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
-            {expInt && !ctx.inert && (node.exp as { num: number }).num >= 2 ? (
+            {expInt && structureActive && (node.exp as { num: number }).num >= 2 ? (
               <RootHandle ctx={ctx} n={(node.exp as { num: number }).num}>
                 {supInt((node.exp as { num: number }).num)}
               </RootHandle>
             ) : expInt ? (
               <TSym ctx={ctx}>{supInt((node.exp as { num: number }).num)}</TSym>
-            ) : !ctx.inert && node.exp.kind === "const" && node.exp.num === 1 && node.exp.den > 1 ? (
+            ) : structureActive && node.exp.kind === "const" && node.exp.num === 1 && node.exp.den > 1 ? (
               // a fractional exponent 1/n is the root's handle in reverse:
               // dragging it across raises both sides to the n-th power
               <span
@@ -356,13 +361,14 @@ function TN({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coefZone?:
         // the base and the exponent are their OWN units: dragging the e
         // takes ln of both sides; dragging a whole exponent n takes the
         // n-th root of both sides
+        const structureActive = !ctx.inert || !!ctx.nestedActions;
         const rootN =
-          !ctx.inert && node.arg.kind === "const" && node.arg.den === 1 && node.arg.num >= 2
+          structureActive && node.arg.kind === "const" && node.arg.den === 1 && node.arg.num >= 2
             ? node.arg.num
             : null;
         return (
           <span className="inline-flex items-start">
-            {ctx.inert ? (
+            {!structureActive ? (
               <span className="select-none italic">e</span>
             ) : (
               <span
@@ -428,10 +434,9 @@ export function TreeSideView({
   onHover: (id: string | null) => void;
 }) {
   const addends = addendsOf(node);
-  const prefix = side === "left" ? "L" : "R";
   const selectedSet = new Set(selectedIds ?? []);
   if (addends.length === 0) {
-    const ctx: Ctx = { id: `${prefix}0`, side, onHover, selectedIds: selectedSet };
+    const ctx: Ctx = { id: node.id, side, onHover, selectedIds: selectedSet };
     return (
       <span className="inline-flex items-center">
         <TSym ctx={ctx}>0</TSym>
@@ -441,7 +446,7 @@ export function TreeSideView({
   return (
     <span className="inline-flex items-center">
       {addends.map((a, i) => {
-        const id = `${prefix}${i}`;
+        const id = a.id;
         const ctx: Ctx = { id, side, onHover, selectedIds: selectedSet };
         const { neg, body } = signSplit(a);
         const highlighted = hoveredTermId === id || (selectedIds?.includes(id) ?? false);
