@@ -64,7 +64,7 @@ import {
   type TreeMoveResult,
   type TreeOutcome,
 } from "./treemoves";
-import { TreeSideView } from "./treeview";
+import { TreeSideView, type FactorizationHintView } from "./treeview";
 import {
   isAtomicTreeFactorId,
   ownerOfTreeHandleId,
@@ -88,7 +88,7 @@ import {
   type SpecialActionKind,
   type SpecialActionRef,
 } from "./specialactions";
-import { applyRewrite, detectRewritesEq, type Rewrite } from "./rewrites";
+import { applyRewrite, detectFactorizationsEq, type Rewrite } from "./rewrites";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -521,21 +521,17 @@ const EquationBuilderTool = () => {
     x: number;
     y: number;
   } | null>(null);
-  const [rewriteBubble, setRewriteBubble] = useState<{
-    side: Side;
-    nodeId: string;
-    ownerId: string;
-    x: number;
-    y: number;
-  } | null>(null);
-  const [rewriteHints, setRewriteHints] = useState(() => {
+  const [factorizationDetection, setFactorizationDetection] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
-      return window.localStorage.getItem("vmt:rewrite-hints") === "1";
+      return window.localStorage.getItem("vmt:factorization-detection") === "1";
     } catch {
       return false;
     }
   });
+  const [dismissedFactorizationHints, setDismissedFactorizationHints] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
   const [devHitboxes, setDevHitboxes] = useState(false);
   /** dev: record each replay transition as a lossless JSON trace (see below) */
   const [devCapture, setDevCapture] = useState(false);
@@ -562,27 +558,19 @@ const EquationBuilderTool = () => {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem("vmt:rewrite-hints", rewriteHints ? "1" : "0");
+      window.localStorage.setItem("vmt:factorization-detection", factorizationDetection ? "1" : "0");
     } catch {
       // Private browsing and embedded browsers may deny storage. The toggle
       // still works for this session.
     }
-  }, [rewriteHints]);
+  }, [factorizationDetection]);
 
-  const rewriteCandidates = useMemo(
-    () => (rewriteHints && treeEq ? detectRewritesEq(treeEq) : []),
-    [rewriteHints, treeEq]
-  );
-  const rewriteHintIds = useMemo(
-    () => ({
-      left: Array.from(
-        new Set(rewriteCandidates.filter((candidate) => candidate.side === "left").map(({ rewrite }) => rewrite.before.id))
-      ),
-      right: Array.from(
-        new Set(rewriteCandidates.filter((candidate) => candidate.side === "right").map(({ rewrite }) => rewrite.before.id))
-      ),
-    }),
-    [rewriteCandidates]
+  const factorizationCandidates = useMemo(
+    () =>
+      factorizationDetection && treeEq
+        ? detectFactorizationsEq(treeEq)
+        : [],
+    [factorizationDetection, treeEq]
   );
 
   // --- Replay: animate the derivation from step 0 to the latest form ------
@@ -2415,7 +2403,7 @@ const EquationBuilderTool = () => {
     setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
     setSelection(null);
     setSpecialBubble(null);
-    setRewriteBubble(null);
+    setDismissedFactorizationHints(new Set());
     setNotice(null);
     setInputMsg(null);
   };
@@ -2458,13 +2446,11 @@ const EquationBuilderTool = () => {
     setHistory((h) => h.slice(0, index + 1));
     setSelection(null);
     setSpecialBubble(null);
-    setRewriteBubble(null);
+    setDismissedFactorizationHints(new Set());
     setNotice(null);
   };
 
-  type PointerTapIntent =
-    | { kind: "special"; action: SpecialActionRef; ownerId: string; x: number; y: number }
-    | { kind: "rewrite"; side: Side; nodeId: string; ownerId: string; x: number; y: number };
+  type PointerTapIntent = { kind: "special"; action: SpecialActionRef; ownerId: string; x: number; y: number };
 
   const tapPointFor = (el: HTMLElement): { x: number; y: number } => {
     const rect = el.getBoundingClientRect();
@@ -2497,7 +2483,6 @@ const EquationBuilderTool = () => {
     const targetEl = e.target as HTMLElement;
     if (!targetEl.closest("[data-context-bubble]")) {
       setSpecialBubble(null);
-      setRewriteBubble(null);
     }
     // word search is modal to its own bar: any press elsewhere exits it
     if (!targetEl.closest("[data-search]")) setSearchMode(false);
@@ -2521,11 +2506,6 @@ const EquationBuilderTool = () => {
     if (e.pointerType === "touch") e.preventDefault();
     const specialEl = targetEl.closest<HTMLElement>("[data-special-action]");
     const specialAction = specialEl ? specialActionFromElement(specialEl) : null;
-    const rewriteEl = rewriteHints
-      ? targetEl.closest<HTMLElement>("[data-rewrite-node]")
-      : null;
-    const rewriteSide = rewriteEl?.dataset.rewriteSide as Side | undefined;
-    const rewriteNodeId = rewriteEl?.dataset.rewriteNode;
     // Proximity grab: the nearest symbol within reach picks up, even if the
     // press wasn't pixel-perfect on the glyph. A tap-only special anchor never
     // competes for drag ownership; its nearest enclosing algebra unit does.
@@ -2535,9 +2515,7 @@ const EquationBuilderTool = () => {
     const ownerId = symbol?.dataset.termId;
     const tapIntent: PointerTapIntent | null = specialAction && specialEl && ownerId
       ? { kind: "special", action: specialAction, ownerId, ...tapPointFor(specialEl) }
-      : rewriteEl && rewriteNodeId && ownerId && (rewriteSide === "left" || rewriteSide === "right")
-        ? { kind: "rewrite", side: rewriteSide, nodeId: rewriteNodeId, ownerId, ...tapPointFor(rewriteEl) }
-        : null;
+      : null;
     if (symbol) {
       e.preventDefault();
       beginDrag(payloadFromSymbol(symbol), e, symbol, tapIntent);
@@ -3179,7 +3157,6 @@ const EquationBuilderTool = () => {
     ]);
     setSelection(null);
     setSpecialBubble(null);
-    setRewriteBubble(null);
     setNotice(null);
   };
 
@@ -3558,7 +3535,6 @@ const EquationBuilderTool = () => {
         if (Math.hypot(ev.clientX - st.x0, ev.clientY - st.y0) < st.slop) return;
         st.started = true;
         setSpecialBubble(null);
-        setRewriteBubble(null);
         dragPayloadRef.current = st.payload;
         setDragActive(true);
         setHoveredTermId(null);
@@ -3582,17 +3558,6 @@ const EquationBuilderTool = () => {
           x: st.tapIntent.x,
           y: st.tapIntent.y,
         });
-        setRewriteBubble(null);
-        setSelection(null);
-      } else if (st?.tapIntent?.kind === "rewrite") {
-        setRewriteBubble({
-          side: st.tapIntent.side,
-          nodeId: st.tapIntent.nodeId,
-          ownerId: st.tapIntent.ownerId,
-          x: st.tapIntent.x,
-          y: st.tapIntent.y,
-        });
-        setSpecialBubble(null);
         setSelection(null);
       } else if (st?.tapFactorId && st.tapSide && treeEq) {
         setSelection((current) =>
@@ -4685,14 +4650,28 @@ const EquationBuilderTool = () => {
     </span>
   );
 
-  const rewriteChoices = rewriteBubble
-    ? rewriteCandidates
-        .filter(
-          (candidate) =>
-            candidate.side === rewriteBubble.side && candidate.rewrite.before.id === rewriteBubble.nodeId
-        )
-        .map(({ rewrite }) => rewrite)
-    : [];
+  const factorizationHints: Record<Side, Map<string, FactorizationHintView>> = {
+    left: new Map(),
+    right: new Map(),
+  };
+  for (const { side, rewrite } of factorizationCandidates) {
+    const nodeId = rewrite.before.id;
+    const hintKey = `${side}:${nodeId}`;
+    // One clear card per algebra group is enough. If the engine can factor the
+    // same group in several equivalent ways, its first (most direct) result
+    // wins instead of stacking cards over one target.
+    if (dismissedFactorizationHints.has(hintKey) || factorizationHints[side].has(nodeId)) continue;
+    factorizationHints[side].set(nodeId, {
+      nodeId,
+      label: rewrite.label,
+      before: printNode(rewrite.before),
+      after: printNode(rewrite.after),
+      onApply: () => runRewrite(side, rewrite, nodeId),
+      onDismiss: () => {
+        setDismissedFactorizationHints((current) => new Set([...Array.from(current), hintKey]));
+      },
+    });
+  }
 
   return (
     <div
@@ -4904,31 +4883,28 @@ const EquationBuilderTool = () => {
             </div>
           )}
         </div>
-        <button
-          type="button"
-          aria-pressed={rewriteHints}
-          onClick={() => {
-            setRewriteHints((current) => {
-              const next = !current;
-              if (!next) setRewriteBubble(null);
-              return next;
-            });
-          }}
-          title="Highlight optional algebra rewrites such as factoring and distribution"
-          className={`flex min-h-9 items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs shadow-sm transition-colors ${
-            rewriteHints
-              ? "border-sky-300 bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-300"
-              : "border-border bg-card text-muted-foreground hover:border-foreground/40 hover:text-foreground"
-          }`}
-        >
-          <span className="text-sky-500">✦</span>
-          Hints
-        </button>
       </div>
 
-      {/* Dev: visualize grab regions and drop zones (not in embeds) */}
+      {/* Optional detection and developer diagnostics stay out of the primary toolbar. */}
       {!isEmbed && (
       <div className="absolute bottom-6 left-4 hidden flex-col gap-1 sm:flex" data-ui>
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            aria-label="factorization detection"
+            checked={factorizationDetection}
+            onChange={(event) => {
+              const next = event.target.checked;
+              setFactorizationDetection(next);
+              if (next) setDismissedFactorizationHints(new Set());
+            }}
+            className="h-3 w-3 accent-sky-500"
+          />
+          factorization detection
+          {factorizationDetection && (
+            <span className="text-muted-foreground/70">— suggestions appear above factorable groups</span>
+          )}
+        </label>
         <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
           <input
             type="checkbox"
@@ -5075,7 +5051,7 @@ const EquationBuilderTool = () => {
                     side={side}
                     hoveredTermId={hoveredTermId}
                     selectedIds={selection?.side === side ? selection.termIds : null}
-                    rewriteHintIds={rewriteHints ? rewriteHintIds[side] : null}
+                    factorizationHints={factorizationHints[side]}
                     onHover={symHandlers.hover}
                   />
                   {spread?.kind === "wrap" && (
@@ -5125,31 +5101,6 @@ const EquationBuilderTool = () => {
             <span className="text-amber-500">→</span>
             {specialActionLabel(specialBubble.action)}
           </button>
-        </div>
-      )}
-
-      {rewriteBubble && rewriteChoices.length > 0 && treeEq && (
-        <div
-          data-ui
-          data-context-bubble
-          role="dialog"
-          aria-label="Suggested rewrites"
-          className="fixed z-[70] w-[min(24rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-full rounded-2xl border border-sky-200 bg-card p-2 shadow-xl dark:border-sky-900"
-          style={{ left: rewriteBubble.x, top: rewriteBubble.y }}
-        >
-          {rewriteChoices.map((rewrite) => (
-            <button
-              type="button"
-              key={`${rewrite.kind}:${keyOf(rewrite.after)}`}
-              onClick={() => runRewrite(rewriteBubble.side, rewrite, rewriteBubble.ownerId)}
-              className="flex min-h-11 w-full flex-col justify-center rounded-xl px-3 py-2 text-left transition-colors hover:bg-sky-50 active:bg-sky-50 dark:hover:bg-sky-950/30 dark:active:bg-sky-950/30"
-            >
-              <span className="text-sm font-medium text-sky-700 dark:text-sky-300">{rewrite.label}</span>
-              <span className="mt-0.5 font-serif text-xs text-muted-foreground">
-                {printNode(rewrite.before)} → {printNode(rewrite.after)}
-              </span>
-            </button>
-          ))}
         </div>
       )}
 
