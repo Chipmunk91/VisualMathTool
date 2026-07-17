@@ -79,7 +79,7 @@ function Cell({
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
       spellCheck={false}
-      className="w-14 select-text rounded bg-transparent text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60"
+      className="w-10 select-text rounded bg-transparent text-center font-serif text-base outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60 sm:w-14 sm:text-lg"
     />
   );
 }
@@ -363,7 +363,7 @@ export function MatrixPanel() {
       </div>
 
       <div
-        className="absolute bottom-6 left-1/2 flex -translate-x-1/2 select-none flex-col items-center gap-2.5"
+        className="absolute bottom-6 left-1/2 flex max-w-[96vw] -translate-x-1/2 select-none flex-col items-center gap-2.5 sm:max-w-none"
         data-ui
       >
         {/* scrub across all stages */}
@@ -395,7 +395,7 @@ export function MatrixPanel() {
           </div>
         )}
 
-        <div className="flex items-stretch gap-3">
+        <div className="flex flex-wrap items-stretch justify-center gap-3 sm:flex-nowrap">
           {/* journeys — chapters for the scrub, tucked beside the cards */}
           {square && transformed && (
             <div className="flex flex-col justify-center gap-1.5">
@@ -565,7 +565,7 @@ function VectorCell({
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
       spellCheck={false}
-      className="w-14 select-text rounded bg-transparent text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60"
+      className="w-10 select-text rounded bg-transparent text-center font-serif text-base outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60 sm:w-14 sm:text-lg"
     />
   );
 }

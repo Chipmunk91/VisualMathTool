@@ -4457,7 +4457,7 @@ const EquationBuilderTool = () => {
     >
       {/* Typed equation input with live parse preview; the magnifier toggles
           word search over the function catalog */}
-      <div className="absolute left-1/2 top-4 z-50 w-[min(560px,75vw)] -translate-x-1/2" data-ui data-search>
+      <div className="absolute left-1/2 top-[4.75rem] z-50 w-[92vw] -translate-x-1/2 sm:top-4 sm:w-[min(560px,75vw)]" data-ui data-search>
         <div
           className={`flex items-center gap-2 rounded-full border bg-background px-4 py-2 shadow-sm transition-colors focus-within:border-foreground/40 ${
             searchMode ? "border-amber-300" : "border-border"
@@ -4664,7 +4664,7 @@ const EquationBuilderTool = () => {
 
       {/* Dev: visualize grab regions and drop zones (not in embeds) */}
       {!isEmbed && (
-      <div className="absolute bottom-6 left-4 flex flex-col gap-1" data-ui>
+      <div className="absolute bottom-6 left-4 hidden flex-col gap-1 sm:flex" data-ui>
         <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
           <input
             type="checkbox"
