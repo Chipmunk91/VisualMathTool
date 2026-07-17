@@ -5,9 +5,9 @@ import { tools } from "@/tools/registry";
 
 function Home() {
   return (
-    <div className="min-h-screen w-full overflow-y-auto bg-background text-foreground">
-      <div className="mx-auto max-w-5xl px-6 py-16">
-        <header className="mb-12 text-center">
+    <div className="min-h-[100dvh] w-full overflow-y-auto bg-background text-foreground">
+      <div className="mx-auto max-w-5xl px-5 pb-20 pt-10 sm:px-6 sm:py-16">
+        <header className="mb-8 text-center sm:mb-12">
           <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-1.5 text-sm text-muted-foreground">
             <Sparkles className="h-4 w-4 text-primary" />
             Interactive math visualizations

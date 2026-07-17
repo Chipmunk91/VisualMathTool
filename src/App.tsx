@@ -10,7 +10,7 @@ import { isEmbed } from "./lib/embed";
 function ToolShell({ tool }: { tool: ToolDefinition }) {
   const ToolComponent = tool.component;
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+    <div className="flex h-[100dvh] w-screen flex-col overflow-hidden bg-background text-foreground">
       {!isEmbed && (
       <header className="flex items-center gap-3 h-12 px-4 border-b border-border bg-card shrink-0">
         <Link
