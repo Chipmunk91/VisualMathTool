@@ -21,7 +21,9 @@ export interface MoveStory {
   /** new-state terms created by the interaction */
   born: string[];
   /** which primitive plays: a term crossing =, or a divisor forming a fraction */
-  kind?: "cross" | "divide";
+  kind?: "cross" | "divide" | "simplify";
+  /** Destination side for a semantic tree actor whose handle changes shape. */
+  to?: "left" | "right";
   /** the term the actors merge into / dive under — its id SURVIVES the step */
   sink?: string;
   /**
@@ -41,6 +43,8 @@ export interface SharedStep {
   /** Legacy flat snapshots remain readable; new shares store only `tree`. */
   state?: EquationState;
   tree?: TreeEq;
+  /** Optional unreduced paper state rendered between the move and result. */
+  intermediateTree?: TreeEq;
   story?: MoveStory;
 }
 
@@ -67,6 +71,7 @@ export function decodeHistory(param: string): SharedHistory | null {
       const flatOk = !!s.state && Array.isArray(s.state.left) && Array.isArray(s.state.right);
       if (!s.tree && !flatOk) return null;
       if (s.tree && (!s.tree.left || !s.tree.right)) return null;
+      if (s.intermediateTree && (!s.intermediateTree.left || !s.intermediateTree.right)) return null;
     }
     return h;
   } catch {

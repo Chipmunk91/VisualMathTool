@@ -11,19 +11,18 @@ The engine plays each algebra step as a phased film:
 
 ---
 
-## The headline finding (audit)
+## Tree-native choreography
 
-**The phased choreography only runs for flat-model single-term moves. Every
-operation on a *tree* equation — anything with e^n, a fraction, a function, a
-root — replays with no `story`, so `hasActor` is false, `EMPH_MS` and
-`TRAVEL_MS` collapse to 0, and the whole step degenerates to a ~320 ms
-reflow where every glyph glides at once.** That is the bulk of "animations that
-don't work on complicated equations." Confirmed by sweeping all 12 handles of
-`e^5·x = (e^5·sin(y))/√5`: every op reported `hasActor:false`, phases
-`emphasis[0-0] travel[0-0] hold[0-0] reflow[0-240]`.
+Tree operations now record both the literal post-operation paper state and the
+canonical result. Replay plans two explicit stages when they differ:
+`move → simplify`. The first stage carries the grabbed semantic handle, target
+side and sink; the second has no traveling actor and resolves cancellations,
+coefficient arithmetic and canonical ordering after a readable hold.
 
-Root cause: `TreeMoveResult`/`TreeOutcome` (treemoves.ts) has no `story` field,
-so `commitTreeOutcome` records steps with `story=undefined`.
+For example, moving `3` in `e⁵/x = 3e²sin(y)` first renders
+`e⁵/x/3 = 3e²sin(y)/3`, then simplifies to `e⁵/(3x) = e²sin(y)`. This contract
+is checked by `scripts/test-tree-animation.ts` and survives shared-history
+round trips.
 
 ---
 
@@ -31,12 +30,12 @@ so `commitTreeOutcome` records steps with `story=undefined`.
 
 | # | Rule | Number / curve | Source | Status |
 |---|---|---|---|---|
-| P1 | Emphasis is a brief in-place cue, not a stall | 70–150 ms, `standard` easing | Carbon fast-01/02; M3 short | ✓ flat (70 ms) · ✗ tree (0 ms) |
-| P2 | Travel is eased, never linear | `cubic-bezier(0.2,0,0,1)` emphasized | M3; Val Head | ✓ flat · ✗ tree (reflow only) |
+| P1 | Emphasis is a brief in-place cue, not a stall | 70–150 ms, `standard` easing | Carbon fast-01/02; M3 short | ✓ flat + tree (70 ms) |
+| P2 | Travel is eased, never linear | `cubic-bezier(0.2,0,0,1)` emphasized | M3; Val Head | ✓ flat + semantic tree actors |
 | P3 | Travel duration scales with distance (constant *perceived* speed) | 250–500 ms ∝ px | M2/M3, Carbon area rule | ✗ fixed 600/680 ms, distance-independent |
 | P4 | Entering/landing uses a **decelerate** curve | `cubic-bezier(0.05,0.7,0.1,1)` | M3 emphasized-decelerate | ~ SETTLE is decel-ish but front-loaded |
 | P5 | Merge/exit uses an **accelerate** curve, faster than entrance | `cubic-bezier(0.3,0,0.8,0.15)`, ~195 vs 225 ms | M2/M3 | ~ merge exists flat only |
-| P6 | Hold a term ≥ one fixation so it's read | ≥ 250 ms | vision: fixation 225–250 ms | ✓ flat (260 ms) · ✗ tree (0 ms) |
+| P6 | Hold a term ≥ one fixation so it's read | ≥ 250 ms | vision: fixation 225–250 ms | ✓ flat merge + tree paper state |
 | P7 | Whole step under the flow-of-thought limit | < 1 s total | NN-G response limits | ✓ (~1.6 s worst… ~ borderline) |
 
 ## 2. Phase bridging — making it read as ONE gesture
@@ -77,23 +76,16 @@ so `commitTreeOutcome` records steps with `story=undefined`.
 
 ## Prioritized gaps (what to fix, biggest first)
 
-1. **Tree moves get no choreography (P1/P2/P6, E1).** Give `TreeOutcome` a
-   `story` (actor node id + role, sink, born) so complex-equation steps play
-   the real film instead of a flat reflow. This is the big one — it's *most*
-   equations worth animating.
-2. **Reflow easing lunges (A2/E2).** The reflow/`SETTLE` curve is front-loaded
+1. **Reflow easing lunges (A2/E2).** The reflow/`SETTLE` curve is front-loaded
    like the old travel curve was; give it the even `cubic-bezier(0.3,0.2,0.5,1)`
    treatment (or a decelerate curve) so simultaneous glyph glides don't lunge.
-3. **Phase bridging (B1–B6).** Phases are independent start-stop tweens with
+2. **Phase bridging (B1–B6).** Phases are independent start-stop tweens with
    *gaps* between them; adopt overlap>0 and velocity carry so the film reads as
    one gesture rather than five chunks.
-4. **Duration ∝ distance (P3/A7).** Travel/reflow are fixed-duration; a 30 px
+3. **Duration ∝ distance (P3/A7).** Travel/reflow are fixed-duration; a 30 px
    nudge and a 370 px sweep take the same time, so perceived speed swings wildly.
-5. **One-dominant-motion in reflow (E1).** Even within a reflow, stagger the
+4. **One-dominant-motion in reflow (E1).** Even within a reflow, stagger the
    glyphs (secondary action) instead of moving all at once.
-
-Items 2–5 apply to the flat path too; item 1 is what unlocks the complex cases
-the audit flagged.
 
 ## Turning these into checks
 

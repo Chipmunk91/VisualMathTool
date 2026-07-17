@@ -23,6 +23,8 @@ jobs:
         run: npx tsx scripts/test-symbol-handles.ts
       - name: Canonical tree architecture invariants
         run: npx tsx scripts/test-tree-architecture.ts
+      - name: Tree animation state contract
+        run: npx tsx scripts/test-tree-animation.ts
       - name: Rewrite-engine tests
         run: npx tsx scripts/test-rewrites.ts
       - name: Build
