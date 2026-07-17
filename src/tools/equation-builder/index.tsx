@@ -54,7 +54,7 @@ import { AreaPane } from "./area";
 import { SumPane } from "./sum";
 import { LimitPane } from "./limit";
 import { sharedFromUrl, shareUrl, type MoveStory } from "./share";
-import { embedSnippet, isEmbed } from "../../lib/embed";
+import { isEmbed } from "../../lib/embed";
 import {
   applyToolT,
   divideBothT,
@@ -1523,9 +1523,8 @@ const EquationBuilderTool = () => {
     });
   };
 
-  // --- Share: the whole derivation in a link (or an embeddable iframe) ----
+  // --- Share: the whole derivation in a link ----
   const [copied, setCopied] = useState(false);
-  const [copiedEmbed, setCopiedEmbed] = useState(false);
   const currentShareUrl = () =>
     shareUrl({
       steps: history.map((s) => ({
@@ -1542,12 +1541,6 @@ const EquationBuilderTool = () => {
     navigator.clipboard?.writeText(currentShareUrl()).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
-  };
-  const copyEmbed = () => {
-    navigator.clipboard?.writeText(embedSnippet(currentShareUrl(), "Equation Playground")).then(() => {
-      setCopiedEmbed(true);
-      setTimeout(() => setCopiedEmbed(false), 1500);
     });
   };
 
@@ -4874,13 +4867,6 @@ const EquationBuilderTool = () => {
           title="Copy a link to this equation and its whole step history"
         >
           {copied ? "copied ✓" : "⧉ share"}
-        </button>
-        <button
-          onClick={copyEmbed}
-          className="rounded-full border border-border px-3 py-1.5 font-mono text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
-          title="Copy an iframe of this exact derivation — plug it into any page"
-        >
-          {copiedEmbed ? "copied ✓" : "</>"}
         </button>
         <button
           onClick={() => setHistoryOpen((open) => !open)}
