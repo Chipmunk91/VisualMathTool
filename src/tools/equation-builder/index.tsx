@@ -51,8 +51,6 @@ import {
 } from "./tree";
 import { TangentPane } from "./tangent";
 import { AreaPane } from "./area";
-import { SumPane } from "./sum";
-import { LimitPane } from "./limit";
 import { sharedFromUrl, shareUrl, type MoveStory } from "./share";
 import { isEmbed } from "../../lib/embed";
 import {
@@ -330,7 +328,7 @@ interface ToolItem {
   glyph: string;
   tool?: ToolKind; // absent = shown as roadmap, disabled
   /** click-only operators with their own gate (calculus needs function mode) */
-  action?: "ddx" | "int" | "sum" | "lim";
+  action?: "ddx" | "int";
   title?: string;
 }
 
@@ -361,8 +359,6 @@ const TOOLBOX: { id: string; label: string; items: ToolItem[] }[] = [
     items: [
       { glyph: "d⁄dx", action: "ddx" },
       { glyph: "∫", action: "int" },
-      { glyph: "Σ", action: "sum" },
-      { glyph: "lim", action: "lim" },
     ],
   },
 ];
@@ -1932,14 +1928,10 @@ const EquationBuilderTool = () => {
     return null;
   }, [treeEq]);
 
-  /** Which view function mode shows: mapping, curve & slope, area, sum, or limit */
-  const [fnView, setFnView] = useState<"mapping" | "slope" | "area" | "sum" | "limit">("mapping");
+  /** Which view function mode shows: curve & slope (default), mapping, or area */
+  const [fnView, setFnView] = useState<"mapping" | "slope" | "area">("slope");
   /** Definite-integral bounds for the area view — draggable, or set by term drops */
   const [bounds, setBounds] = useState<{ lo: number; hi: number }>({ lo: 0, hi: 2 });
-  /** Integer bounds for the sum view — draggable, or set by term drops */
-  const [sumBounds, setSumBounds] = useState<{ lo: number; hi: number }>({ lo: 1, hi: 5 });
-  /** The approach point for the limit view — draggable, or set by term drops */
-  const [limAt, setLimAt] = useState<number>(1);
 
   /** d/dx is only meaningful on an identity — exactly what function mode is */
   const ddxReady = treeEq ? treePane?.kind === "mapping" : !!functionMode;
@@ -3650,13 +3642,7 @@ const EquationBuilderTool = () => {
     if (target.kind === "bound") {
       const v = boundValueOf(payload);
       if (v === null) {
-        flashNotice(
-          target.which === "at" ? "Only a plain number can set the approach point." : "Only a plain number can set a bound."
-        );
-      } else if (target.which === "at") {
-        setLimAt(v);
-      } else if (fnView === "sum") {
-        setSumBounds((b) => ({ ...b, [target.which]: Math.round(v) }));
+        flashNotice("Only a plain number can set a bound.");
       } else {
         setBounds((b) => ({ ...b, [target.which]: v }));
       }
@@ -4826,8 +4812,6 @@ const EquationBuilderTool = () => {
                                 ? {
                                     ddx: "Differentiate the function — a new equation about the same function",
                                     int: "Integrate the function — one antiderivative, + C rides along",
-                                    sum: "Sum the function over integer k — pick the bounds in the sum view",
-                                    lim: "Probe the limit — drag the approach point in the limit view",
                                   }[item.action]
                                 : `${item.glyph} needs y = f(x) — isolate the function first`
                               : "coming soon"
@@ -4839,7 +4823,6 @@ const EquationBuilderTool = () => {
                             setToolboxOpen(false);
                             if (item.action === "ddx") applyDdx();
                             else if (item.action === "int") applyIntegral();
-                            else setFnView(item.action === "sum" ? "sum" : "limit");
                             return;
                           }
                           if (!item.tool) return;
@@ -5175,19 +5158,15 @@ const EquationBuilderTool = () => {
         if (fn) {
           return (
             <>
-              {fnView === "mapping" ? (
-                <MappingPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} />
-              ) : fnView === "slope" ? (
+              {fnView === "slope" ? (
                 <TangentPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} />
-              ) : fnView === "area" ? (
-                <AreaPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} bounds={bounds} onBounds={setBounds} />
-              ) : fnView === "sum" ? (
-                <SumPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} bounds={sumBounds} onBounds={setSumBounds} />
+              ) : fnView === "mapping" ? (
+                <MappingPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} />
               ) : (
-                <LimitPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} at={limAt} onAt={setLimAt} />
+                <AreaPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} bounds={bounds} onBounds={setBounds} />
               )}
               <div className="mt-2 flex items-center gap-1.5 text-[11px]" data-ui>
-                {(["mapping", "slope", "area", "sum", "limit"] as const).map((view) => (
+                {(["slope", "mapping", "area"] as const).map((view) => (
                   <button
                     key={view}
                     onClick={() => setFnView(view)}
@@ -5197,15 +5176,11 @@ const EquationBuilderTool = () => {
                         : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
                     }`}
                   >
-                    {view === "mapping"
-                      ? "input → output"
-                      : view === "slope"
-                        ? "curve & slope"
-                        : view === "area"
-                          ? "area ∫"
-                          : view === "sum"
-                            ? "sum Σ"
-                            : "limit"}
+                    {view === "slope"
+                      ? "curve & slope"
+                      : view === "mapping"
+                        ? "input → output"
+                        : "area ∫"}
                   </button>
                 ))}
               </div>
