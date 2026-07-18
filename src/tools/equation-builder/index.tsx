@@ -74,6 +74,7 @@ import {
 } from "./treeunits";
 import {
   computeTreeOperation,
+  previewTreeOperation,
   treeAddendExpression,
   treeCoefficientExpression,
   type DragPayload,
@@ -514,6 +515,7 @@ const EquationBuilderTool = () => {
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<{ kind: "ok" | "reject" | "cancel"; text: string } | null>(null);
+  const [activeDropTarget, setActiveDropTarget] = useState<DropTarget | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [specialBubble, setSpecialBubble] = useState<{
     action: SpecialActionRef;
@@ -3004,6 +3006,7 @@ const EquationBuilderTool = () => {
     setDragOver(null);
     setParenHover(null);
     setDragPreview(null);
+    setActiveDropTarget(null);
     setDragActive(false);
     setUnderHover(null);
     setExpHover(null);
@@ -3213,6 +3216,7 @@ const EquationBuilderTool = () => {
     const key = JSON.stringify([payload, target]);
     if (previewKeyRef.current === key) return;
     previewKeyRef.current = key;
+    setActiveDropTarget(target);
     if (target.kind === "bound") {
       const v = boundValueOf(payload);
       if (v === null) setDragPreview({ kind: "reject", text: "only a plain number can set a bound" });
@@ -3485,6 +3489,7 @@ const EquationBuilderTool = () => {
       updatePreview(payload, target);
     } else {
       previewKeyRef.current = "off-equation";
+      setActiveDropTarget(null);
       setDragPreview({ kind: "cancel", text: "" });
     }
   };
@@ -3902,40 +3907,9 @@ const EquationBuilderTool = () => {
       return { kind: "wrap", before, after };
     }
     if (treeEq) {
-      // tree units: the same both-sides vocabulary, resolved from the tree
-      if (!underHover && !dragOver) return null;
-      switch (p.kind) {
-        case "factorGroup": {
-          const group = resolveTreeFactorGroup(treeEq, p.ids);
-          if (!group) return null;
-          return {
-            kind: group.zone === "n" ? "divide" : "multiply",
-            text: printNode(group.expr),
-          };
-        }
-        case "coef": {
-          const expr = coefExprOf(p.termId);
-          return expr ? { kind: "divide", text: printNode(expr) } : null;
-        }
-        case "numer": {
-          const f = treeFactorOf(p.termId);
-          return f ? { kind: "divide", text: printNode(f.expr) } : null;
-        }
-        case "xdiv":
-          return { kind: "divide", text: p.termId.split("@")[1] ?? "x" };
-        case "den": {
-          const f = treeFactorOf(p.termId);
-          return f ? { kind: "multiply", text: printNode(f.expr) } : null;
-        }
-        case "lnbase":
-          return { kind: "wrap", before: "ln(", after: ")" };
-        case "root":
-          return { kind: "wrap", before: p.n === 2 ? "√(" : p.n === 3 ? "∛(" : `${p.n}√(`, after: ")" };
-        case "raise":
-          return { kind: "wrap", before: "(", after: `)${supText(p.n)}` };
-        default:
-          return null; // a plain term move shows the side ghost instead
-      }
+      // The visual and algebra dispatch consume the exact same target. This is
+      // what makes a whole-addend x preview identically to an x factor.
+      return activeDropTarget ? previewTreeOperation(treeEq, p, activeDropTarget) : null;
     }
     const findTermBy = (id: string) => equation[p.from].find((t) => t.id === id);
     // denominator position: divide both sides
