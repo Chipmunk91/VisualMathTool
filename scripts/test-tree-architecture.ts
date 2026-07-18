@@ -1,6 +1,6 @@
 /** Architectural invariants for the canonical equation tree. */
 import { leaf } from "../src/tools/equation-builder/model";
-import { computeTreeOperation } from "../src/tools/equation-builder/operations";
+import { computeTreeOperation, previewTreeOperation } from "../src/tools/equation-builder/operations";
 import { parseEquation } from "../src/tools/equation-builder/parse";
 import { toggleTreeFactorSelection } from "../src/tools/equation-builder/selection";
 import { decodeHistory, encodeHistory } from "../src/tools/equation-builder/share";
@@ -216,6 +216,16 @@ console.log("\n== operation boundary ==");
   check(
     "D4 operations address addends by semantic id after normalization",
     !!moved && typeof moved !== "string" && printTreeEq(moved.treeNext) === "3 = −x + 7"
+  );
+  const additivePreview = previewTreeOperation(
+    additive,
+    { kind: "terms", ids: [x.id], from: "left" },
+    { kind: "under", termId: addendsOf(additive.right)[0].id, side: "right" }
+  );
+  check(
+    "D5 dividing a whole-addend x has the same inline preview as an x factor",
+    additivePreview?.kind === "divide" && additivePreview.text === "x",
+    JSON.stringify(additivePreview)
   );
 }
 

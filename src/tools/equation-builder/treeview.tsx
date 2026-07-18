@@ -153,6 +153,7 @@ const SpecialActionAnchor = ({
   nodeId,
   action,
   n,
+  surface = "structure",
   title,
   className = "",
   children,
@@ -161,6 +162,7 @@ const SpecialActionAnchor = ({
   nodeId: string;
   action: SpecialActionKind;
   n?: number;
+  surface?: "structure" | "operator";
   title: string;
   className?: string;
   children: ReactNode;
@@ -171,8 +173,9 @@ const SpecialActionAnchor = ({
     data-special-node={nodeId}
     data-side={ctx.side}
     data-special-n={n}
+    data-special-surface={surface}
     title={title}
-    className={`relative z-20 -m-[0.14em] inline-flex cursor-pointer select-none items-center justify-center p-[0.14em] transition-colors duration-150 hover:text-amber-500 ${className}`}
+    className={`relative z-20 -m-[0.14em] inline-flex cursor-pointer select-none items-center justify-center rounded-md p-[0.14em] outline outline-1 outline-dashed outline-transparent outline-offset-2 transition-colors duration-150 [&:hover:not(:has([data-special-action]:hover))]:text-sky-600 [&:hover:not(:has([data-special-action]:hover))]:outline-sky-400/70 dark:[&:hover:not(:has([data-special-action]:hover))]:text-sky-300 ${className}`}
   >
     {children}
   </span>
@@ -340,24 +343,24 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
         const n = node.exp.den;
         return (
           <TermRegion ctx={ctx}>
-            <span className="inline-flex items-start">
-              <SpecialActionAnchor
-                ctx={ctx}
-                nodeId={ctx.actionOwnerId ?? node.id}
-                action="raise"
-                n={n}
-                title={`Tap to raise both sides to the power ${n}`}
-                className="relative mr-[0.02em] inline-flex items-start"
-              >
+            <SpecialActionAnchor
+              ctx={ctx}
+              nodeId={ctx.actionOwnerId ?? node.id}
+              action="raise"
+              n={n}
+              title={`Tap to raise both sides to the power ${n}`}
+              className="items-start"
+            >
+              <span className="inline-flex items-start">
                 {n !== 2 && (
                   <span className="mr-[-0.18em] mt-[-0.34em] text-[0.38em] leading-none">{n}</span>
                 )}
                 <span>√</span>
-              </SpecialActionAnchor>
-              <span className="border-t-[0.06em] border-current pt-[0.02em]">
-                <TN node={node.base} ctx={{ ...ctx, inert: true }} />
+                <span className="border-t-[0.06em] border-current pt-[0.02em]">
+                  <TN node={node.base} ctx={{ ...ctx, inert: true }} />
+                </span>
               </span>
-            </span>
+            </SpecialActionAnchor>
           </TermRegion>
         );
       }
@@ -376,26 +379,33 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
           ) : (
             <TN node={node.base} ctx={inner} coefZone={coefZone} />
           )}
-          <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
-            {expInt && (node.exp as { num: number }).num >= 2 ? (
-              <SpecialActionAnchor
-                ctx={ctx}
-                nodeId={ctx.actionOwnerId ?? node.id}
-                action="root"
-                n={(node.exp as { num: number }).num}
-                title={`Tap to take the ${(node.exp as { num: number }).num === 2 ? "square" : (node.exp as { num: number }).num === 3 ? "cube" : `${(node.exp as { num: number }).num}th`} root of both sides`}
-              >
-                {supInt((node.exp as { num: number }).num)}
-              </SpecialActionAnchor>
-            ) : expInt ? (
-              <TSym ctx={ctx}>{supInt((node.exp as { num: number }).num)}</TSym>
+          <span className="pointer-events-none mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
+            {expInt ? (
+              <span className="select-none">{supInt((node.exp as { num: number }).num)}</span>
             ) : (
               <TN node={node.exp} ctx={inner} />
             )}
           </span>
         </span>
       );
-      return <TermRegion ctx={ctx}>{expression}</TermRegion>;
+      const rootN = expInt && (node.exp as { num: number }).num >= 2
+        ? (node.exp as { num: number }).num
+        : null;
+      return (
+        <TermRegion ctx={ctx}>
+          {rootN === null ? expression : (
+            <SpecialActionAnchor
+              ctx={ctx}
+              nodeId={ctx.actionOwnerId ?? node.id}
+              action="root"
+              n={rootN}
+              title={`Tap to take the ${rootN === 2 ? "square" : rootN === 3 ? "cube" : `${rootN}th`} root of both sides`}
+            >
+              {expression}
+            </SpecialActionAnchor>
+          )}
+        </TermRegion>
+      );
     }
     case "fn": {
       if (node.fn === "exp") {
@@ -415,27 +425,20 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
             </TermRegion>
           );
         }
-        // The base and exponent are tap-only inverse-operation anchors. The
-        // surrounding TermRegion/FactorHandle remains the sole drag owner.
+        // The complete exponential is the ln tap surface. A positive integer
+        // exponent contributes a smaller, nested root surface; closest( ) in
+        // the pointer layer makes the more specific action win.
         const rootN =
           node.arg.kind === "const" && node.arg.den === 1 && node.arg.num >= 2
             ? node.arg.num
             : null;
         const expression = (
           <span className="inline-flex items-start">
-            <SpecialActionAnchor
-              ctx={ctx}
-              nodeId={ctx.actionOwnerId ?? node.id}
-              action="ln"
-              title="Tap to take ln of both sides"
-              className="italic"
-            >
-              e
-            </SpecialActionAnchor>
+            <span className="italic">e</span>
             <span
               data-exponent-layer={rootN === null ? "passive" : "action"}
               className={`mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none ${
-                rootN === null ? "pointer-events-none" : "relative z-30"
+                rootN === null ? "" : "relative z-30"
               }`}
             >
               {rootN !== null ? (
@@ -444,6 +447,7 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
                   nodeId={ctx.actionOwnerId ?? node.id}
                   action="root"
                   n={rootN}
+                  surface="operator"
                   title={`Tap to take the ${rootN === 2 ? "square" : rootN === 3 ? "cube" : `${rootN}th`} root of both sides`}
                 >
                   {constText(rootN, 1)}
@@ -454,24 +458,35 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
             </span>
           </span>
         );
-        return <TermRegion ctx={ctx}>{expression}</TermRegion>;
+        return (
+          <TermRegion ctx={ctx}>
+            <SpecialActionAnchor
+              ctx={ctx}
+              nodeId={ctx.actionOwnerId ?? node.id}
+              action="ln"
+              title="Tap the exponential to take ln of both sides"
+            >
+              {expression}
+            </SpecialActionAnchor>
+          </TermRegion>
+        );
       }
       if (node.fn === "sqrt") {
         return (
           <TermRegion ctx={ctx}>
-            <span className="inline-flex items-baseline">
-              <SpecialActionAnchor
-                ctx={ctx}
-                nodeId={ctx.actionOwnerId ?? node.id}
-                action="square"
-                title="Tap to square both sides"
-              >
-                √
-              </SpecialActionAnchor>
-              <span className="border-t-[0.06em] border-current pt-[0.02em]">
-                <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
+            <SpecialActionAnchor
+              ctx={ctx}
+              nodeId={ctx.actionOwnerId ?? node.id}
+              action="square"
+              title="Tap the radical to square both sides"
+            >
+              <span className="inline-flex items-baseline">
+                <span>√</span>
+                <span className="border-t-[0.06em] border-current pt-[0.02em]">
+                  <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
+                </span>
               </span>
-            </span>
+            </SpecialActionAnchor>
           </TermRegion>
         );
       }
@@ -488,24 +503,28 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
       const shownName = node.fn === "asin" ? "arcsin" : node.fn === "acos" ? "arccos" : node.fn === "atan" ? "arctan" : node.fn;
       return (
         <TermRegion ctx={ctx}>
-          <span className="inline-flex items-center">
-            {inverseAction ? (
-              <SpecialActionAnchor
-                ctx={ctx}
-                nodeId={ctx.actionOwnerId ?? node.id}
-                action={inverseAction}
-                title={`Tap to apply ${inverseAction === "exp" ? "e^" : shownName === "sin" ? "arcsin" : shownName === "cos" ? "arccos" : "arctan"} to both sides`}
-                className="mr-0.5"
-              >
-                {shownName}
-              </SpecialActionAnchor>
-            ) : (
+          {inverseAction ? (
+            <SpecialActionAnchor
+              ctx={ctx}
+              nodeId={ctx.actionOwnerId ?? node.id}
+              action={inverseAction}
+              title={`Tap ${shownName}(…) to apply ${inverseAction === "exp" ? "e^" : shownName === "sin" ? "arcsin" : shownName === "cos" ? "arccos" : "arctan"} to both sides`}
+            >
+              <span className="inline-flex items-center">
+                <span className="mr-0.5">{shownName}</span>
+                <span className="select-none">(</span>
+                <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
+                <span className="select-none">)</span>
+              </span>
+            </SpecialActionAnchor>
+          ) : (
+            <span className="inline-flex items-center">
               <span className="mr-0.5 select-none">{shownName}</span>
-            )}
-            <span className="select-none">(</span>
-            <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
-            <span className="select-none">)</span>
-          </span>
+              <span className="select-none">(</span>
+              <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
+              <span className="select-none">)</span>
+            </span>
+          )}
         </TermRegion>
       );
     }

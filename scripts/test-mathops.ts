@@ -541,6 +541,17 @@ console.log("\n== N. symbolic constants: pi ==");
   );
   move("N4 moving π divides both sides without a domain pill", divideBothT(piEq, tnamed("pi"), "π"), "x = y/π");
   simp("N5 π/π cancels because π is provably nonzero", tmul(tnamed("pi"), tpow(tnamed("pi"), -1)), "1");
+  const reportedE = parsedTree("e*x^3 = -8 + sin(y)");
+  check(
+    "N6 bare e uses the canonical exponential tree instead of being rejected",
+    printTreeEq(reportedE) === "e·x³ = sin(y) − 8",
+    printTreeEq(reportedE)
+  );
+  check(
+    "N7 bare e evaluates as Euler's constant",
+    Math.abs(evalNode(parsedTree("e = y").left, {}) - Math.E) < 1e-12
+  );
+  simp("N8 e/e cancels because the canonical exponential is provably nonzero", tmul(tfn("exp", tc(1)), tpow(tfn("exp", tc(1)), -1)), "1");
 }
 
 console.log("\n== O. contextual special-symbol actions ==");

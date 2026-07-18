@@ -86,6 +86,69 @@ export function treeCoefficientExpression(te: TreeEq, id: string): TNode | null 
   return simplify(parts.length === 1 ? parts[0] : tmul(...parts));
 }
 
+/**
+ * The equation-wide visual that accompanies a valid tree operation.
+ *
+ * This intentionally consumes the same semantic payload and drop target as
+ * `computeTreeOperation`. Keeping it here prevents the renderer from guessing
+ * that an additive x and a multiplicative x are different operations: both
+ * become an exact divide preview when their target is a denominator zone.
+ */
+export type TreeOperationPreview =
+  | { kind: "divide"; text: string }
+  | { kind: "multiply"; text: string }
+  | { kind: "wrap"; before: string; after: string };
+
+export function previewTreeOperation(
+  te: TreeEq,
+  payload: DragPayload,
+  target: DropTarget
+): TreeOperationPreview | null {
+  const onStage = target.kind === "under" || target.kind === "side";
+  if (!onStage) return null;
+
+  switch (payload.kind) {
+    case "factorGroup": {
+      const group = resolveTreeFactorGroup(te, payload.ids);
+      if (!group) return null;
+      if (group.zone === "n") return { kind: "divide", text: printNode(group.expr) };
+      return target.kind === "side" ? { kind: "multiply", text: printNode(group.expr) } : null;
+    }
+    case "coef": {
+      const expr = treeCoefficientExpression(te, payload.termId);
+      return expr ? { kind: "divide", text: printNode(expr) } : null;
+    }
+    case "numer": {
+      const factor = resolveTreeFactor(te, payload.termId);
+      return factor ? { kind: "divide", text: printNode(factor.expr) } : null;
+    }
+    case "den": {
+      if (target.kind !== "side") return null;
+      const factor = resolveTreeFactor(te, payload.termId);
+      return factor ? { kind: "multiply", text: printNode(factor.expr) } : null;
+    }
+    case "terms": {
+      if (target.kind !== "under") return null;
+      const addend = treeAddendExpression(te, payload.ids[0]);
+      return addend ? { kind: "divide", text: printNode(addend) } : null;
+    }
+    case "xdiv":
+      return { kind: "divide", text: payload.termId.match(/@(x|y)$/)?.[1] ?? "x" };
+    case "lnbase":
+      return { kind: "wrap", before: "ln(", after: ")" };
+    case "root":
+      return {
+        kind: "wrap",
+        before: payload.n === 2 ? "√(" : payload.n === 3 ? "∛(" : `${payload.n}√(`,
+        after: ")",
+      };
+    case "raise":
+      return { kind: "wrap", before: "(", after: `)^${payload.n}` };
+    default:
+      return null;
+  }
+}
+
 /** Translate one semantic tree gesture into one pure algebraic operation. */
 export function computeTreeOperation(
   te: TreeEq,

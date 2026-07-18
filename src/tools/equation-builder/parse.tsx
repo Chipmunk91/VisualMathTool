@@ -91,6 +91,11 @@ function mathToTree(node: Node): TNode {
     case "SymbolNode":
       if (node.name === "x" || node.name === "y") return tv(node.name);
       if (node.name === "pi" || node.name === "π") return tnamed("pi");
+      // Keep Euler's constant in the same canonical form used by e^u.  The
+      // tree already knows exp(1) is positive/nonzero, evaluates it exactly,
+      // prints it as e, and exposes its contextual ln action.  A second named
+      // constant representation would make e and e^1 behave differently.
+      if (node.name === "e") return tfn("exp", tc(1));
       {
         const variables = splitVariableProduct(node.name);
         if (variables) return tmul(...variables.map(tv));

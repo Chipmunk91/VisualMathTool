@@ -30,6 +30,7 @@ interface SpecialAnchor {
   action: string;
   nodeId: string;
   n?: number;
+  surface?: string;
 }
 
 const handlesIn = (html: string): Handle[] =>
@@ -45,6 +46,7 @@ const specialAnchorsIn = (html: string): SpecialAnchor[] =>
       action: match[1].match(/data-special-action="([^"]+)"/)?.[1] ?? "?",
       nodeId: match[1].match(/data-special-node="([^"]+)"/)?.[1] ?? "?",
       n: rawN ? Number(rawN) : undefined,
+      surface: match[1].match(/data-special-surface="([^"]+)"/)?.[1],
     };
   });
 
@@ -221,9 +223,11 @@ async function main() {
   const sinSpecials = specialAnchorsIn(renderSide(tfn("sin", tv("x")), "left"));
   const lnSpecials = specialAnchorsIn(renderSide(tfn("ln", tv("x")), "left"));
   check(
-    "S14 special function names expose only their contextual inverse",
+    "S14 complete special functions expose only their contextual inverse",
     sinSpecials.length === 1 && sinSpecials[0].action === "asin" &&
-      lnSpecials.length === 1 && lnSpecials[0].action === "exp",
+      sinSpecials[0].surface === "structure" &&
+      lnSpecials.length === 1 && lnSpecials[0].action === "exp" &&
+      lnSpecials[0].surface === "structure",
     JSON.stringify({ sinSpecials, lnSpecials })
   );
 
@@ -239,11 +243,13 @@ async function main() {
 
   const variableExpHtml = renderSide(tfn("exp", tmul(tc(-1), tv("x"))), "right");
   check(
-    "S16 e^(-x) keeps the e action above its passive exponent layer",
+    "S16 every pixel of e^(-x) belongs to its structural ln action",
     variableExpHtml.includes("data-special-hitbox=\"true\"") &&
       variableExpHtml.includes("data-exponent-layer=\"passive\"") &&
-      variableExpHtml.includes("pointer-events-none") &&
-      specialAnchorsIn(variableExpHtml).some((special) => special.action === "ln"),
+      !variableExpHtml.includes("pointer-events-none") &&
+      specialAnchorsIn(variableExpHtml).some(
+        (special) => special.action === "ln" && special.surface === "structure"
+      ),
     variableExpHtml
   );
 
@@ -280,6 +286,23 @@ async function main() {
     repeatedHtml.includes(`data-factorization-target="${repeatedFirst.id}"`) &&
       repeatedHtml.includes(`data-factorization-target="${repeatedSecond.id}"`),
     repeatedHtml
+  );
+
+  const nestedExpHtml = renderSide(tfn("exp", tc(5)), "left");
+  const nestedExpSpecials = specialAnchorsIn(nestedExpHtml);
+  check(
+    "S19 e^5 gives the whole exponential ln and its exponent the more specific root action",
+    nestedExpSpecials.some((special) => special.action === "ln" && special.surface === "structure") &&
+      nestedExpSpecials.some(
+        (special) => special.action === "root" && special.n === 5 && special.surface === "operator"
+      ),
+    JSON.stringify(nestedExpSpecials)
+  );
+  check(
+    "S20 every contextual action advertises the dashed blue hover treatment",
+    (nestedSpecialHtml.match(/outline-dashed/g) ?? []).length === nestedSpecials.length &&
+      (nestedSpecialHtml.match(/outline-sky-400\/70/g) ?? []).length === nestedSpecials.length,
+    nestedSpecialHtml
   );
 
   console.log(`\n${pass} passed, ${fail} failed`);
