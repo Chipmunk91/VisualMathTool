@@ -591,7 +591,6 @@ const EquationBuilderTool = () => {
   const captureStepsRef = useRef<TraceStep[]>([]);
   const captureLabelRef = useRef<{ label: string; from: string; to: string }>({ label: "", from: "", to: "" });
   const [toolboxOpen, setToolboxOpen] = useState(false);
-  const toolGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [underHover, setUnderHover] = useState<string | null>(null);
   const underHoverRef = useRef<string | null>(null);
   const [termHover, setTermHover] = useState<string | null>(null);
@@ -4950,17 +4949,11 @@ const EquationBuilderTool = () => {
 
       {/* Symbol toolbox */}
       <div className="absolute left-4 top-4 z-30 flex items-start gap-2" data-ui data-toolbox>
-        <div
-          className="relative"
-          onMouseEnter={() => {
-            if (toolGroupTimer.current) clearTimeout(toolGroupTimer.current);
-            setToolboxOpen(true);
-          }}
-          onMouseLeave={() => {
-            toolGroupTimer.current = setTimeout(() => setToolboxOpen(false), 250);
-          }}
-        >
+        <div className="relative">
           <button
+            type="button"
+            aria-expanded={toolboxOpen}
+            aria-controls="equation-operations-menu"
             className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 font-serif text-base shadow-sm transition-colors ${
               toolboxOpen
                 ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
@@ -4978,7 +4971,10 @@ const EquationBuilderTool = () => {
             />
           </button>
           {toolboxOpen && (
-            <div className="absolute left-0 top-[calc(100%+4px)] z-40 w-max rounded-lg border border-border bg-card p-2 shadow-lg">
+            <div
+              id="equation-operations-menu"
+              className="absolute left-0 top-[calc(100%+4px)] z-40 w-max rounded-lg border border-border bg-card p-2 shadow-lg"
+            >
               {TOOLBOX.map((toolGroup) => (
                 <div key={toolGroup.id} className="mb-2 last:mb-0">
                   <div className="mb-0.5 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
