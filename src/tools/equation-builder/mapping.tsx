@@ -24,6 +24,8 @@ export function MappingPane({
   depKey,
   inputVar,
   outputVar,
+  probeValue,
+  onProbeValue,
 }: {
   /** the function being visualized — output = f(input) */
   f: (x: number) => number;
@@ -31,6 +33,8 @@ export function MappingPane({
   depKey: string;
   inputVar: string;
   outputVar: string;
+  probeValue: number;
+  onProbeValue: (value: number) => void;
 }) {
   const [shown, setShown] = useState(false);
   useEffect(() => {
@@ -38,7 +42,7 @@ export function MappingPane({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const [probe, setProbe] = useState(1);
+  const probe = probeValue;
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef(false);
 
@@ -84,10 +88,10 @@ export function MappingPane({
   const down = (e: ReactPointerEvent) => {
     dragging.current = true;
     (e.target as Element).setPointerCapture(e.pointerId);
-    setProbe(clientToX(e));
+    onProbeValue(clientToX(e));
   };
   const move = (e: ReactPointerEvent) => {
-    if (dragging.current) setProbe(clientToX(e));
+    if (dragging.current) onProbeValue(clientToX(e));
   };
   const up = () => {
     dragging.current = false;

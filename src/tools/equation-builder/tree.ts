@@ -37,7 +37,7 @@ export interface TNodeMeta {
 export type TNode = TNodeMeta & (
   | { kind: "const"; num: number; den: number }
   | { kind: "named"; name: TNamedConstant }
-  | { kind: "var"; name: Variable }
+  | { kind: "var"; name: Variable; symbolId: string }
   | { kind: "add"; terms: TNode[] }
   | { kind: "mul"; factors: TNode[] }
   | { kind: "pow"; base: TNode; exp: TNode }
@@ -57,7 +57,17 @@ export const freshNodeId = (): TNodeId => `n_${NODE_SESSION}_${(nodeCounter++).t
 
 export const tc = (num: number, den = 1): TNode => normRat({ kind: "const", num, den });
 export const tnamed = (name: TNamedConstant): TNode => ({ id: freshNodeId(), kind: "named", name });
-export const tv = (name: Variable): TNode => ({ id: freshNodeId(), kind: "var", name });
+/** Stable document identity for a symbol. It is deliberately independent of
+ * render position and remains unchanged when the display name is renamed. */
+export const symbolIdForName = (name: Variable): string =>
+  `sym_${Array.from(name).map((char) => char.codePointAt(0)!.toString(36)).join("_")}`;
+
+export const tv = (name: Variable, symbolId = symbolIdForName(name)): TNode => ({
+  id: freshNodeId(),
+  kind: "var",
+  name,
+  symbolId,
+});
 export const tadd = (...terms: TNode[]): TNode => ({ id: freshNodeId(), kind: "add", terms });
 export const tmul = (...factors: TNode[]): TNode => ({ id: freshNodeId(), kind: "mul", factors });
 export const tpow = (base: TNode, exp: TNode | number): TNode => ({
@@ -83,7 +93,7 @@ export function ensureTreeIds(n: TNode, seen = new Set<TNodeId>()): TNode {
     case "named":
       return { id, kind: "named", name: n.name };
     case "var":
-      return { id, kind: "var", name: n.name };
+      return { id, kind: "var", name: n.name, symbolId: n.symbolId ?? symbolIdForName(n.name) };
     case "add":
       return { id, kind: "add", terms: n.terms.map((term) => ensureTreeIds(term, seen)) };
     case "mul":
@@ -631,7 +641,7 @@ const FN_EVAL: Record<TFnName, (v: number) => number> = {
   sqrt: Math.sqrt,
 };
 
-export function evalNode(n: TNode, env: { x?: number; y?: number }): number {
+export function evalNode(n: TNode, env: Readonly<Record<string, number | undefined>>): number {
   switch (n.kind) {
     case "const":
       return n.num / n.den;

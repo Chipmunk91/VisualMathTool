@@ -8,7 +8,9 @@
 /** Any integer power of the variable — x⁻³ … x⁰ … x⁷ all welcome */
 export type Power = number;
 
-export type Variable = "x" | "y";
+/** A mathematical identifier. The legacy renderer used to restrict this to
+ * x/y; the canonical tree and symbol book accept any parser-safe name. */
+export type Variable = string;
 
 /** The variable a powered leaf refers to; constants default to x (irrelevant) */
 export const varOf = (l: { variable?: Variable }): Variable => l.variable ?? "x";
@@ -173,7 +175,10 @@ export function combine(terms: EqTerm[]): EqTerm[] {
     if (s.num !== 0) merged.push({ ...leaf(s.num, power, s.den, variable), id: list[0].id });
   };
   // like terms merge per variable and power; constants merge regardless of variable
-  for (const variable of ["y", "x"] as Variable[]) {
+  const variables = Array.from(new Set(leaves.filter((term) => term.power !== 0).map(varOf))).sort((a, b) =>
+    a === "y" ? -1 : b === "y" ? 1 : a === "x" ? -1 : b === "x" ? 1 : a.localeCompare(b)
+  );
+  for (const variable of variables) {
     const powers = Array.from(
       new Set(leaves.filter((t) => t.power !== 0 && varOf(t) === variable).map((t) => t.power))
     ).sort((a, b) => b - a);

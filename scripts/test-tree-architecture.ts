@@ -1,6 +1,13 @@
 /** Architectural invariants for the canonical equation tree. */
 import { leaf } from "../src/tools/equation-builder/model";
 import { computeTreeOperation, previewTreeOperation } from "../src/tools/equation-builder/operations";
+import {
+  equationRevision,
+  makeEquationDocument,
+  reconcileSymbols,
+  symbolsInEquation,
+} from "../src/tools/equation-builder/document";
+import { applyEquationCommand, listApplicableEquationOperations } from "../src/tools/equation-builder/engine";
 import { parseEquation } from "../src/tools/equation-builder/parse";
 import { toggleTreeFactorSelection } from "../src/tools/equation-builder/selection";
 import { decodeHistory, encodeHistory } from "../src/tools/equation-builder/share";
@@ -226,6 +233,78 @@ console.log("\n== operation boundary ==");
     "D5 dividing a whole-addend x has the same inline preview as an x factor",
     additivePreview?.kind === "divide" && additivePreview.text === "x",
     JSON.stringify(additivePreview)
+  );
+}
+
+console.log("\n== equation document and AI command contract ==");
+{
+  const arbitrary = parsed("force = mass*acceleration");
+  const symbols = symbolsInEquation(arbitrary);
+  check(
+    "E1 arbitrary identifiers become symbol records",
+    ["acceleration", "force", "mass"].every((name) => symbols.some((symbol) => symbol.name === name)),
+    symbols.map((symbol) => symbol.name).join(", ")
+  );
+  const mass = symbols.find((symbol) => symbol.name === "mass")!;
+  const authored = symbols.map((symbol) =>
+    symbol.id === mass.id ? { ...symbol, meaning: "inertial mass", role: "parameter" as const } : symbol
+  );
+  const reconciled = reconcileSymbols(parsed("force = 2*mass*acceleration"), authored);
+  check(
+    "E2 authored symbol metadata survives reparsing",
+    reconciled.find((symbol) => symbol.id === mass.id)?.meaning === "inertial mass"
+  );
+  const document = makeEquationDocument(arbitrary, { symbols: authored });
+  check(
+    "E3 document revision is deterministic and includes symbol metadata",
+    document.revision === equationRevision(arbitrary) && document.symbols.length === 3
+  );
+
+  const movable = parsed("3*x = y");
+  const factor = treeFactorLayout(movable.left.id, movable.left).numerator.find((unit) => printNode(unit.expr) === "3")!;
+  const request = {
+    requestId: "architecture-test",
+    expectedRevision: equationRevision(movable),
+    actor: { kind: "ai" as const, name: "test-agent" },
+    command: {
+      type: "gesture" as const,
+      payload: { kind: "coef" as const, termId: factor.id, from: "left" as const },
+      target: { kind: "side" as const, side: "right" as const },
+    },
+  };
+  const applied = applyEquationCommand(movable, request);
+  const available = listApplicableEquationOperations(movable);
+  check(
+    "E4 AI can discover concrete legal operations without pointer geometry",
+    available.some((operation) => operation.command.type === "gesture" && operation.label === "Divide both sides by 3")
+  );
+  check(
+    "E5 AI and pointer operations share one semantic dispatcher",
+    applied.status === "applied" && printTreeEq(applied.outcome.treeNext) === "x = y/3"
+  );
+  check(
+    "E6 applied commands produce replayable provenance",
+    applied.status === "applied" &&
+      applied.event.actor.kind === "ai" &&
+      applied.event.operation.ruleId === "gesture.coef.side" &&
+      applied.event.beforeRevision === request.expectedRevision
+  );
+  const stale = applyEquationCommand(movable, { ...request, expectedRevision: "rev_stale" });
+  check("E7 stale AI writes are rejected", stale.status === "stale");
+
+  const sharedV2 = encodeHistory({
+    schemaVersion: 2,
+    document: {
+      documentId: document.documentId,
+      revision: document.revision,
+      symbols: document.symbols,
+      assumptions: [],
+    },
+    steps: [{ label: "start", tree: arbitrary }],
+  });
+  check(
+    "E8 share v2 preserves the symbol book",
+    decodeHistory(sharedV2)?.document?.symbols.find((symbol) => symbol.id === mass.id)?.meaning === "inertial mass"
   );
 }
 

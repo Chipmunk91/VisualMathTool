@@ -112,7 +112,7 @@ function factorCommon(n: TNode): TNode | null {
   g = Math.abs(g);
   // common variable powers: for each variable, the minimum power across terms
   const varPow: Record<string, number> = {};
-  for (const v of ["x", "y"] as Variable[]) {
+  for (const v of Array.from(varsIn(n))) {
     let min = Infinity;
     for (const p of parts) {
       let pw = 0;
