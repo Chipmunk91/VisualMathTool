@@ -14,7 +14,6 @@ import { svd } from "./lib/svd";
 import { invert, invert2 } from "./lib/mat3";
 import { rankOf } from "./lib/spaces";
 import { shareUrl, sharedFromUrl } from "./lib/share";
-import { embedSnippet } from "../../lib/embed";
 
 const fmt = (v: number): string => {
   if (Number.isInteger(v)) return String(v);
@@ -319,7 +318,6 @@ export function MatrixPanel() {
   );
 
   const [copied, setCopied] = useState(false);
-  const [copiedEmbed, setCopiedEmbed] = useState(false);
   const currentShareUrl = () =>
     shareUrl({
       rows,
@@ -336,16 +334,9 @@ export function MatrixPanel() {
       setTimeout(() => setCopied(false), 1500);
     });
   };
-  const copyEmbed = () => {
-    navigator.clipboard?.writeText(embedSnippet(currentShareUrl(), "Matrix Meets Vector")).then(() => {
-      setCopiedEmbed(true);
-      setTimeout(() => setCopiedEmbed(false), 1500);
-    });
-  };
-
   return (
     <>
-      {/* share — the whole configuration in a link, or an embeddable iframe */}
+      {/* share — the whole configuration in a link */}
       <div className="absolute right-4 top-4 flex items-center gap-2 select-none" data-ui>
         <button
           onClick={copyShare}
@@ -353,13 +344,6 @@ export function MatrixPanel() {
           title="Copy a link to this exact configuration"
         >
           {copied ? "copied ✓" : "⧉ share"}
-        </button>
-        <button
-          onClick={copyEmbed}
-          className="rounded-full border border-border px-3 py-1.5 font-mono text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
-          title="Copy an iframe of this exact configuration — plug it into any page"
-        >
-          {copiedEmbed ? "copied ✓" : "</>"}
         </button>
       </div>
 
