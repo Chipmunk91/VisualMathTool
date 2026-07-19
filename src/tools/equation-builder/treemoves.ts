@@ -224,6 +224,16 @@ export function thawExpLn(n: TNode): { node: TNode; thawed: string[] } {
         }
         return { id: m.id, kind: "fn", fn: m.fn, arg };
       }
+      case "derivative":
+        return { ...m, expression: walk(m.expression) };
+      case "integral":
+        return {
+          ...m,
+          integrand: walk(m.integrand),
+          bounds: m.bounds
+            ? { lower: walk(m.bounds.lower), upper: walk(m.bounds.upper) }
+            : undefined,
+        };
     }
   };
   return { node: walk(n), thawed };

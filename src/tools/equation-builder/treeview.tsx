@@ -541,6 +541,65 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
         </TermRegion>
       );
     }
+    case "derivative": {
+      const mark = node.notation === "partial" ? "∂" : "d";
+      const order = node.order > 1 ? supInt(node.order) : "";
+      return (
+        <TermRegion ctx={ctx}>
+          <span className="mx-1 inline-flex flex-col items-center self-center text-[0.58em] leading-none">
+            <span className="inline-flex items-center px-[0.12em]">
+              <span className="mr-[0.08em] select-none">{mark}{order}</span>
+              <span className="select-none">(</span>
+              <TN node={node.expression} ctx={{ ...ctx, inert: true }} />
+              <span className="select-none">)</span>
+            </span>
+            <span className="pointer-events-none my-[0.12em] h-[0.07em] w-full min-w-[1.3em] rounded bg-current" aria-hidden />
+            <span className="inline-flex items-center px-[0.12em]">
+              <span className="select-none">{mark}</span>
+              <span
+                data-model-symbol={node.variable.symbolId}
+                className={`italic ${
+                  ctx.highlightedSymbolId === node.variable.symbolId ? "text-sky-600 dark:text-sky-300" : ""
+                }`}
+              >
+                {node.variable.name}
+              </span>
+              {order && <span className="select-none">{order}</span>}
+            </span>
+          </span>
+        </TermRegion>
+      );
+    }
+    case "integral":
+      return (
+        <TermRegion ctx={ctx}>
+          <span className="inline-flex items-center">
+            <span className="relative mr-1 inline-flex select-none items-center text-[1.25em]">
+              ∫
+              {node.bounds && (
+                <>
+                  <span className="absolute -top-[0.35em] left-[0.65em] text-[0.35em]">
+                    <TN node={node.bounds.upper} ctx={{ ...ctx, inert: true }} />
+                  </span>
+                  <span className="absolute -bottom-[0.35em] left-[0.65em] text-[0.35em]">
+                    <TN node={node.bounds.lower} ctx={{ ...ctx, inert: true }} />
+                  </span>
+                </>
+              )}
+            </span>
+            <TN node={node.integrand} ctx={{ ...ctx, inert: true }} />
+            <span className="ml-1 select-none">d</span>
+            <span
+              data-model-symbol={node.variable.symbolId}
+              className={`italic ${
+                ctx.highlightedSymbolId === node.variable.symbolId ? "text-sky-600 dark:text-sky-300" : ""
+              }`}
+            >
+              {node.variable.name}
+            </span>
+          </span>
+        </TermRegion>
+      );
   }
 }
 

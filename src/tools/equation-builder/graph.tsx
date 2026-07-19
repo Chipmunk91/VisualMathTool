@@ -78,6 +78,7 @@ export function GraphPane({ left, right }: EquationState) {
       fl={(x) => evalSide(left, x)}
       fr={(x) => evalSide(right, x)}
       depKey={JSON.stringify([left, right])}
+      inputVar="x"
     />
   );
 }
@@ -87,10 +88,12 @@ export function GraphView({
   fl,
   fr,
   depKey,
+  inputVar,
 }: {
   fl: (x: number) => number;
   fr: (x: number) => number;
   depKey: string;
+  inputVar: string;
 }) {
   // Fade in on first mount — the "something new appeared" moment
   const [shown, setShown] = useState(false);
@@ -204,7 +207,7 @@ export function GraphView({
         viewBox={`0 0 ${W} ${H}`}
         className="w-[min(680px,85vw)]"
         role="img"
-        aria-label="Both sides of the equation plotted as functions of x"
+        aria-label={`Both sides of the equation plotted against ${inputVar}`}
       >
         <defs>
           <clipPath id="graph-clip">
@@ -216,6 +219,14 @@ export function GraphView({
           <line x1={PAD} y1={y0} x2={W - PAD} y2={y0} className="stroke-muted-foreground/30" strokeWidth="1" />
         )}
         <line x1={x0} y1={PAD} x2={x0} y2={H - PAD} className="stroke-muted-foreground/30" strokeWidth="1" />
+        <text
+          x={W - PAD + 2}
+          y={Math.min(H - PAD - 2, Math.max(PAD + 10, y0 + 14))}
+          className="fill-muted-foreground text-[11px] italic"
+          fontFamily="serif"
+        >
+          {inputVar}
+        </text>
         {/* x ticks every 2 */}
         {[-6, -4, -2, 2, 4, 6].map((v) => (
           <g key={`x${v}`}>
@@ -269,7 +280,7 @@ export function GraphView({
         </span>
         {roots.length > 0 && (
           <span>
-            {roots.length === 1 ? "crossing at" : "crossings at"} x = {roots.map((r) => fmt(r.x)).join(", ")}
+            {roots.length === 1 ? "crossing at" : "crossings at"} {inputVar} = {roots.map((r) => fmt(r.x)).join(", ")}
           </span>
         )}
       </div>

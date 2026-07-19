@@ -5,9 +5,21 @@ import {
   equationRevision,
   makeEquationDocument,
   reconcileSymbols,
+  renameSymbol,
   symbolsInEquation,
 } from "../src/tools/equation-builder/document";
 import { applyEquationCommand, listApplicableEquationOperations } from "../src/tools/equation-builder/engine";
+import {
+  differentiateRelation,
+  integrateRelation,
+  validateCalculusContext,
+} from "../src/tools/equation-builder/calculus";
+import {
+  analyzeRelation,
+  isViewSpecValid,
+  unambiguousView,
+} from "../src/tools/equation-builder/relation";
+import { marchingSquaresContour } from "../src/tools/equation-builder/multivariable";
 import { parseEquation } from "../src/tools/equation-builder/parse";
 import { toggleTreeFactorSelection } from "../src/tools/equation-builder/selection";
 import { decodeHistory, encodeHistory } from "../src/tools/equation-builder/share";
@@ -53,6 +65,14 @@ const walk = (node: TNode, visit: (node: TNode) => void) => {
     walk(node.base, visit);
     walk(node.exp, visit);
   } else if (node.kind === "fn") walk(node.arg, visit);
+  else if (node.kind === "derivative") walk(node.expression, visit);
+  else if (node.kind === "integral") {
+    walk(node.integrand, visit);
+    if (node.bounds) {
+      walk(node.bounds.lower, visit);
+      walk(node.bounds.upper, visit);
+    }
+  }
 };
 
 const idsOf = (tree: TreeEq): string[] => {
@@ -78,6 +98,10 @@ const firstIdDifference = (a: TNode, b: TNode, path = "root"): string => {
     return firstIdDifference(a.base, b.base, `${path}.base`) || firstIdDifference(a.exp, b.exp, `${path}.exp`);
   } else if (a.kind === "fn" && b.kind === "fn") {
     return firstIdDifference(a.arg, b.arg, `${path}.arg`);
+  } else if (a.kind === "derivative" && b.kind === "derivative") {
+    return firstIdDifference(a.expression, b.expression, `${path}.expression`);
+  } else if (a.kind === "integral" && b.kind === "integral") {
+    return firstIdDifference(a.integrand, b.integrand, `${path}.integrand`);
   }
   return "";
 };
@@ -247,7 +271,7 @@ console.log("\n== equation document and AI command contract ==");
   );
   const mass = symbols.find((symbol) => symbol.name === "mass")!;
   const authored = symbols.map((symbol) =>
-    symbol.id === mass.id ? { ...symbol, meaning: "inertial mass", role: "parameter" as const } : symbol
+    symbol.id === mass.id ? { ...symbol, meaning: "inertial mass" } : symbol
   );
   const reconciled = reconcileSymbols(parsed("force = 2*mass*acceleration"), authored);
   check(
@@ -305,6 +329,220 @@ console.log("\n== equation document and AI command contract ==");
   check(
     "E8 share v2 preserves the symbol book",
     decodeHistory(sharedV2)?.document?.symbols.find((symbol) => symbol.id === mass.id)?.meaning === "inertial mass"
+  );
+  const sharedV3 = encodeHistory({
+    schemaVersion: 3,
+    document: {
+      documentId: document.documentId,
+      revision: document.revision,
+      symbols: document.symbols,
+      assumptions: [],
+      presentation: {
+        viewSpec: {
+          kind: "function-1d",
+          input: "acceleration",
+          output: "force",
+          fixed: { mass: 1 },
+        },
+        lastDifferentiationContext: {
+          mode: "partial",
+          withRespectTo: "acceleration",
+          dependent: ["force"],
+          heldConstant: ["mass"],
+        },
+      },
+    },
+    steps: [{ label: "start", tree: arbitrary }],
+  });
+  const restoredV3 = decodeHistory(sharedV3);
+  check(
+    "E9 share v3 preserves contextual view and calculus choices",
+    restoredV3?.document?.presentation?.viewSpec?.kind === "function-1d" &&
+      restoredV3.document.presentation.lastDifferentiationContext?.heldConstant[0] === "mass"
+  );
+}
+
+console.log("\n== symmetric relation analysis and contextual views ==");
+{
+  const forward = analyzeRelation(parsed("y = sin(t)"));
+  const reversed = analyzeRelation(parsed("sin(t) = y"));
+  check(
+    "F1 explicit interpretation is independent of equation side",
+    forward.isolations[0]?.output === "y" && forward.isolations[0]?.inputs.join() === "t" &&
+      reversed.isolations[0]?.output === "y" && reversed.isolations[0]?.inputs.join() === "t"
+  );
+  const swapped = analyzeRelation(parsed("x = y^2"));
+  check(
+    "F2 no x/y role convention overrides actual structure",
+    swapped.isolations[0]?.output === "x" && swapped.isolations[0]?.inputs.join() === "y"
+  );
+  const implicit = analyzeRelation(parsed("x^2 + y^2 = 1"));
+  const implicitView = unambiguousView(implicit);
+  check(
+    "F3 a two-symbol unsolved relation becomes an implicit 2-D candidate",
+    implicitView?.kind === "implicit-2d" && isViewSpecValid(implicitView, implicit)
+  );
+  const field = analyzeRelation(parsed("y = s*t"));
+  const fieldView = unambiguousView(field);
+  check(
+    "F4 a two-input explicit relation becomes a scalar field without choosing one input",
+    fieldView?.kind === "scalar-field-2d" && fieldView.output === "y" &&
+      new Set([fieldView.horizontal, fieldView.vertical]).size === 2
+  );
+  const legacy = symbolsInEquation(parsed("x = y")) as Array<Record<string, unknown>>;
+  legacy[0].role = "independent";
+  legacy[0].domain = "real";
+  legacy[1].dependsOn = [legacy[0].id];
+  const migrated = reconcileSymbols(parsed("x = y"), legacy as never);
+  check(
+    "F5 legacy role/domain/dependency metadata is removed instead of becoming stale",
+    migrated.every((record) => !("role" in record) && !("domain" in record) && !("dependsOn" in record))
+  );
+  const circleContour = marchingSquaresContour((x, y) => x * x + y * y - 1);
+  const contourError = Math.max(...circleContour.flatMap((segment) => [segment.a, segment.b])
+    .map((point) => Math.abs(point.x * point.x + point.y * point.y - 1)));
+  check(
+    "F6 implicit graphing traces the zero contour instead of solving for an axis",
+    circleContour.length > 20 && contourError < 0.02,
+    `segments=${circleContour.length}, max error=${contourError}`
+  );
+}
+
+console.log("\n== explicit multivariable calculus contexts ==");
+{
+  const relation = parsed("y = s*t");
+  const incomplete = {
+    mode: "partial" as const,
+    withRespectTo: "s",
+    dependent: ["y"],
+    heldConstant: [] as string[],
+  };
+  check(
+    "G1 calculus refuses an unclassified symbol",
+    !validateCalculusContext(relation, incomplete).ok
+  );
+  check(
+    "G1b a one-variable equation is not silently treated as an identity",
+    !validateCalculusContext(parsed("x^2 = 1"), {
+      mode: "ordinary",
+      withRespectTo: "x",
+      dependent: [],
+      heldConstant: [],
+    }).ok
+  );
+  const partialContext = { ...incomplete, heldConstant: ["t"] };
+  const partial = differentiateRelation(relation, partialContext);
+  check(
+    "G2 partial differentiation preserves the operator and held-constant choice",
+    typeof partial !== "string" && printTreeEq(partial.equation) === "∂(y)/∂s = t",
+    typeof partial === "string" ? partial : printTreeEq(partial.equation)
+  );
+
+  const circle = parsed("x^2 + y^2 = 1");
+  const implicit = differentiateRelation(circle, {
+    mode: "implicit",
+    withRespectTo: "x",
+    dependent: ["y"],
+    heldConstant: [],
+  });
+  check(
+    "G3 implicit differentiation emits dy/dx as an algebraic factor",
+    typeof implicit !== "string" && printTreeEq(implicit.equation).includes("d(y)/dx") &&
+      printTreeEq(implicit.equation).endsWith("= 0"),
+    typeof implicit === "string" ? implicit : printTreeEq(implicit.equation)
+  );
+
+  const integrated = integrateRelation(parsed("a*x = y"), {
+    mode: "ordinary",
+    withRespectTo: "x",
+    dependent: ["y"],
+    heldConstant: ["a"],
+  });
+  check(
+    "G4 integration keeps dependent expressions under an integral and records C",
+    typeof integrated !== "string" && printTreeEq(integrated.equation).includes("∫ y dx") &&
+      printTreeEq(integrated.equation).includes("C"),
+    typeof integrated === "string" ? integrated : printTreeEq(integrated.equation)
+  );
+
+  const command = applyEquationCommand(circle, {
+    requestId: "implicit-calculus-test",
+    expectedRevision: equationRevision(circle),
+    actor: { kind: "ai", name: "test-agent" },
+    command: {
+      type: "differentiate",
+      context: {
+        mode: "implicit",
+        withRespectTo: "x",
+        dependent: ["y"],
+        heldConstant: [],
+      },
+    },
+  });
+  check(
+    "G5 AI calculus uses the same explicit-context command and trace",
+    command.status === "applied" && command.event.operation.ruleId === "calculus.differentiate.implicit"
+  );
+
+  const ordinary = differentiateRelation(parsed("y = x^2"), {
+    mode: "ordinary",
+    withRespectTo: "x",
+    dependent: ["y"],
+    heldConstant: [],
+  });
+  check(
+    "G6 ordinary differentiation also keeps dy/dx as notation",
+    typeof ordinary !== "string" && printTreeEq(ordinary.equation) === "d(y)/dx = 2x",
+    typeof ordinary === "string" ? ordinary : printTreeEq(ordinary.equation)
+  );
+  check(
+    "G6b unresolved calculus operators do not advertise a numeric graph",
+    typeof ordinary !== "string" && analyzeRelation(ordinary.equation).viewCandidates.length === 0
+  );
+
+  const total = differentiateRelation(relation, {
+    mode: "total",
+    withRespectTo: "s",
+    dependent: ["t", "y"],
+    heldConstant: [],
+  });
+  check(
+    "G7 total differentiation retains the chain contribution dt/ds",
+    typeof total !== "string" && printTreeEq(total.equation).includes("d(t)/ds"),
+    typeof total === "string" ? total : printTreeEq(total.equation)
+  );
+
+  const definite = integrateRelation(parsed("x = 1"), {
+    mode: "ordinary",
+    withRespectTo: "x",
+    dependent: [],
+    heldConstant: [],
+    treatAsIdentity: true,
+    bounds: [0, 1],
+  });
+  check(
+    "G8 definite integration preserves both bounds as first-class operator data",
+    typeof definite !== "string" && printTreeEq(definite.equation).includes("∫_[0,1]") &&
+      !printTreeEq(definite.equation).includes("C"),
+    typeof definite === "string" ? definite : printTreeEq(definite.equation)
+  );
+
+  const renameSeed = parsed("y = x^2");
+  const originalX = symbolsInEquation(renameSeed).find((symbol) => symbol.name === "x")!;
+  const renamed = renameSymbol(renameSeed, originalX.id, "time");
+  const renamedDerivative = differentiateRelation(renamed, {
+    mode: "ordinary",
+    withRespectTo: "time",
+    dependent: ["y"],
+    heldConstant: [],
+  });
+  const renamedRecords = typeof renamedDerivative === "string"
+    ? []
+    : symbolsInEquation(renamedDerivative.equation).filter((symbol) => symbol.name === "time");
+  check(
+    "G9 calculus notation preserves a renamed symbol's stable identity",
+    renamedRecords.length === 1 && renamedRecords[0].id === originalX.id,
+    JSON.stringify(renamedRecords)
   );
 }
 

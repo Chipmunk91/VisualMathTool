@@ -15,14 +15,23 @@ import {
 import { computeTreeOperation, type DragPayload, type DropTarget } from "./operations";
 import { applyRewrite, detectRewritesEq } from "./rewrites";
 import { applySpecialActionT, type SpecialActionRef } from "./specialactions";
-import { addendsOf, cloneTreeEq, keyOf, printNode, type TreeEq } from "./tree";
+import { addendsOf, cloneTreeEq, printNode, type TreeEq } from "./tree";
 import { finalize, type TreeMoveResult, type TreeOutcome } from "./treemoves";
 import { treeFactorLayout } from "./treeunits";
+import {
+  differentiateRelation,
+  integrateRelation,
+  type DifferentiationContext,
+  type IntegrationContext,
+} from "./calculus";
+import type { RelationAnalysis, ViewSpec } from "./relation";
 
 export type EquationCommand =
   | { type: "gesture"; payload: DragPayload; target: DropTarget }
   | { type: "special-action"; action: SpecialActionRef }
-  | { type: "rewrite"; side: Side; targetId: string; kind: "expand" | "factor" | "identity" };
+  | { type: "rewrite"; side: Side; targetId: string; kind: "expand" | "factor" | "identity" }
+  | { type: "differentiate"; context: DifferentiationContext }
+  | { type: "integrate"; context: IntegrationContext };
 
 export interface EquationCommandRequest {
   requestId: string;
@@ -39,6 +48,8 @@ export type EquationCommandResult =
 /** Browser/MCP adapters expose this contract; React is not part of it. */
 export interface EquationToolApi {
   getDocument(): EquationDocument;
+  analyzeRelation(): RelationAnalysis;
+  setViewSpec(spec: ViewSpec | null): boolean;
   inspectNodes(): { id: string; kind: string; expression: string }[];
   listApplicableOperations(): ApplicableEquationOperation[];
   previewCommand(request: EquationCommandRequest): EquationCommandResult;
@@ -89,12 +100,44 @@ const traceFor = (command: EquationCommand): EquationCommandTrace => {
         targets: [command.targetId],
         arguments: { side: command.side },
       };
+    case "differentiate":
+      return {
+        type: command.type,
+        ruleId: `calculus.differentiate.${command.context.mode}`,
+        targets: [],
+        arguments: { context: command.context },
+      };
+    case "integrate":
+      return {
+        type: command.type,
+        ruleId: `calculus.integrate.${command.context.mode}`,
+        targets: [],
+        arguments: { context: command.context },
+      };
   }
 };
 
 export function executeEquationCommand(equation: TreeEq, command: EquationCommand): TreeMoveResult {
   if (command.type === "gesture") return computeTreeOperation(equation, command.payload, command.target);
   if (command.type === "special-action") return applySpecialActionT(equation, command.action);
+  if (command.type === "differentiate") {
+    const result = differentiateRelation(equation, command.context);
+    if (typeof result === "string") return result;
+    return finalize(result.equation.left, result.equation.right, result.label, {
+      note: result.note,
+      pill: result.pill,
+      dangerous: !!result.pill,
+    });
+  }
+  if (command.type === "integrate") {
+    const result = integrateRelation(equation, command.context);
+    if (typeof result === "string") return result;
+    return finalize(result.equation.left, result.equation.right, result.label, {
+      note: result.note,
+      pill: result.pill,
+      dangerous: !!result.pill,
+    });
+  }
   const candidate = detectRewritesEq(equation).find(
     ({ side, rewrite }) =>
       side === command.side && rewrite.before.id === command.targetId && rewrite.kind === command.kind
@@ -153,6 +196,11 @@ export function inspectEquationNodes(equation: TreeEq): { id: string; kind: stri
     else if (node.kind === "mul") node.factors.forEach(walk);
     else if (node.kind === "pow") { walk(node.base); walk(node.exp); }
     else if (node.kind === "fn") walk(node.arg);
+    else if (node.kind === "derivative") walk(node.expression);
+    else if (node.kind === "integral") {
+      walk(node.integrand);
+      if (node.bounds) { walk(node.bounds.lower); walk(node.bounds.upper); }
+    }
   };
   walk(equation.left);
   walk(equation.right);
