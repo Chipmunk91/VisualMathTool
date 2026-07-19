@@ -1,5 +1,90 @@
 # Equation Playground API
 
+## Versioned protocol (phases 1–3)
+
+`window.visualMathEquation.protocol` is the public, transport-neutral contract for model-driven
+equation work. Its version is `visualmath.equation.v1`. The browser adapter and MCP server both
+delegate to `EquationSessionService`; neither adapter reimplements algebra rules.
+
+The safe mutation sequence is always:
+
+1. Read the document and its revision.
+2. List the actions that the engine says are legal at that revision.
+3. Preview one advertised action ID with its declared arguments.
+4. Show or inspect the exact before/intermediate/after result.
+5. Apply that single-use preview token with an idempotent request ID.
+
+```ts
+const protocol = window.visualMathEquation?.protocol;
+if (!protocol) throw new Error("Equation protocol is unavailable");
+
+const document = protocol.getDocument();
+const action = protocol.listActions()
+  .find((candidate) => candidate.label === "Divide both sides by 3");
+if (!action) throw new Error("That operation is not legal at this revision");
+
+const preview = protocol.previewAction({
+  documentId: document.documentId,
+  expectedRevision: document.revision,
+  actionId: action.id,
+  arguments: {},
+  actor: { kind: "ai", name: "Claude" },
+});
+
+if (preview.status === "previewed") {
+  const applied = protocol.applyPreview({
+    documentId: document.documentId,
+    previewToken: preview.previewToken,
+    requestId: crypto.randomUUID(),
+    actor: { kind: "ai", name: "Claude" },
+  });
+  console.log(applied);
+}
+```
+
+Action IDs and previews are revision-bound. A fabricated action is rejected, a preview cannot be
+reused, and a preview becomes stale if another operation changes the equation first. A repeated
+apply request with the same document/request ID returns the original result. Applied operations
+append an actor-attributed event containing the semantic rule, targets, before state, optional
+intermediate simplification state, after state, assumptions, explanation, and movement animation.
+
+For calculus, callers refer to durable symbol IDs—not visual positions—and must classify every
+other symbol as `dependent` or `held-constant`. Both sides of the relation are operated on; the
+protocol never invents a source side, target side, or independent variable.
+
+## Local MCP server
+
+The stdio server at `server/mcp/equation-server.ts` exposes the same session contract to any MCP
+client. Start it with:
+
+```bash
+npm run mcp:equation
+```
+
+It provides these tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `equation_create` | Parse text into a traceable equation document. |
+| `equation_list_documents` | List documents in this server process. |
+| `equation_get` | Read a complete document snapshot. |
+| `equation_analyze` | Read symmetric relation, symbol, graph, and calculus candidates. |
+| `equation_list_actions` | Discover the legal, revision-bound action inventory. |
+| `equation_preview_action` | Compute an exact non-mutating preview. |
+| `equation_apply_preview` | Atomically apply a preview token. |
+| `equation_update_symbol` | Add meaning, unit, or assumptions to a stable symbol. |
+| `equation_set_view` | Select an advertised visualization candidate. |
+
+The same data is readable as MCP resources under `visualmath://equations/{documentId}` with
+`/analysis`, `/symbols`, `/history`, and `/actions` views. See
+[`server/mcp/README.md`](../../../server/mcp/README.md) for client configuration.
+
+Phase 3 is intentionally local and process-scoped. An MCP process does not yet attach itself to an
+already-open browser tab or persist a session to the hosted share URL; that durable synchronization
+boundary is the next phase rather than hidden filesystem or DOM automation.
+
+## Compatibility API
+
 The playground exposes the same semantic command boundary used by its pointer UI at
 `window.visualMathEquation`. The contract is implemented in `engine.ts`; React and pointer
 coordinates are deliberately absent from it.
@@ -29,13 +114,13 @@ if (preview.status === "applied") api.applyCommand(request);
 - `rejected`: the operation is not legal for the selected structure.
 - `stale`: `expectedRevision` does not match the displayed equation.
 
-Current command families are `gesture`, `special-action`, `rewrite`, `differentiate`, and
+The lower-level compatibility command families are `gesture`, `special-action`, `rewrite`, `differentiate`, and
 `integrate`. They cover the existing
 drag/drop grammar, contextual inverse-operation bubbles, toolbox operations, and detected
 factorization/identity rewrites. `updateSymbol` edits the symbol book without rewriting equation
 text.
 
-## Multivariable calculus commands
+## Multivariable calculus compatibility commands
 
 The engine never guesses a calculus source, target, or variable role. A caller must classify every
 symbol other than `withRespectTo` as either dependent or held constant. Differentiation and

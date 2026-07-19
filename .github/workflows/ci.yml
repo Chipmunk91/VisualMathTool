@@ -25,6 +25,10 @@ jobs:
         run: npx tsx scripts/test-tree-architecture.ts
       - name: Tree animation state contract
         run: npx tsx scripts/test-tree-animation.ts
+      - name: Equation protocol contract
+        run: npm run test:protocol
+      - name: Equation MCP contract
+        run: npm run test:mcp
       - name: Rewrite-engine tests
         run: npx tsx scripts/test-rewrites.ts
       - name: Build

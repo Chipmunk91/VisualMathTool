@@ -12,6 +12,9 @@
     "test:symbols": "tsx scripts/test-symbol-handles.ts",
     "test:architecture": "tsx scripts/test-tree-architecture.ts",
     "test:tree-animation": "tsx scripts/test-tree-animation.ts",
+    "test:protocol": "node --import tsx scripts/test-equation-protocol.ts",
+    "test:mcp": "node --import tsx scripts/test-equation-mcp.ts",
+    "mcp:equation": "node --import tsx server/mcp/equation-server.ts",
     "fuzz": "tsx scripts/fuzz-algebra.ts",
     "test:rewrites": "tsx scripts/test-rewrites.ts",
     "test:anim": "node scripts/test-anim-phases.cjs",
@@ -20,6 +23,7 @@
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.5",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@radix-ui/react-dialog": "^1.1.2",
     "@radix-ui/react-label": "^2.1.0",
     "@radix-ui/react-popover": "^1.1.2",
@@ -36,6 +40,7 @@
     "tailwind-merge": "^2.5.4",
     "three": "^0.170.0",
     "wouter": "^3.3.5",
+    "zod": "4.4.3",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
@@ -47,6 +52,7 @@
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
     "tailwindcss-animate": "^1.0.7",
+    "tsx": "4.23.1",
     "typescript": "5.6.3",
     "vite": "^5.4.14"
   }

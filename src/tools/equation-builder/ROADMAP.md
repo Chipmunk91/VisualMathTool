@@ -112,6 +112,24 @@ squaring resolves √ with its check-roots pill).
   or dependent integrands remain honest integral nodes instead of being
   treated as constants or rejected as UI special cases.
 
+### AI equation protocol and local MCP (phases 1–3) ✅
+
+- `visualmath.equation.v1` defines runtime-validated requests and structured
+  errors around the canonical `EquationDocument`; the pure parser and session
+  have no React, DOM, or pointer-coordinate dependency.
+- Models discover concrete legal actions instead of manufacturing engine
+  commands. Every action is revision-bound and declares its targets, JSON
+  input schema, warnings, and—where required—explicit calculus context.
+- Mutation is preview-first and atomic: the preview contains the exact
+  before/intermediate/after trees, while apply consumes a single-use token and
+  records an actor-attributed semantic event. Document-scoped request IDs make
+  retries idempotent, and competing edits produce a stale-revision error.
+- The browser exposes the contract at `window.visualMathEquation.protocol`.
+  A local stdio MCP adapter exposes equivalent create/read/analyze/discover/
+  preview/apply/symbol/view tools plus document resources.
+- Protocol and in-memory MCP contract tests run in CI. Persistent sessions and
+  live browser/MCP synchronization remain a later transport phase.
+
 ## Still honestly gated
 
 - **Bare `e` outside `e^( )`** — `π` is now an exact named constant, while
@@ -123,6 +141,9 @@ squaring resolves √ with its check-roots pill).
   sum) — the next move-grammar chapter.
 - **Systems of relations** — a document currently owns one relation; coupled
   equations need a relation-set document and shared symbol table.
+- **Durable AI session transport** — the local MCP server owns an in-memory
+  session. It does not yet reconnect to a hosted share link or an existing
+  browser tab after the process exits.
 - **Complex evaluation and richer spaces** — assumptions can describe symbols,
   but evaluators and graphs are still real-valued. Vectors, matrices,
   functions and complex values need typed mathematical spaces rather than a

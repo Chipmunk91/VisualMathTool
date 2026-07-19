@@ -63,7 +63,10 @@ import {
   inspectEquationNodes,
   listApplicableEquationOperations,
   type EquationCommand,
+  type EquationToolApi,
 } from "./engine";
+import { EquationSessionService } from "./session";
+import { EQUATION_PROTOCOL_VERSION, type EquationProtocolApi } from "./protocol";
 import { isEmbed } from "../../lib/embed";
 import {
   applyToolT,
@@ -539,6 +542,8 @@ const EquationBuilderTool = () => {
   const [treeEq, setTreeEq] = useState<TreeEq | null>(() => cloneTreeEq(BOOT_TREE));
   const [history, setHistory] = useState<Step[]>(() => [makeTreeStep("start", BOOT_TREE)]);
   const [documentId, setDocumentId] = useState(freshDocumentId);
+  const protocolServiceRef = useRef<EquationSessionService | null>(null);
+  if (!protocolServiceRef.current) protocolServiceRef.current = new EquationSessionService();
   const [symbolRecords, setSymbolRecords] = useState<SymbolRecord[]>(() => symbolsInEquation(BOOT_TREE));
   const [symbolBookOpen, setSymbolBookOpen] = useState(false);
   const [hoveredSymbolId, setHoveredSymbolId] = useState<string | null>(null);
@@ -3277,8 +3282,7 @@ const EquationBuilderTool = () => {
     const documentAssumptions = Array.from(
       new Set(history.map((step) => step.pill).filter((pill): pill is string => !!pill))
     ).map((pill) => predicateFromText(pill));
-    const api = {
-      getDocument: () => makeEquationDocument(equationAtRevision, {
+    const documentSnapshot = makeEquationDocument(equationAtRevision, {
         documentId,
         symbols: symbolRecords,
         assumptions: documentAssumptions,
@@ -3292,7 +3296,63 @@ const EquationBuilderTool = () => {
           lastDifferentiationContext: differentiationContext,
           lastIntegrationContext: integrationContext,
         },
-      }),
+      });
+    const protocolService = protocolServiceRef.current!;
+    protocolService.loadDocument(documentSnapshot);
+    const protocol: EquationProtocolApi = {
+      version: EQUATION_PROTOCOL_VERSION,
+      getDocument: () => protocolService.getDocument(documentId) ?? documentSnapshot,
+      analyze: () => {
+        const analysis = protocolService.analyze(documentId);
+        if (!("status" in analysis)) return analysis;
+        return {
+          relation: analyzeRelation(equationAtRevision),
+          symbols: documentSnapshot.symbols.map(({ id, name, meaning, unit }) => ({
+            id,
+            name,
+            meaning,
+            unit,
+          })),
+        };
+      },
+      listActions: () => {
+        const actions = protocolService.listActions(documentId);
+        return Array.isArray(actions) ? actions : [];
+      },
+      previewAction: (request) => protocolService.previewAction(request),
+      applyPreview: (request) => {
+        const result = protocolService.applyPreview(request);
+        if (result.status === "applied") {
+          const event = result.event;
+          const pill = event.assumptionsAdded[0]?.expression;
+          commitTreeOutcome({
+            treeNext: cloneTreeEq(event.after),
+            treeIntermediate: event.intermediate ? cloneTreeEq(event.intermediate) : undefined,
+            label: event.explanation,
+            note: event.explanation,
+            dangerous: event.assumptionsAdded.length > 0,
+            pill,
+            story: event.animation,
+          }, event);
+        }
+        return result;
+      },
+      updateSymbol: (request) => {
+        const result = protocolService.updateSymbol(request);
+        if (result.status === "updated") setSymbolRecords(result.document.symbols);
+        return result;
+      },
+      setView: (request) => {
+        const result = protocolService.setView(request);
+        if (result.status === "updated") {
+          setViewSpec(result.document.presentation?.viewSpec ?? null);
+        }
+        return result;
+      },
+    };
+    const api: EquationToolApi = {
+      protocol,
+      getDocument: () => protocolService.getDocument(documentId) ?? documentSnapshot,
       analyzeRelation: () => analyzeRelation(equationAtRevision),
       setViewSpec: (spec: ViewSpec | null) => {
         const analysis = analyzeRelation(equationAtRevision);
