@@ -28,6 +28,7 @@ One large equation whose symbols are live objects — solve it by physically mov
 - **Touchable Symbols**: Every term is an interactive object that highlights on hover
 - **Drag Across the Equals Sign**: Move a term to the other side and its sign flips; like terms combine automatically
 - **Divide to Finish**: When the equation reaches a·x = b, the coefficient becomes clickable — divide both sides to solve
+- **Traceable AI Interface**: A versioned browser API and local MCP server let an AI discover legal actions, preview exact transformations, and apply them with revision and actor history
 - **Minimal by Design**: Just the equation on a clean page, with preset equations to practice on
 
 More tools (calculus, probability, complex numbers, ...) coming soon.
@@ -50,7 +51,11 @@ npm run dev        # start the dev server with hot reload
 npm run build      # production build to dist/
 npm run preview    # serve the production build locally
 npm run check      # type-check with tsc
+npm run mcp:equation # expose the equation protocol to a local MCP client
 ```
+
+Equation API and MCP setup details live in
+[`src/tools/equation-builder/API.md`](src/tools/equation-builder/API.md).
 
 The production build in `dist/` is fully static and relocatable (relative base + hash routing), so it can be dropped onto any static host — GitHub Pages, Netlify, Vercel, S3, or a plain file server.
 

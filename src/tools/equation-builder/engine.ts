@@ -25,6 +25,8 @@ import {
   type IntegrationContext,
 } from "./calculus";
 import type { RelationAnalysis, ViewSpec } from "./relation";
+import { treeMoveStory } from "./treeanimation";
+import type { EquationProtocolApi } from "./protocol";
 
 export type EquationCommand =
   | { type: "gesture"; payload: DragPayload; target: DropTarget }
@@ -47,6 +49,8 @@ export type EquationCommandResult =
 
 /** Browser/MCP adapters expose this contract; React is not part of it. */
 export interface EquationToolApi {
+  /** Versioned transport-neutral contract used by browser and MCP adapters. */
+  protocol: EquationProtocolApi;
   getDocument(): EquationDocument;
   analyzeRelation(): RelationAnalysis;
   setViewSpec(spec: ViewSpec | null): boolean;
@@ -168,7 +172,10 @@ export function applyEquationCommand(
   if (!result || typeof result === "string") {
     return { status: "rejected", reason: result ?? "the command has no effect here" };
   }
-  const afterRevision = equationRevision(result.treeNext);
+  const outcome = request.command.type === "gesture" && !result.story
+    ? { ...result, story: treeMoveStory(equation, request.command.payload, request.command.target) }
+    : result;
+  const afterRevision = equationRevision(outcome.treeNext);
   const trace = traceFor(request.command);
   const event: EquationEvent = {
     id: `event_${request.requestId}`,
@@ -178,14 +185,14 @@ export function applyEquationCommand(
     beforeRevision,
     afterRevision,
     before: cloneTreeEq(equation),
-    intermediate: result.treeIntermediate ? cloneTreeEq(result.treeIntermediate) : undefined,
-    after: cloneTreeEq(result.treeNext),
-    assumptionsAdded: result.pill ? [predicateFromText(result.pill)] : [],
-    explanation: result.note ?? result.label,
-    animation: result.story,
+    intermediate: outcome.treeIntermediate ? cloneTreeEq(outcome.treeIntermediate) : undefined,
+    after: cloneTreeEq(outcome.treeNext),
+    assumptionsAdded: outcome.pill ? [predicateFromText(outcome.pill)] : [],
+    explanation: outcome.note ?? outcome.label,
+    animation: outcome.story,
     createdAt: new Date().toISOString(),
   };
-  return { status: "applied", outcome: result, event };
+  return { status: "applied", outcome, event };
 }
 
 export function inspectEquationNodes(equation: TreeEq): { id: string; kind: string; expression: string }[] {
