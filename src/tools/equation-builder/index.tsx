@@ -36,10 +36,7 @@ import {
   printNode,
   printTreeEq,
   simplify as simplifyTree,
-  antiderivative,
-  derivative,
   flatToTree,
-  introducesLnOf,
   keyOf,
   tadd,
   tc,
@@ -59,9 +56,7 @@ import {
   reconcileSymbols,
   symbolsInEquation,
   type EquationEvent,
-  type SymbolDomain,
   type SymbolRecord,
-  type SymbolRole,
 } from "./document";
 import {
   applyEquationCommand,
@@ -104,6 +99,23 @@ import {
   type SpecialActionRef,
 } from "./specialactions";
 import { detectFactorizationsEq, type Rewrite } from "./rewrites";
+import {
+  analyzeRelation,
+  isViewSpecValid,
+  isolationForView,
+  unambiguousView,
+  viewSpecKey,
+  type ViewSpec,
+} from "./relation";
+import {
+  emptyDifferentiationContext,
+  emptyIntegrationContext,
+  validateCalculusContext,
+  type DifferentiationContext,
+  type IntegrationContext,
+} from "./calculus";
+import { CalculusContextPanel, VisualizationSetup } from "./contextpanels";
+import { ImplicitRelationPane, ScalarFieldPane } from "./multivariable";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -534,6 +546,17 @@ const EquationBuilderTool = () => {
   const [fnView, setFnView] = useState<"mapping" | "slope" | "area">("slope");
   const [bounds, setBounds] = useState<{ lo: number; hi: number }>({ lo: 0, hi: 2 });
   const [probeValue, setProbeValue] = useState(1);
+  const [viewSpec, setViewSpec] = useState<ViewSpec | null>(() =>
+    unambiguousView(analyzeRelation(BOOT_TREE))
+  );
+  const [planeProbe, setPlaneProbe] = useState({ x: 1, y: 1 });
+  const [calculusOpen, setCalculusOpen] = useState<"differentiate" | "integrate" | null>(null);
+  const [differentiationContext, setDifferentiationContext] = useState<DifferentiationContext>(
+    emptyDifferentiationContext
+  );
+  const [integrationContext, setIntegrationContext] = useState<IntegrationContext>(
+    emptyIntegrationContext
+  );
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dragOver, setDragOver] = useState<Side | null>(null);
   const [parenHover, setParenHover] = useState<string | null>(null);
@@ -588,6 +611,72 @@ const EquationBuilderTool = () => {
   useEffect(() => {
     if (treeEq) setSymbolRecords((current) => reconcileSymbols(treeEq, current));
   }, [treeEq]);
+
+  const relationAnalysis = useMemo(
+    () => treeEq ? analyzeRelation(treeEq) : null,
+    [treeEq]
+  );
+  const analyzedRevisionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!treeEq || !relationAnalysis) return;
+    const revision = equationRevision(treeEq);
+    if (analyzedRevisionRef.current === revision) return;
+    analyzedRevisionRef.current = revision;
+    setViewSpec((current) =>
+      current && isViewSpecValid(current, relationAnalysis)
+        ? current
+        : unambiguousView(relationAnalysis)
+    );
+    const known = new Set(relationAnalysis.symbols);
+    setDifferentiationContext((current) => ({
+      ...current,
+      withRespectTo: known.has(current.withRespectTo) ? current.withRespectTo : "",
+      dependent: current.dependent.filter((name) => known.has(name)),
+      heldConstant: current.heldConstant.filter((name) => known.has(name)),
+    }));
+    setIntegrationContext((current) => ({
+      ...current,
+      withRespectTo: known.has(current.withRespectTo) ? current.withRespectTo : "",
+      dependent: current.dependent.filter((name) => known.has(name)),
+      heldConstant: current.heldConstant.filter((name) => known.has(name)),
+    }));
+  }, [treeEq, relationAnalysis]);
+
+  useEffect(() => {
+    if (!symbolBookOpen) return;
+    const closeOnOutside = (event: globalThis.PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest("[data-symbol-book]")) setSymbolBookOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSymbolBookOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutside, true);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside, true);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [symbolBookOpen]);
+
+  useEffect(() => {
+    if (!calculusOpen) return;
+    const closeOnOutside = (event: globalThis.PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest("[data-calculus-context]") && !target?.closest("[data-action]")) {
+        setCalculusOpen(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCalculusOpen(null);
+    };
+    document.addEventListener("pointerdown", closeOnOutside, true);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside, true);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [calculusOpen]);
 
   useEffect(() => {
     try {
@@ -1669,10 +1758,18 @@ const EquationBuilderTool = () => {
       assumptions: Array.from(new Set(history.map((step) => step.pill).filter((pill): pill is string => !!pill)))
         .map((pill) => predicateFromText(pill)),
       history: history.map((step) => step.event).filter((event): event is EquationEvent => !!event),
-      presentation: { functionView: fnView, integrationBounds: [bounds.lo, bounds.hi], probeValue },
+      presentation: {
+        functionView: fnView,
+        integrationBounds: [bounds.lo, bounds.hi],
+        probeValue,
+        planeProbe: [planeProbe.x, planeProbe.y],
+        viewSpec: viewSpec ?? undefined,
+        lastDifferentiationContext: differentiationContext,
+        lastIntegrationContext: integrationContext,
+      },
     });
     return shareUrl({
-      schemaVersion: 2,
+      schemaVersion: 3,
       document: {
         documentId: document.documentId,
         revision: document.revision,
@@ -1736,6 +1833,16 @@ const EquationBuilderTool = () => {
         setBounds({ lo: presentation.integrationBounds[0], hi: presentation.integrationBounds[1] });
       }
       if (typeof presentation?.probeValue === "number") setProbeValue(presentation.probeValue);
+      if (presentation?.planeProbe) {
+        setPlaneProbe({ x: presentation.planeProbe[0], y: presentation.planeProbe[1] });
+      }
+      if (presentation?.viewSpec) setViewSpec(presentation.viewSpec);
+      if (presentation?.lastDifferentiationContext) {
+        setDifferentiationContext(presentation.lastDifferentiationContext);
+      }
+      if (presentation?.lastIntegrationContext) {
+        setIntegrationContext(presentation.lastIntegrationContext);
+      }
     } else {
       setSymbolRecords(symbolsInEquation(last.tree!));
     }
@@ -1996,97 +2103,16 @@ const EquationBuilderTool = () => {
     return decideStatus(treeEq.left, treeEq.right);
   }, [treeEq, treeSolved]);
 
-  const treePane = useMemo(() => {
-    if (!treeEq) return null;
-    const vars = new Set([...Array.from(varsIn(treeEq.left)), ...Array.from(varsIn(treeEq.right))]);
-    // mapping pane when one side is a bare variable of the other: y = 2^x
-    const detect = (a: TNode, b: TNode) => {
-      if (a.kind !== "var") return null;
-      const out = a.name;
-      const input: Variable = out === "y" ? "x" : "y";
-      const bv = varsIn(b);
-      if (bv.has(out) || !bv.has(input)) return null;
-      return { out, input, rhs: b };
-    };
-    const m = detect(treeEq.left, treeEq.right) ?? detect(treeEq.right, treeEq.left);
-    if (m) return { kind: "mapping" as const, ...m };
-    if (!vars.has("y") && vars.has("x")) return { kind: "graph" as const };
-    return null;
-  }, [treeEq]);
-
-  /** d/dx is only meaningful on an identity — exactly what function mode is */
-  const ddxReady = treeEq ? treePane?.kind === "mapping" : !!functionMode;
-
-  /**
-   * Differentiate the function. Valid ONLY for y = f(x) (an identity in x);
-   * the result is a NEW equation about the same function — not an equivalent
-   * step — so the trail restarts, like a building move.
-   */
-  const applyDdx = () => {
-    const fm = treeEq
-      ? treePane?.kind === "mapping"
-        ? { input: treePane.input, output: treePane.out, rhsTree: treePane.rhs }
-        : null
-      : functionMode
-        ? { input: functionMode.input, output: functionMode.output, rhsTree: flatToTree(functionMode.rhs) }
-        : null;
-    if (!fm) {
-      flashNotice("d/dx needs an identity — isolate y = f(x) first.");
-      return;
-    }
-    const d = derivative(fm.rhsTree, fm.input);
-    if (d === null) {
-      flashNotice("That derivative needs a rule beyond this playground (a power with variable base AND exponent).");
-      return;
-    }
-    const simplified = simplifyTree(d);
-    const label = `differentiated — ${fm.output} now shows d${fm.output}/d${fm.input}`;
-    const note = "a new equation about the same function, not an equivalent step";
-    const nextTree = ensureTreeEqIds({ left: tv(fm.output), right: simplified });
-    setTreeEq(nextTree);
-    setEquation(TREE_DUMMY());
-    setHistory([makeTreeStep(label, nextTree, false, note)]);
-    setSelection(null);
-    setNotice(null);
-  };
-
-  /**
-   * Integrate the function: y = f(x) → y = F(x), one antiderivative of the
-   * family F + C. The + C rides along as a pill; like d/dx this is a new
-   * equation about the same function, so the trail restarts. Default is the
-   * INDEFINITE integral — the definite one lives in the area view, where
-   * bounds are dragged (or set by dropping numbers onto them).
-   */
-  const applyIntegral = () => {
-    const fm = treeEq
-      ? treePane?.kind === "mapping"
-        ? { input: treePane.input, output: treePane.out, rhsTree: treePane.rhs }
-        : null
-      : functionMode
-        ? { input: functionMode.input, output: functionMode.output, rhsTree: flatToTree(functionMode.rhs) }
-        : null;
-    if (!fm) {
-      flashNotice("∫ needs an identity — isolate y = f(x) first.");
-      return;
-    }
-    const F = antiderivative(fm.rhsTree, fm.input);
-    if (F === null) {
-      flashNotice("No rule reaches this integral — some (like e^(−x²)) provably have no elementary antiderivative.");
-      return;
-    }
-    const simplified = simplifyTree(F);
-    const lnCame = introducesLnOf(simplified, fm.input);
-    const label = `integrated — ${fm.output} now shows an antiderivative`;
-    const note =
-      "one antiderivative of the family F + C (C = 0 shown)" +
-      (lnCame ? "; ln|…| written without the bars — argument > 0 assumed" : "");
-    const nextTree = ensureTreeEqIds({ left: tv(fm.output), right: simplified });
-    setTreeEq(nextTree);
-    setEquation(TREE_DUMMY());
-    setHistory([makeTreeStep(label, nextTree, false, note, "+ C")]);
-    setSelection(null);
-    setNotice(null);
-  };
+  /** Calculus is available for any canonical relation with at least one symbol. */
+  const calculusReady = !!treeEq && !!relationAnalysis && relationAnalysis.symbols.length > 0;
+  const calculusValidationMessage = useMemo(() => {
+    if (!treeEq || !calculusOpen) return undefined;
+    const validation = validateCalculusContext(
+      treeEq,
+      calculusOpen === "differentiate" ? differentiationContext : integrationContext
+    );
+    return validation.ok ? undefined : validation.message;
+  }, [treeEq, calculusOpen, differentiationContext, integrationContext]);
 
   // ± / radical / inverse results are an end state: no further arithmetic is defined on them
   const hasTerminal = [...left, ...right].some((t) => t.kind === "leaf" && (t.pm || t.radical || t.fnVal));
@@ -3258,8 +3284,23 @@ const EquationBuilderTool = () => {
         symbols: symbolRecords,
         assumptions: documentAssumptions,
         history: history.map((step) => step.event).filter((event): event is EquationEvent => !!event),
-        presentation: { functionView: fnView, integrationBounds: [bounds.lo, bounds.hi], probeValue },
+        presentation: {
+          functionView: fnView,
+          integrationBounds: [bounds.lo, bounds.hi],
+          probeValue,
+          planeProbe: [planeProbe.x, planeProbe.y],
+          viewSpec: viewSpec ?? undefined,
+          lastDifferentiationContext: differentiationContext,
+          lastIntegrationContext: integrationContext,
+        },
       }),
+      analyzeRelation: () => analyzeRelation(equationAtRevision),
+      setViewSpec: (spec: ViewSpec | null) => {
+        const analysis = analyzeRelation(equationAtRevision);
+        if (spec && !isViewSpecValid(spec, analysis)) return false;
+        setViewSpec(spec);
+        return true;
+      },
       inspectNodes: () => inspectEquationNodes(equationAtRevision),
       listApplicableOperations: () => listApplicableEquationOperations(equationAtRevision),
       previewCommand: (request: Parameters<typeof applyEquationCommand>[1]) =>
@@ -3287,7 +3328,45 @@ const EquationBuilderTool = () => {
     return () => {
       if (window.visualMathEquation === api) delete window.visualMathEquation;
     };
-  }, [treeEq, symbolRecords, history, documentId, fnView, bounds.lo, bounds.hi, probeValue]);
+  }, [
+    treeEq,
+    symbolRecords,
+    history,
+    documentId,
+    fnView,
+    bounds.lo,
+    bounds.hi,
+    probeValue,
+    planeProbe.x,
+    planeProbe.y,
+    viewSpec,
+    differentiationContext,
+    integrationContext,
+  ]);
+
+  const applyContextualCalculus = (operation: "differentiate" | "integrate") => {
+    if (!treeEq) return;
+    const context = operation === "differentiate" ? differentiationContext : integrationContext;
+    const validation = validateCalculusContext(treeEq, context);
+    if (!validation.ok) {
+      flashNotice(validation.message ?? "Complete the calculus context first.");
+      return;
+    }
+    const result = runEquationCommand(
+      operation === "differentiate"
+        ? { type: "differentiate", context: differentiationContext }
+        : { type: "integrate", context: integrationContext }
+    );
+    if (!result) return;
+    if (result.status !== "applied") {
+      flashNotice(result.status === "rejected" ? result.reason : "The equation changed — choose the context again.");
+      return;
+    }
+    commitTreeOutcome(result.outcome, result.event);
+    setViewSpec(null);
+    setCalculusOpen(null);
+    setToolboxOpen(false);
+  };
 
   const runSpecialAction = (action: SpecialActionRef, ownerId: string) => {
     if (!treeEq) return;
@@ -4887,7 +4966,10 @@ const EquationBuilderTool = () => {
                 ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
                 : "border-border bg-card hover:border-foreground/40"
             }`}
-            onClick={() => setToolboxOpen((cur) => !cur)}
+            onClick={() => {
+              setSymbolBookOpen(false);
+              setToolboxOpen((cur) => !cur);
+            }}
           >
             ƒ
             <span className="font-sans text-xs text-muted-foreground">Operations</span>
@@ -4908,26 +4990,25 @@ const EquationBuilderTool = () => {
                         key={item.glyph}
                         data-tool={item.tool || undefined}
                         data-action={item.action || undefined}
-                        disabled={!item.tool && !(item.action && ddxReady)}
+                        disabled={!item.tool && !(item.action && calculusReady)}
                         title={
                           item.tool
                             ? item.title
                             : item.action
-                              ? ddxReady
+                              ? calculusReady
                                 ? {
-                                    ddx: "Differentiate the function — a new equation about the same function",
-                                    int: "Integrate the function — one antiderivative, + C rides along",
+                                    ddx: "Choose an explicit differentiation context",
+                                    int: "Choose an explicit integration context",
                                   }[item.action]
-                                : `${item.glyph} needs y = f(x) — isolate the function first`
+                                : `${item.glyph} needs a relation containing at least one symbol`
                               : "coming soon"
                         }
                         onClick={() => {
                           if (playingRef.current) return; // replay owns the stage
                           if (item.action) {
-                            if (!ddxReady) return;
+                            if (!calculusReady) return;
                             setToolboxOpen(false);
-                            if (item.action === "ddx") applyDdx();
-                            else if (item.action === "int") applyIntegral();
+                            setCalculusOpen(item.action === "ddx" ? "differentiate" : "integrate");
                             return;
                           }
                           if (!item.tool) return;
@@ -4959,7 +5040,7 @@ const EquationBuilderTool = () => {
                           }
                         }}
                         className={`relative flex h-9 min-w-9 items-center justify-center whitespace-nowrap rounded-md border border-transparent px-1.5 font-serif text-sm transition-all hover:z-10 ${
-                          item.tool || (item.action && ddxReady)
+                          item.tool || (item.action && calculusReady)
                             ? "cursor-grab hover:scale-105 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
                             : "cursor-not-allowed opacity-35"
                         }`}
@@ -4975,6 +5056,23 @@ const EquationBuilderTool = () => {
               </div>
             </div>
           )}
+          {calculusOpen && relationAnalysis && (
+            <CalculusContextPanel
+              operation={calculusOpen}
+              symbols={relationAnalysis.symbols}
+              context={calculusOpen === "differentiate" ? differentiationContext : integrationContext}
+              onContext={(context) => {
+                if (calculusOpen === "differentiate") {
+                  setDifferentiationContext(context as DifferentiationContext);
+                } else {
+                  setIntegrationContext(context as IntegrationContext);
+                }
+              }}
+              validationMessage={calculusValidationMessage}
+              onApply={() => applyContextualCalculus(calculusOpen)}
+              onClose={() => setCalculusOpen(null)}
+            />
+          )}
         </div>
 
         <div className="relative" data-symbol-book>
@@ -4982,7 +5080,11 @@ const EquationBuilderTool = () => {
             type="button"
             aria-expanded={symbolBookOpen}
             aria-controls="equation-symbol-book"
-            onClick={() => setSymbolBookOpen((open) => !open)}
+            onClick={() => {
+              setToolboxOpen(false);
+              setCalculusOpen(null);
+              setSymbolBookOpen((open) => !open);
+            }}
             className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs shadow-sm transition-colors ${
               symbolBookOpen
                 ? "border-sky-300 bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-300"
@@ -5036,45 +5138,10 @@ const EquationBuilderTool = () => {
                         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background font-serif text-xl italic">
                           {record.name}
                         </span>
-                        <label className="min-w-0 flex-1">
-                          <span className="sr-only">Role for {record.name}</span>
-                          <select
-                            value={record.role}
-                            onChange={(event) => {
-                              const role = event.target.value as SymbolRole;
-                              setSymbolRecords((records) => records.map((item) =>
-                                item.id === record.id
-                                  ? { ...item, role, provenance: { ...item.provenance, confirmedByHuman: true } }
-                                  : item
-                              ));
-                            }}
-                            className="h-8 w-full rounded-lg border border-border bg-background px-2 text-xs"
-                          >
-                            <option value="independent">independent variable</option>
-                            <option value="dependent">dependent variable</option>
-                            <option value="parameter">parameter</option>
-                            <option value="unknown">unclassified</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span className="sr-only">Domain for {record.name}</span>
-                          <select
-                            value={record.domain}
-                            onChange={(event) => {
-                              const domain = event.target.value as SymbolDomain;
-                              setSymbolRecords((records) => records.map((item) =>
-                                item.id === record.id
-                                  ? { ...item, domain, provenance: { ...item.provenance, confirmedByHuman: true } }
-                                  : item
-                              ));
-                            }}
-                            className="h-8 rounded-lg border border-border bg-background px-2 text-xs"
-                          >
-                            <option value="real">real</option>
-                            <option value="integer">integer</option>
-                            <option value="complex">complex</option>
-                          </select>
-                        </label>
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium">Model symbol</div>
+                          <div className="truncate font-mono text-[10px] text-muted-foreground">{record.id}</div>
+                        </div>
                       </div>
 
                       <div className="mt-2 grid grid-cols-[1fr_5.5rem] gap-2">
@@ -5112,13 +5179,8 @@ const EquationBuilderTool = () => {
                         </label>
                       </div>
 
-                      {(record.dependsOn.length > 0 || record.assumptions.length > 0) && (
+                      {record.assumptions.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
-                          {record.dependsOn.length > 0 && (
-                            <span className="rounded-full border border-border bg-background px-2 py-0.5">
-                              depends on {record.dependsOn.map((id) => symbolRecords.find((item) => item.id === id)?.name ?? id).join(", ")}
-                            </span>
-                          )}
                           {record.assumptions.map((assumption) => (
                             <span key={assumption.id} className="rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 text-amber-700 dark:bg-amber-950/20 dark:text-amber-300">
                               {assumption.expression}
@@ -5396,34 +5458,126 @@ const EquationBuilderTool = () => {
               key={assumption}
               className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
             >
-              {/^[xy] ≠ 0$/.test(assumption) ? `assuming ${assumption}` : assumption}
+              {/^[A-Za-z_][A-Za-z0-9_]* ≠ 0$/.test(assumption) ? `assuming ${assumption}` : assumption}
             </span>
           ))}
       </div>
 
-      {/* Open-world reveals: isolate y and the input→output machine appears
-          (with a curve & slope view — the home of d/dx); otherwise the curve
-          view shows for nonlinear x-only equations. Tree equations earn the
-          same panes through their own evaluator. */}
+      {treeEq && relationAnalysis && (
+        <VisualizationSetup
+          analysis={relationAnalysis}
+          value={viewSpec}
+          onChange={setViewSpec}
+        />
+      )}
+
+      {/* A view is an explicit interpretation of the symmetric relation. */}
       {(() => {
-        const fn = treeEq
-          ? treePane?.kind === "mapping"
-            ? {
-                f: (t: number) => evalNode(treePane.rhs, { [treePane.input]: t }),
-                depKey: printNode(treePane.rhs),
-                input: treePane.input,
-                output: treePane.out,
-              }
-            : null
-          : functionMode
-            ? {
-                f: (x: number) => evalSide(functionMode.rhs, x),
-                depKey: sideTextOf(functionMode.rhs),
-                input: functionMode.input,
-                output: functionMode.output,
-              }
-            : null;
-        if (fn) {
+        if (treeEq && relationAnalysis && viewSpec && isViewSpecValid(viewSpec, relationAnalysis)) {
+          const key = `${printTreeEq(treeEq)}:${viewSpecKey(viewSpec)}`;
+          if (viewSpec.kind === "function-1d") {
+            const isolation = isolationForView(relationAnalysis, viewSpec);
+            if (!isolation) return null;
+            const f = (input: number) => evalNode(isolation.expression, {
+              ...viewSpec.fixed,
+              [viewSpec.input]: input,
+            });
+            const fn = {
+              f,
+              depKey: key,
+              input: viewSpec.input,
+              output: viewSpec.output,
+            };
+            return (
+              <>
+                {fnView === "slope" ? (
+                  <TangentPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} probeValue={probeValue} onProbeValue={setProbeValue} />
+                ) : fnView === "mapping" ? (
+                  <MappingPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} probeValue={probeValue} onProbeValue={setProbeValue} />
+                ) : (
+                  <AreaPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} bounds={bounds} onBounds={setBounds} />
+                )}
+                <div className="mt-2 flex items-center gap-1.5 text-[11px]" data-ui>
+                  {(["slope", "mapping", "area"] as const).map((view) => (
+                    <button
+                      key={view}
+                      onClick={() => setFnView(view)}
+                      className={`rounded-full border px-2.5 py-0.5 transition-colors ${
+                        fnView === view
+                          ? "border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                          : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+                      }`}
+                    >
+                      {view === "slope"
+                        ? "curve & slope"
+                        : view === "mapping"
+                          ? "input → output"
+                          : "area ∫"}
+                    </button>
+                  ))}
+                </div>
+              </>
+            );
+          }
+          if (viewSpec.kind === "relation-1d") {
+            const evaluate = (node: TNode, input: number) => evalNode(node, {
+              ...viewSpec.fixed,
+              [viewSpec.input]: input,
+            });
+            return (
+              <GraphView
+                fl={(input) => evaluate(treeEq.left, input)}
+                fr={(input) => evaluate(treeEq.right, input)}
+                depKey={key}
+                inputVar={viewSpec.input}
+              />
+            );
+          }
+          if (viewSpec.kind === "implicit-2d") {
+            const g = (horizontal: number, vertical: number) => {
+              const env = {
+                ...viewSpec.fixed,
+                [viewSpec.horizontal]: horizontal,
+                [viewSpec.vertical]: vertical,
+              };
+              return evalNode(treeEq.left, env) - evalNode(treeEq.right, env);
+            };
+            return (
+              <ImplicitRelationPane
+                g={g}
+                depKey={key}
+                horizontal={viewSpec.horizontal}
+                vertical={viewSpec.vertical}
+                probe={planeProbe}
+                onProbe={setPlaneProbe}
+              />
+            );
+          }
+          const isolation = isolationForView(relationAnalysis, viewSpec);
+          if (!isolation) return null;
+          return (
+            <ScalarFieldPane
+              f={(horizontal, vertical) => evalNode(isolation.expression, {
+                ...viewSpec.fixed,
+                [viewSpec.horizontal]: horizontal,
+                [viewSpec.vertical]: vertical,
+              })}
+              depKey={key}
+              horizontal={viewSpec.horizontal}
+              vertical={viewSpec.vertical}
+              output={viewSpec.output}
+              probe={planeProbe}
+              onProbe={setPlaneProbe}
+            />
+          );
+        }
+        if (!treeEq && functionMode) {
+          const fn = {
+            f: (x: number) => evalSide(functionMode.rhs, x),
+            depKey: sideTextOf(functionMode.rhs),
+            input: functionMode.input,
+            output: functionMode.output,
+          };
           return (
             <>
               {fnView === "slope" ? (
@@ -5453,15 +5607,6 @@ const EquationBuilderTool = () => {
                 ))}
               </div>
             </>
-          );
-        }
-        if (treeEq && treePane?.kind === "graph") {
-          return (
-            <GraphView
-              fl={(x) => evalNode(treeEq.left, { x })}
-              fr={(x) => evalNode(treeEq.right, { x })}
-              depKey={printTreeEq(treeEq)}
-            />
           );
         }
         if (!treeEq && !mentionsY && isFunctionEquation(equation)) {

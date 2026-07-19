@@ -42,6 +42,8 @@ export const CATALOG: CatalogEntry[] = [
   { name: "exponential equation", text: "e^x + 1 = 4", aliases: ["solve exp", "e^x equation"] },
   { name: "base two exponential", text: "2^x = 8", aliases: ["solve powers", "binary exponent", "power equation"] },
   { name: "variable product", text: "x*y = 6", aliases: ["product equation", "inverse relation", "two variables"] },
+  { name: "two-input model", text: "y = s*t", aliases: ["multivariable", "scalar field", "partial derivative", "surface"] },
+  { name: "force model", text: "force = mass*acceleration", aliases: ["newton", "physical model", "arbitrary symbols"] },
   { name: "pi scaling", text: "pi*x = y", aliases: ["pi", "circle constant", "π", "radians"] },
   { name: "isolate y", text: "2*y - 3 = x", aliases: ["solve for y", "two variables"] },
 ];

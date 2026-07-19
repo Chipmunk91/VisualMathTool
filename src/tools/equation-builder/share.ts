@@ -57,8 +57,8 @@ export interface SharedStep {
 }
 
 export interface SharedHistory {
-  /** Version 2 adds document metadata while retaining the step snapshots. */
-  schemaVersion?: 1 | 2;
+  /** Version 3 adds contextual graph/calculus state and durable-only symbols. */
+  schemaVersion?: 1 | 2 | 3;
   document?: {
     documentId: string;
     revision: string;
@@ -82,7 +82,7 @@ export function decodeHistory(param: string): SharedHistory | null {
     const b64 = param.replace(/-/g, "+").replace(/_/g, "/");
     const json = decodeURIComponent(escape(atob(b64)));
     const h = JSON.parse(json) as SharedHistory;
-    if (h.schemaVersion !== undefined && h.schemaVersion !== 1 && h.schemaVersion !== 2) return null;
+    if (h.schemaVersion !== undefined && h.schemaVersion !== 1 && h.schemaVersion !== 2 && h.schemaVersion !== 3) return null;
     if (!Array.isArray(h.steps) || h.steps.length === 0) return null;
     for (const s of h.steps) {
       if (typeof s.label !== "string") return null;

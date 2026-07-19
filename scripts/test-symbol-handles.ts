@@ -10,7 +10,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseEquation } from "../src/tools/equation-builder/parse";
-import { addendsOf, type TNode, printNode, simplify, tadd, tc, tfn, tmul, tnamed, tpow, tv } from "../src/tools/equation-builder/tree";
+import { addendsOf, type TNode, printNode, simplify, tadd, tc, tdiff, tfn, tint, tmul, tnamed, tpow, tv } from "../src/tools/equation-builder/tree";
 import type { FactorizationHintView } from "../src/tools/equation-builder/treeview";
 import { isAtomicTreeFactorId, treeFactorLayout } from "../src/tools/equation-builder/treeunits";
 
@@ -55,6 +55,8 @@ async function main() {
   // runtime, so expose React while exercising the component under Node.
   (globalThis as unknown as { React: typeof React }).React = React;
   const { TreeSideView } = await import("../src/tools/equation-builder/treeview");
+  const { CalculusContextPanel, VisualizationSetup } = await import("../src/tools/equation-builder/contextpanels");
+  const { analyzeRelation } = await import("../src/tools/equation-builder/relation");
   const renderSide = (
     node: TNode,
     side: "left" | "right",
@@ -303,6 +305,54 @@ async function main() {
     (nestedSpecialHtml.match(/outline-dashed/g) ?? []).length === nestedSpecials.length &&
       (nestedSpecialHtml.match(/outline-sky-400\/70/g) ?? []).length === nestedSpecials.length,
     nestedSpecialHtml
+  );
+
+  const derivativeHtml = renderSide(tdiff(tv("y"), "x", "ordinary"), "left");
+  check(
+    "S21 derivative notation is one movable algebra factor with a stable model symbol",
+    handlesIn(derivativeHtml).length === 1 &&
+      derivativeHtml.includes("data-model-symbol=\"sym_3c\"") &&
+      derivativeHtml.includes(">d</span>"),
+    derivativeHtml
+  );
+  const integralHtml = renderSide(tint(tfn("sin", tv("t")), "t", { lower: tc(0), upper: tnamed("pi") }), "right");
+  check(
+    "S22 definite integrals remain first-class movable notation",
+    handlesIn(integralHtml).length === 1 && integralHtml.includes("∫") &&
+      integralHtml.includes("π") && integralHtml.includes("data-model-symbol=\"sym_38\""),
+    integralHtml
+  );
+
+  const multiRelation = parseEquation("y = s*t");
+  if (!multiRelation.ok) throw new Error("multivariable UI fixture did not parse");
+  const analysis = analyzeRelation(multiRelation.tree);
+  const viewHtml = renderToStaticMarkup(
+    React.createElement(VisualizationSetup, {
+      analysis,
+      value: analysis.viewCandidates.find((candidate) => candidate.spec.kind === "scalar-field-2d")!.spec,
+      onChange: () => undefined,
+    })
+  );
+  check(
+    "S23 visualization setup exposes one-input slices and a two-input field explicitly",
+    viewHtml.includes("y against s") && viewHtml.includes("y against t") && viewHtml.includes("y over s, t"),
+    viewHtml
+  );
+  const calculusHtml = renderToStaticMarkup(
+    React.createElement(CalculusContextPanel, {
+      operation: "differentiate",
+      symbols: analysis.symbols,
+      context: { mode: "partial", withRespectTo: "s", dependent: ["y"], heldConstant: ["t"] },
+      onContext: () => undefined,
+      onApply: () => undefined,
+      onClose: () => undefined,
+    })
+  );
+  check(
+    "S24 calculus panel requires visible per-symbol roles and promises no inference",
+    calculusHtml.includes("no target or source is inferred") &&
+      calculusHtml.includes("depends on s") && calculusHtml.includes("held constant"),
+    calculusHtml
   );
 
   console.log(`\n${pass} passed, ${fail} failed`);

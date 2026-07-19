@@ -28,6 +28,12 @@ import {
 export type TFnName = FuncName | "sqrt" | "asin" | "acos" | "atan";
 export type TNamedConstant = "pi";
 export type TNodeId = string;
+export type TCalculusNotation = "ordinary" | "partial";
+
+export interface TVariableRef {
+  name: Variable;
+  symbolId: string;
+}
 
 export interface TNodeMeta {
   /** Stable semantic identity. Never derived from a render position. */
@@ -42,6 +48,19 @@ export type TNode = TNodeMeta & (
   | { kind: "mul"; factors: TNode[] }
   | { kind: "pow"; base: TNode; exp: TNode }
   | { kind: "fn"; fn: TFnName; arg: TNode }
+  | {
+      kind: "derivative";
+      expression: TNode;
+      variable: TVariableRef;
+      notation: TCalculusNotation;
+      order: number;
+    }
+  | {
+      kind: "integral";
+      integrand: TNode;
+      variable: TVariableRef;
+      bounds?: { lower: TNode; upper: TNode };
+    }
 );
 
 export interface TreeEq {
@@ -77,6 +96,40 @@ export const tpow = (base: TNode, exp: TNode | number): TNode => ({
   exp: typeof exp === "number" ? tc(exp) : exp,
 });
 export const tfn = (fn: TFnName, arg: TNode): TNode => ({ id: freshNodeId(), kind: "fn", fn, arg });
+export const tdiff = (
+  expression: TNode,
+  variable: Variable | TVariableRef,
+  notation: TCalculusNotation = "ordinary",
+  order = 1
+): TNode => {
+  const ref = typeof variable === "string"
+    ? { name: variable, symbolId: symbolIdForName(variable) }
+    : variable;
+  return {
+    id: freshNodeId(),
+    kind: "derivative",
+    expression,
+    variable: ref,
+    notation,
+    order,
+  };
+};
+export const tint = (
+  integrand: TNode,
+  variable: Variable | TVariableRef,
+  bounds?: { lower: TNode; upper: TNode }
+): TNode => {
+  const ref = typeof variable === "string"
+    ? { name: variable, symbolId: symbolIdForName(variable) }
+    : variable;
+  return {
+    id: freshNodeId(),
+    kind: "integral",
+    integrand,
+    variable: ref,
+    bounds,
+  };
+};
 
 /**
  * Old shared histories have no tree ids, and expression constructors may reuse
@@ -102,6 +155,34 @@ export function ensureTreeIds(n: TNode, seen = new Set<TNodeId>()): TNode {
       return { id, kind: "pow", base: ensureTreeIds(n.base, seen), exp: ensureTreeIds(n.exp, seen) };
     case "fn":
       return { id, kind: "fn", fn: n.fn, arg: ensureTreeIds(n.arg, seen) };
+    case "derivative":
+      return {
+        id,
+        kind: "derivative",
+        expression: ensureTreeIds(n.expression, seen),
+        variable: {
+          name: n.variable.name,
+          symbolId: n.variable.symbolId ?? symbolIdForName(n.variable.name),
+        },
+        notation: n.notation ?? "ordinary",
+        order: n.order ?? 1,
+      };
+    case "integral":
+      return {
+        id,
+        kind: "integral",
+        integrand: ensureTreeIds(n.integrand, seen),
+        variable: {
+          name: n.variable.name,
+          symbolId: n.variable.symbolId ?? symbolIdForName(n.variable.name),
+        },
+        bounds: n.bounds
+          ? {
+              lower: ensureTreeIds(n.bounds.lower, seen),
+              upper: ensureTreeIds(n.bounds.upper, seen),
+            }
+          : undefined,
+      };
   }
 }
 
@@ -163,6 +244,18 @@ export function varsIn(n: TNode): Set<Variable> {
       case "fn":
         walk(m.arg);
         break;
+      case "derivative":
+        walk(m.expression);
+        out.add(m.variable.name);
+        break;
+      case "integral":
+        walk(m.integrand);
+        out.add(m.variable.name);
+        if (m.bounds) {
+          walk(m.bounds.lower);
+          walk(m.bounds.upper);
+        }
+        break;
     }
   };
   walk(n);
@@ -186,6 +279,12 @@ export function keyOf(n: TNode): string {
       return `{"kind":"pow","base":${keyOf(n.base)},"exp":${keyOf(n.exp)}}`;
     case "fn":
       return `{"kind":"fn","fn":${JSON.stringify(n.fn)},"arg":${keyOf(n.arg)}}`;
+    case "derivative":
+      return `{"kind":"derivative","notation":${JSON.stringify(n.notation)},"order":${n.order},"expression":${keyOf(n.expression)},"variable":${JSON.stringify(n.variable.name)}}`;
+    case "integral":
+      return `{"kind":"integral","integrand":${keyOf(n.integrand)},"variable":${JSON.stringify(n.variable.name)},"bounds":${
+        n.bounds ? `[${keyOf(n.bounds.lower)},${keyOf(n.bounds.upper)}]` : "null"
+      }}`;
   }
 }
 
@@ -286,6 +385,22 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
     case "named":
     case "var":
       return n;
+    case "derivative":
+      return {
+        ...n,
+        expression: simplifyPass(n.expression, assume),
+      };
+    case "integral":
+      return {
+        ...n,
+        integrand: simplifyPass(n.integrand, assume),
+        bounds: n.bounds
+          ? {
+              lower: simplifyPass(n.bounds.lower, assume),
+              upper: simplifyPass(n.bounds.upper, assume),
+            }
+          : undefined,
+      };
     case "fn": {
       const arg = simplifyPass(n.arg, assume);
       if (n.fn === "ln") {
@@ -672,6 +787,11 @@ export function evalNode(n: TNode, env: Readonly<Record<string, number | undefin
       }
     case "fn":
       return FN_EVAL[n.fn](evalNode(n.arg, env));
+    case "derivative":
+    case "integral":
+      // Calculus operators are exact symbolic objects. They are deliberately
+      // not guessed numerically without an explicit function context.
+      return NaN;
   }
 }
 
@@ -769,6 +889,18 @@ export function printNode(n: TNode): string {
       }
       if (n.fn === "sqrt") return `√(${printNode(n.arg)})`;
       return `${n.fn === "asin" ? "arcsin" : n.fn === "acos" ? "arccos" : n.fn === "atan" ? "arctan" : n.fn}(${printNode(n.arg)})`;
+    case "derivative": {
+      const mark = n.notation === "partial" ? "∂" : "d";
+      const order = n.order > 1 ? supInt(n.order) : "";
+      const expression = printNode(n.expression);
+      return `${mark}${order}(${expression})/${mark}${n.variable.name}${order}`;
+    }
+    case "integral": {
+      const bounds = n.bounds
+        ? `_[${printNode(n.bounds.lower)},${printNode(n.bounds.upper)}]`
+        : "";
+      return `∫${bounds} ${printNode(n.integrand)} d${n.variable.name}`;
+    }
   }
 }
 
@@ -868,6 +1000,9 @@ export function derivative(n: TNode, v: Variable): TNode | null {
       if (!outer) return null;
       return tmul(outer, du);
     }
+    case "derivative":
+    case "integral":
+      return tdiff(n, v, n.kind === "derivative" ? n.notation : "ordinary");
   }
 }
 
@@ -895,15 +1030,21 @@ function linearIn(n: TNode, v: Variable): { aNum: number; aDen: number } | null 
  * antiderivative at all — refusal is the mathematics, not a shortcut.
  * Introduced ln's carry a positivity assumption; the MOVE pins the pill.
  */
-export function antiderivative(n: TNode, v: Variable): TNode | null {
+export function antiderivative(
+  n: TNode,
+  v: Variable,
+  variableSymbolId = symbolIdForName(v)
+): TNode | null {
   switch (n.kind) {
     case "const":
     case "named":
-      return tmul(n, tv(v));
+      return tmul(n, tv(v, variableSymbolId));
     case "var":
-      return n.name === v ? tmul(tc(1, 2), tpow(tv(v), 2)) : tmul(n, tv(v));
+      return n.name === v
+        ? tmul(tc(1, 2), tpow(tv(v, variableSymbolId), 2))
+        : tmul(n, tv(v, variableSymbolId));
     case "add": {
-      const parts = n.terms.map((t) => antiderivative(t, v));
+      const parts = n.terms.map((t) => antiderivative(t, v, variableSymbolId));
       if (parts.some((p) => p === null)) return null;
       return tadd(...(parts as TNode[]));
     }
@@ -912,9 +1053,9 @@ export function antiderivative(n: TNode, v: Variable): TNode | null {
       const { num, den, core } = splitCoef(n);
       const constant = core.filter((f) => !varsIn(f).has(v));
       const living = core.filter((f) => varsIn(f).has(v));
-      if (living.length === 0) return tmul(n, tv(v));
+      if (living.length === 0) return tmul(n, tv(v, variableSymbolId));
       if (living.length > 1) return null; // no product rule for integrals
-      const inner = antiderivative(living[0], v);
+      const inner = antiderivative(living[0], v, variableSymbolId);
       if (inner === null) return null;
       return tmul(tc(num, den), ...constant, inner);
     }
@@ -963,6 +1104,10 @@ export function antiderivative(n: TNode, v: Variable): TNode | null {
           return null; // inverse-trig antiderivatives need forms beyond this playground
       }
     }
+    case "derivative":
+      return n.variable.name === v ? n.expression : null;
+    case "integral":
+      return null;
   }
 }
 
@@ -977,6 +1122,11 @@ export function introducesLnOf(n: TNode, v: Variable): boolean {
       return n.factors.some((f) => introducesLnOf(f, v));
     case "pow":
       return introducesLnOf(n.base, v) || introducesLnOf(n.exp, v);
+    case "derivative":
+      return introducesLnOf(n.expression, v);
+    case "integral":
+      return introducesLnOf(n.integrand, v) ||
+        (!!n.bounds && (introducesLnOf(n.bounds.lower, v) || introducesLnOf(n.bounds.upper, v)));
     default:
       return false;
   }

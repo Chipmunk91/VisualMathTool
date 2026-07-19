@@ -1,11 +1,9 @@
 # Equation Playground — road to general functions
 
-The playground manipulates **equations in one or two variables** whose sides
-are sums of terms `(num/den)·v^p` with `v ∈ {x, y}` and integer powers
-`|p| ≤ 9`, plus parentheses `a(sum)` and function wrapping `a·fn(sum)` —
-where the contents of a group or function may themselves contain groups and
-functions (nesting is first-class). This is what makes every move exact,
-previewable, and easy to hit-test.
+The playground manipulates a symmetric relation `left = right` over arbitrary
+parser-safe symbol names. An explicit function, one-variable equation,
+implicit curve, or scalar field is a contextual interpretation of that one
+relation—not a second equation model and not an `x/y` convention.
 
 ## Shipped
 
@@ -53,8 +51,10 @@ The formerly gated forms — `1/(x+1)`, `2^x`, `√(x+1)`, `x·y` — now live i
 a real expression tree (`tree.ts`):
 
 ```
-TNode = Const(num/den) | Named("pi") | Var("x" | "y")
+TNode = Const(num/den) | Named("pi") | Var(identifier)
       | Add(TNode[]) | Mul(TNode[]) | Pow(TNode, TNode) | Fn(name, TNode)
+      | Derivative(TNode, variable, notation, order)
+      | Integral(TNode, variable, bounds?)
 ```
 
 - **Layer 1 — parse, render, evaluate.** When the flat model refuses, the
@@ -90,6 +90,28 @@ nonzero receipt, and all eight toolbox symbols work (ln thaws `2^x` to
 `ln(2)·x` exactly; recip flips `1/(x+1) = 2` straight to `x + 1 = ½`;
 squaring resolves √ with its check-roots pill).
 
+### Contextual multivariable views and calculus ✅
+
+- `RelationAnalysis` discovers bare-symbol isolations without privileging a
+  side or symbol name. `y = sin(t)` and `sin(t) = y` therefore describe the
+  same function candidate.
+- `ViewSpec` records exactly which symbol is an input/output, which two vary
+  in a plane, and which remaining parameters are fixed. One-input mappings,
+  two-input scalar fields, one-variable side plots and implicit contours all
+  use arbitrary symbols.
+- Implicit relations render `left − right = 0` with marching squares. A
+  draggable contour probe computes the local gradient and shows its tangent.
+- Differentiation and integration require an explicit context. Every other
+  symbol is marked dependent or held constant; the engine never infers a
+  calculus target/source from position. Operations apply to both sides and
+  are available through the same traceable semantic API as pointer moves.
+- Ordinary, partial, implicit and total derivative contexts are represented.
+  Partial and implicit results retain `∂y/∂s` or `dy/dx` as real AST factors,
+  so subsequent algebra can move and simplify around them.
+- Indefinite and definite integration contexts are represented. Unsupported
+  or dependent integrands remain honest integral nodes instead of being
+  treated as constants or rejected as UI special cases.
+
 ## Still honestly gated
 
 - **Bare `e` outside `e^( )`** — `π` is now an exact named constant, while
@@ -99,5 +121,12 @@ squaring resolves √ with its check-roots pill).
   path-addressed payloads.
 - **Distribution/factoring at depth** (expand `(x+1)(x−2)`, factor a tree
   sum) — the next move-grammar chapter.
-- **d/dx, ∫, Σ, lim** — deliberately not equation moves at all; each is its
-  own project.
+- **Systems of relations** — a document currently owns one relation; coupled
+  equations need a relation-set document and shared symbol table.
+- **Complex evaluation and richer spaces** — assumptions can describe symbols,
+  but evaluators and graphs are still real-valued. Vectors, matrices,
+  functions and complex values need typed mathematical spaces rather than a
+  real/complex dropdown.
+- **Solver and advanced calculus** — symbolic solving, higher-order operator
+  simplification, Jacobians/Hessians, vector calculus, series, limits and sums
+  remain separate engine chapters.

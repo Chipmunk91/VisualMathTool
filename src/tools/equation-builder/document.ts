@@ -7,9 +7,8 @@ import {
   type TNode,
   type TreeEq,
 } from "./tree";
-
-export type SymbolRole = "independent" | "dependent" | "parameter" | "unknown";
-export type SymbolDomain = "real" | "integer" | "complex";
+import type { DifferentiationContext, IntegrationContext } from "./calculus";
+import type { ViewSpec } from "./relation";
 
 export interface Predicate {
   id: string;
@@ -22,10 +21,7 @@ export interface SymbolRecord {
   id: string;
   name: string;
   meaning?: string;
-  role: SymbolRole;
-  domain: SymbolDomain;
   unit?: string;
-  dependsOn: string[];
   assumptions: Predicate[];
   provenance: {
     createdBy: "parser" | "human" | "ai";
@@ -60,10 +56,14 @@ export interface EquationPresentation {
   functionView?: "mapping" | "slope" | "area";
   integrationBounds?: [number, number];
   probeValue?: number;
+  planeProbe?: [number, number];
+  viewSpec?: ViewSpec;
+  lastDifferentiationContext?: DifferentiationContext;
+  lastIntegrationContext?: IntegrationContext;
 }
 
 export interface EquationDocument {
-  schemaVersion: 1;
+  schemaVersion: 2;
   documentId: string;
   revision: string;
   equation: TreeEq;
@@ -112,11 +112,30 @@ const visitVariables = (node: TNode, visit: (node: Extract<TNode, { kind: "var" 
     case "fn":
       visitVariables(node.arg, visit);
       break;
+    case "derivative":
+      visitVariables(node.expression, visit);
+      visit({
+        id: node.id,
+        kind: "var",
+        name: node.variable.name,
+        symbolId: node.variable.symbolId,
+      });
+      break;
+    case "integral":
+      visitVariables(node.integrand, visit);
+      visit({
+        id: node.id,
+        kind: "var",
+        name: node.variable.name,
+        symbolId: node.variable.symbolId,
+      });
+      if (node.bounds) {
+        visitVariables(node.bounds.lower, visit);
+        visitVariables(node.bounds.upper, visit);
+      }
+      break;
   }
 };
-
-const defaultRole = (name: string): SymbolRole =>
-  name === "x" ? "independent" : name === "y" ? "dependent" : "unknown";
 
 export function symbolsInEquation(equation: TreeEq): SymbolRecord[] {
   const found = new Map<string, { id: string; name: string }>();
@@ -130,22 +149,29 @@ export function symbolsInEquation(equation: TreeEq): SymbolRecord[] {
   const records = Array.from(found.values()).map<SymbolRecord>(({ id, name }) => ({
     id,
     name,
-    role: defaultRole(name),
-    domain: "real",
-    dependsOn: [],
     assumptions: [],
     provenance: { createdBy: "parser", confirmedByHuman: false },
   }));
-  const x = records.find((record) => record.name === "x");
-  const y = records.find((record) => record.name === "y");
-  if (x && y && y.role === "dependent") y.dependsOn = [x.id];
   return records;
 }
 
 /** Preserve authored metadata while adding/removing records as the equation changes. */
 export function reconcileSymbols(equation: TreeEq, current: SymbolRecord[]): SymbolRecord[] {
   const existing = new Map(current.map((record) => [record.id, record]));
-  return symbolsInEquation(equation).map((discovered) => existing.get(discovered.id) ?? discovered);
+  return symbolsInEquation(equation).map((discovered) => {
+    const authored = existing.get(discovered.id);
+    if (!authored) return discovered;
+    // Explicit reconstruction is also the v1 migration: stale role/domain/
+    // dependsOn properties from older share links are intentionally dropped.
+    return {
+      id: discovered.id,
+      name: discovered.name,
+      meaning: authored.meaning,
+      unit: authored.unit,
+      assumptions: Array.isArray(authored.assumptions) ? authored.assumptions : [],
+      provenance: authored.provenance ?? discovered.provenance,
+    };
+  });
 }
 
 export function renameSymbol(equation: TreeEq, symbolId: string, nextName: string): TreeEq {
@@ -161,6 +187,25 @@ export function renameSymbol(equation: TreeEq, symbolId: string, nextName: strin
         return { ...node, base: rename(node.base), exp: rename(node.exp) };
       case "fn":
         return { ...node, arg: rename(node.arg) };
+      case "derivative":
+        return {
+          ...node,
+          expression: rename(node.expression),
+          variable: node.variable.symbolId === symbolId
+            ? { ...node.variable, name: nextName }
+            : node.variable,
+        };
+      case "integral":
+        return {
+          ...node,
+          integrand: rename(node.integrand),
+          variable: node.variable.symbolId === symbolId
+            ? { ...node.variable, name: nextName }
+            : node.variable,
+          bounds: node.bounds
+            ? { lower: rename(node.bounds.lower), upper: rename(node.bounds.upper) }
+            : undefined,
+        };
       default:
         return node;
     }
@@ -174,7 +219,7 @@ export function makeEquationDocument(
 ): EquationDocument {
   const cloned = cloneTreeEq(equation);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     documentId: options.documentId ?? `eq_${stableHash(keyOf(cloned.left) + keyOf(cloned.right))}`,
     revision: equationRevision(cloned),
     equation: cloned,
