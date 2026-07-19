@@ -23,6 +23,19 @@ const pretty = (v: number): string => fmt(v).replace("-", "−");
 
 const AXIS_NAMES = ["x", "y", "z"];
 
+/** Live media-query match — how the panel decides between inline and sheet input */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    mql.addEventListener("change", onChange);
+    setMatches(mql.matches);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
 /** Bracketed grid of expression cells shared by the matrices and vectors */
 function Bracketed({ children }: { children: ReactNode }) {
   return (
@@ -57,14 +70,22 @@ function useCells(source: number[], commitValue: (index: number, value: number) 
   return { cells, edit, commit };
 }
 
+/** Touch-mode cells get a visible box and a bigger tap target */
+const cellClass = (big: boolean) =>
+  big
+    ? "w-16 select-text rounded-md bg-muted/50 py-2.5 text-center font-serif text-xl outline-none transition-colors focus:bg-muted"
+    : "w-12 select-text rounded bg-transparent py-1.5 text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60 sm:w-14 sm:py-0";
+
 function Cell({
   value,
   title,
+  big,
   onChange,
   onCommit,
 }: {
   value: string;
   title?: string;
+  big?: boolean;
   onChange: (text: string) => void;
   onCommit: () => void;
 }) {
@@ -79,7 +100,7 @@ function Cell({
       }}
       spellCheck={false}
       inputMode="decimal"
-      className="w-12 select-text rounded bg-transparent py-1.5 text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60 sm:w-14 sm:py-0"
+      className={cellClass(!!big)}
     />
   );
 }
@@ -89,15 +110,17 @@ function MatrixCells({
   rows,
   cols,
   cells,
+  big,
 }: {
   rows: Dim;
   cols: Dim;
   cells: ReturnType<typeof useCells>;
+  big?: boolean;
 }) {
   return (
     <Bracketed>
       <div
-        className="grid gap-x-1 gap-y-1 px-1.5 py-1"
+        className={big ? "grid gap-x-1.5 gap-y-1.5 px-2 py-1.5" : "grid gap-x-1 gap-y-1 px-1.5 py-1"}
         style={{ gridTemplateColumns: `repeat(${cols}, max-content)` }}
       >
         {Array.from({ length: rows }, (_, row) =>
@@ -107,6 +130,7 @@ function MatrixCells({
               <Cell
                 key={i}
                 value={cells.cells[i]}
+                big={big}
                 title={`how much ${AXIS_NAMES[row]}-output each unit of ${AXIS_NAMES[col]}-input contributes`}
                 onChange={(text) => cells.edit(i, text)}
                 onCommit={() => cells.commit(i)}
@@ -123,7 +147,16 @@ function MatrixCells({
  * The "X =" label that opens a menu of special matrices on hover — with a
  * θ box for arbitrary-angle rotations. Shared by A and B.
  */
-function SpecialsMenu({ label, onPick }: { label: string; onPick: (m: Mat3) => void }) {
+function SpecialsMenu({
+  label,
+  onPick,
+  drop = "up",
+}: {
+  label: string;
+  onPick: (m: Mat3) => void;
+  /** which way the menu unfolds — down inside the touch editor sheet */
+  drop?: "up" | "down";
+}) {
   const [open, setOpen] = useState(false);
   const [angleText, setAngleText] = useState("90");
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -169,7 +202,9 @@ function SpecialsMenu({ label, onPick }: { label: string; onPick: (m: Mat3) => v
       {open && (
         <div
           onMouseEnter={openMenu}
-          className="absolute bottom-[calc(100%+18px)] left-0 z-40 w-max rounded-lg border border-border bg-card p-1.5 shadow-lg"
+          className={`absolute left-0 z-40 w-max rounded-lg border border-border bg-card p-1.5 shadow-lg ${
+            drop === "up" ? "bottom-[calc(100%+18px)]" : "top-[calc(100%+10px)]"
+          }`}
         >
           <div className="flex items-center gap-1 px-3 pb-1 text-xs text-muted-foreground">
             <span className="font-serif italic">θ</span> =
@@ -317,6 +352,11 @@ export function MatrixPanel() {
     </button>
   );
 
+  // Phones get a compact cluster + a full-screen editor sheet; the inline
+  // cards would be cramped and their hover affordances don't exist on touch
+  const compact = useMediaQuery("(max-width: 639px)");
+  const [editorOpen, setEditorOpen] = useState(false);
+
   const [copied, setCopied] = useState(false);
   const currentShareUrl = () =>
     shareUrl({
@@ -334,6 +374,126 @@ export function MatrixPanel() {
       setTimeout(() => setCopied(false), 1500);
     });
   };
+
+  const journeyPills = square && transformed && (
+    <>
+      {journeyPill("compose", "× B", true, "Compose with a second matrix — B happens after A")}
+      {journeyPill("inverse", "A⁻¹", invertible, invertible ? "Watch A⁻¹ undo A" : "A isn't invertible — nothing can undo it")}
+      {journeyPill("svd", "SVD", svdReady, svdReady ? "Every matrix is rotate → stretch → rotate" : "SVD unavailable here")}
+    </>
+  );
+
+  /** The B/A/vector cards — inline on desktop, inside the editor sheet on phones.
+   *  Sheet cards skip backdrop-blur: the sheet is already frosted, and the blur's
+   *  stacking context would trap the specials menu underneath later cards. */
+  const cardClass = (big: boolean) =>
+    big
+      ? "flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3 shadow-sm"
+      : "flex items-center gap-3 rounded-2xl border border-border bg-card/85 px-4 py-3 shadow-sm backdrop-blur";
+
+  const matrixCards = (big: boolean) => (
+    <>
+      {/* B card — appears for the composition journey, left of A since B·A */}
+      {journey === "compose" && (
+        <div className={cardClass(big)}>
+          <SpecialsMenu label="B =" drop={big ? "down" : "up"} onPick={(m) => setMatrixB(truncateToDims(m))} />
+          <MatrixCells rows={rows} cols={cols} cells={matrixBCells} big={big} />
+        </div>
+      )}
+
+      {/* A card, with the special-matrix menu on hover */}
+      <div className={cardClass(big)}>
+        <SpecialsMenu
+          label="A ="
+          drop={big ? "down" : "up"}
+          onPick={(m) => {
+            if (rows !== 3 || cols !== 3) setDims(3, 3);
+            setMatrix(m);
+          }}
+        />
+        <MatrixCells rows={rows} cols={cols} cells={matrixCells} big={big} />
+
+        {/* shape, transpose, reset */}
+        <div className="flex flex-col items-center gap-1.5">
+          <div
+            className="flex items-center text-xs text-muted-foreground"
+            title="The shape of A: rows = output space, columns = input space"
+          >
+            <button
+              onClick={() => setDims(rows === 3 ? 2 : 3, cols)}
+              title="Toggle the output dimension (rows)"
+              className="rounded px-1 font-serif text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-amber-600"
+            >
+              {rows}
+            </button>
+            <span className="px-0.5">×</span>
+            <button
+              onClick={() => setDims(rows, cols === 3 ? 2 : 3)}
+              title="Toggle the input dimension (columns)"
+              className="rounded px-1 font-serif text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-amber-600"
+            >
+              {cols}
+            </button>
+          </div>
+          <button
+            onClick={transpose}
+            className="rounded-full border border-border px-2.5 py-0.5 font-serif text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+            title="Transpose — rows become columns (a 2×3 becomes a 3×2)"
+          >
+            Aᵀ
+          </button>
+          {transformed && (
+            <button
+              onClick={reset}
+              className="rounded-full border border-border px-2.5 py-0.5 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+              title="Back to the identity"
+            >
+              ↺
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* vector card(s) — vectors live in the input space (`cols` entries) */}
+      <div className={cardClass(big)}>
+        {vectors.map((u) => {
+          const cells = Array.from({ length: cols }, (_, i) => i);
+          return (
+            <div key={u.id} className="flex items-center gap-2">
+              <span className="whitespace-nowrap font-serif text-xl italic" style={{ color: u.color }}>
+                {u.label} =
+              </span>
+              <Bracketed>
+                <div className={big ? "flex flex-col gap-y-1.5 px-2 py-1.5" : "flex flex-col gap-y-1 px-1.5 py-1"}>
+                  {cells.map((i) => (
+                    <VectorCell key={`${u.id}${i}`} vec={u} index={i} big={big} onCommit={setVector} />
+                  ))}
+                </div>
+              </Bracketed>
+            </div>
+          );
+        })}
+        {vectors.length < 2 ? (
+          <button
+            onClick={addSecondVector}
+            className="rounded-full border border-border px-2 py-0.5 font-serif text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+            title="Add a second vector — their span becomes visible"
+          >
+            +w
+          </button>
+        ) : (
+          <button
+            onClick={removeSecondVector}
+            className="self-start rounded-full px-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            title="Remove w"
+          >
+            ×
+          </button>
+        )}
+      </div>
+    </>
+  );
+
   return (
     <>
       {/* share — the whole configuration in a link */}
@@ -380,118 +540,40 @@ export function MatrixPanel() {
           </div>
         )}
 
-        <div className="flex flex-wrap items-stretch justify-center gap-3 sm:flex-nowrap">
-          {/* journeys — chapters for the scrub, tucked beside the cards */}
-          {square && transformed && (
-            <div className="flex flex-col justify-center gap-1.5">
-              {journeyPill("compose", "× B", true, "Compose with a second matrix — B happens after A")}
-              {journeyPill("inverse", "A⁻¹", invertible, invertible ? "Watch A⁻¹ undo A" : "A isn't invertible — nothing can undo it")}
-              {journeyPill("svd", "SVD", svdReady, svdReady ? "Every matrix is rotate → stretch → rotate" : "SVD unavailable here")}
-            </div>
-          )}
-
-          {/* B card — appears for the composition journey, left of A since B·A */}
-          {journey === "compose" && (
-            <div className="flex items-center gap-3 rounded-2xl border border-border bg-card/85 px-4 py-3 shadow-sm backdrop-blur">
-              <SpecialsMenu label="B =" onPick={(m) => setMatrixB(truncateToDims(m))} />
-              <MatrixCells rows={rows} cols={cols} cells={matrixBCells} />
-            </div>
-          )}
-
-          {/* A card, with the special-matrix menu on hover */}
-          <div className="flex items-center gap-3 rounded-2xl border border-border bg-card/85 px-4 py-3 shadow-sm backdrop-blur">
-            <SpecialsMenu
-              label="A ="
-              onPick={(m) => {
-                if (rows !== 3 || cols !== 3) setDims(3, 3);
-                setMatrix(m);
-              }}
-            />
-            <MatrixCells rows={rows} cols={cols} cells={matrixCells} />
-
-            {/* shape, transpose, reset */}
-            <div className="flex flex-col items-center gap-1.5">
-              <div
-                className="flex items-center text-xs text-muted-foreground"
-                title="The shape of A: rows = output space, columns = input space"
-              >
-                <button
-                  onClick={() => setDims(rows === 3 ? 2 : 3, cols)}
-                  title="Toggle the output dimension (rows)"
-                  className="rounded px-1 font-serif text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-amber-600"
-                >
-                  {rows}
-                </button>
-                <span className="px-0.5">×</span>
-                <button
-                  onClick={() => setDims(rows, cols === 3 ? 2 : 3)}
-                  title="Toggle the input dimension (columns)"
-                  className="rounded px-1 font-serif text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-amber-600"
-                >
-                  {cols}
-                </button>
-              </div>
+        {compact ? (
+          <>
+            {/* journeys as a row — usable without opening the editor */}
+            {journeyPills && <div className="flex flex-wrap justify-center gap-1.5">{journeyPills}</div>}
+            <div className="flex items-center gap-2">
               <button
-                onClick={transpose}
-                className="rounded-full border border-border px-2.5 py-0.5 font-serif text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
-                title="Transpose — rows become columns (a 2×3 becomes a 3×2)"
+                onClick={() => setEditorOpen(true)}
+                className="rounded-full border border-border bg-card/85 px-4 py-1.5 text-sm text-muted-foreground shadow-sm backdrop-blur transition-colors hover:border-foreground/40 hover:text-foreground"
+                title="Edit the matrices and vectors"
               >
-                Aᵀ
+                ✎ matrices & vectors
               </button>
               {transformed && (
                 <button
                   onClick={reset}
-                  className="rounded-full border border-border px-2.5 py-0.5 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+                  className="rounded-full border border-border bg-card/85 px-3 py-1.5 text-sm text-muted-foreground shadow-sm backdrop-blur transition-colors hover:border-foreground/40 hover:text-foreground"
                   title="Back to the identity"
                 >
                   ↺
                 </button>
               )}
             </div>
+          </>
+        ) : (
+          <div className="flex flex-wrap items-stretch justify-center gap-3">
+            {/* journeys — chapters for the scrub, tucked beside the cards */}
+            {journeyPills && <div className="flex flex-col justify-center gap-1.5">{journeyPills}</div>}
+            {matrixCards(false)}
           </div>
-
-          {/* vector card(s) — vectors live in the input space (`cols` entries) */}
-          <div className="flex items-center gap-3 rounded-2xl border border-border bg-card/85 px-4 py-3 shadow-sm backdrop-blur">
-            {vectors.map((u) => {
-              const cells = Array.from({ length: cols }, (_, i) => i);
-              return (
-                <div key={u.id} className="flex items-center gap-2">
-                  <span className="whitespace-nowrap font-serif text-xl italic" style={{ color: u.color }}>
-                    {u.label} =
-                  </span>
-                  <Bracketed>
-                    <div className="flex flex-col gap-y-1 px-1.5 py-1">
-                      {cells.map((i) => (
-                        <VectorCell key={`${u.id}${i}`} vec={u} index={i} onCommit={setVector} />
-                      ))}
-                    </div>
-                  </Bracketed>
-                </div>
-              );
-            })}
-            {vectors.length < 2 ? (
-              <button
-                onClick={addSecondVector}
-                className="rounded-full border border-border px-2 py-0.5 font-serif text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
-                title="Add a second vector — their span becomes visible"
-              >
-                +w
-              </button>
-            ) : (
-              <button
-                onClick={removeSecondVector}
-                className="self-start rounded-full px-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
-                title="Remove w"
-              >
-                ×
-              </button>
-            )}
-          </div>
-        </div>
+        )}
 
         {/* what the map did, in numbers — only meaningful once something moved */}
         {transformed && (
-          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          <div className="flex max-w-[92vw] flex-wrap items-center justify-center gap-x-4 gap-y-1 text-center text-xs text-muted-foreground">
             {vectors.map((u) => {
               const out = apply(product, u.v);
               return (
@@ -509,6 +591,24 @@ export function MatrixPanel() {
           </div>
         )}
       </div>
+
+      {/* the touch editor sheet — the same cards, room to breathe, bigger targets */}
+      {compact && editorOpen && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur" data-ui>
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <span className="text-sm text-muted-foreground">matrices &amp; vectors</span>
+            <button
+              onClick={() => setEditorOpen(false)}
+              className="rounded-full border border-amber-300 bg-amber-50 px-4 py-1 text-sm text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+            >
+              done
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col items-center gap-4 overflow-y-auto px-4 py-6">
+            {matrixCards(true)}
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -517,10 +617,12 @@ export function MatrixPanel() {
 function VectorCell({
   vec,
   index,
+  big,
   onCommit,
 }: {
   vec: { id: string; v: [number, number, number] };
   index: number;
+  big?: boolean;
   onCommit: (id: string, v: [number, number, number]) => void;
 }) {
   const [text, setText] = useState(fmt(vec.v[index]));
@@ -551,7 +653,7 @@ function VectorCell({
       }}
       spellCheck={false}
       inputMode="decimal"
-      className="w-12 select-text rounded bg-transparent py-1.5 text-center font-serif text-lg outline-none transition-colors hover:bg-muted/60 focus:bg-muted/60 sm:w-14 sm:py-0"
+      className={cellClass(!!big)}
     />
   );
 }
