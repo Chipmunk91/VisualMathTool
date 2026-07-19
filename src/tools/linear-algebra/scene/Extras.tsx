@@ -7,7 +7,7 @@ import * as THREE from "three";
 import { Html, Line, useCursor } from "@react-three/drei";
 import { useThree, type ThreeEvent } from "@react-three/fiber";
 import type { Vec3 } from "../lib/mat3";
-import type { EigenAxis } from "../lib/eigen";
+import type { ComplexRotation, EigenAxis } from "../lib/eigen";
 import { COLOR } from "./palette";
 
 const CUBE = "#0d9488"; // teal-600
@@ -68,6 +68,64 @@ export function EigenAxisLine({ axis }: { axis: EigenAxis }) {
       <Html position={labelPos} center style={{ pointerEvents: "none" }} zIndexRange={[10, 0]}>
         <span className="select-none whitespace-nowrap font-serif text-xs" style={{ color: EIGEN }}>
           λ = {fmtVal(axis.value)}
+        </span>
+      </Html>
+    </group>
+  );
+}
+
+/**
+ * A complex eigen-pair drawn as what it IS: the invariant plane the map spins.
+ * A quiet disc marks the plane, an arced arrow shows one application's turn,
+ * and the label names λ with its polar reading (rotate θ, scale r).
+ */
+export function RotationDisc({ rot }: { rot: ComplexRotation }) {
+  const { quaternion, arc, tip, tangentQ, labelPos } = useMemo(() => {
+    const u = new THREE.Vector3(...rot.u);
+    const w = new THREE.Vector3(...rot.w);
+    const n = new THREE.Vector3().crossVectors(u, w).normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+    const R = 1.9;
+    const SEGS = 32;
+    const pts: Vec3[] = [];
+    for (let i = 0; i <= SEGS; i++) {
+      const a = (i / SEGS) * rot.angle;
+      const p = u.clone().multiplyScalar(Math.cos(a) * R).addScaledVector(w, Math.sin(a) * R);
+      pts.push([p.x, p.y, p.z]);
+    }
+    const end = rot.angle;
+    const tangent = u
+      .clone()
+      .multiplyScalar(-Math.sin(end))
+      .addScaledVector(w, Math.cos(end))
+      .multiplyScalar(Math.sign(rot.angle))
+      .normalize();
+    const tq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), tangent);
+    const label = u.clone().multiplyScalar(-(R + 0.9));
+    return { quaternion: q, arc: pts, tip: pts[pts.length - 1], tangentQ: tq, labelPos: label };
+  }, [rot]);
+  const deg = Math.round((Math.abs(rot.angle) * 180) / Math.PI);
+  return (
+    <group>
+      <mesh quaternion={quaternion}>
+        <circleGeometry args={[2.4, 48]} />
+        <meshBasicMaterial color={EIGEN} transparent opacity={0.06} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      <Line points={arc} color={EIGEN} transparent opacity={0.7} lineWidth={1.5} />
+      <mesh position={tip} quaternion={tangentQ}>
+        <coneGeometry args={[0.07, 0.2, 12]} />
+        <meshBasicMaterial color={EIGEN} transparent opacity={0.8} />
+      </mesh>
+      <Html position={[labelPos.x, labelPos.y, labelPos.z]} center style={{ pointerEvents: "none" }} zIndexRange={[10, 0]}>
+        <span
+          className="select-none whitespace-nowrap text-center font-serif text-xs leading-tight"
+          style={{ color: EIGEN }}
+        >
+          λ = {fmtVal(rot.re)} ± {fmtVal(rot.im)}i
+          <br />
+          <span className="text-[10px] opacity-80">
+            rotates {deg}° · scale ×{fmtVal(rot.scale)}
+          </span>
         </span>
       </Html>
     </group>
