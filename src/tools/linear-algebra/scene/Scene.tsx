@@ -11,7 +11,7 @@ import { useThree } from "@react-three/fiber";
 import { useLinAlg } from "../store";
 import { apply, invert, invert2, matEquals, baseFor, toMatrix4, type Vec3 } from "../lib/mat3";
 import { effectiveAt, journeyProduct, stagesFor } from "../lib/journey";
-import { realEigenAxes, realEigenAxes2 } from "../lib/eigen";
+import { complexRotation2, complexRotation3, realEigenAxes, realEigenAxes2 } from "../lib/eigen";
 import { columnSpace, nullSpace } from "../lib/spaces";
 import { Grid } from "./Grid";
 import { Axes } from "./Axes";
@@ -20,6 +20,7 @@ import {
   UnitCube,
   UnitSquare,
   EigenAxisLine,
+  RotationDisc,
   TipHandle,
   SubspacePlane,
   SubspaceLine,
@@ -73,6 +74,12 @@ export function Scene() {
     return rows === 3 ? realEigenAxes(product) : realEigenAxes2(product);
   }, [product, rows, cols]);
 
+  // A complex pair is the map's rotation — drawn as the plane it spins
+  const spinPlane = useMemo(() => {
+    if (rows !== cols) return null;
+    return rows === 3 ? complexRotation3(product) : complexRotation2(product);
+  }, [product, rows, cols]);
+
   // Column space of the final map (where outputs can land), null space (what dies)
   const colSpace = useMemo(() => columnSpace(product, rows, cols), [product, rows, cols]);
   const nulSpace = useMemo(() => nullSpace(product, rows, cols), [product, rows, cols]);
@@ -108,6 +115,9 @@ export function Scene() {
 
       {/* invariant directions — only the real ones exist to draw */}
       {transformed && eigenAxes.map((axis) => <EigenAxisLine key={axis.dir.join(",")} axis={axis} />)}
+
+      {/* the complex pair: no axis holds still, but a plane spins in place */}
+      {transformed && spinPlane && <RotationDisc rot={spinPlane} />}
 
       {/* rank-deficient maps: where everything must land, and what is crushed */}
       {transformed && colSpace.kind === "plane" && (
