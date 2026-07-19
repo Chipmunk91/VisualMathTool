@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { ChevronDown, History, Play, Search, Square, TriangleAlert } from "lucide-react";
+import { BookOpen, ChevronDown, History, Play, Search, Square, TriangleAlert, X } from "lucide-react";
 import {
   Power,
   LeafTerm,
@@ -52,6 +52,23 @@ import {
 import { TangentPane } from "./tangent";
 import { AreaPane } from "./area";
 import { sharedFromUrl, shareUrl, type MoveStory } from "./share";
+import {
+  equationRevision,
+  makeEquationDocument,
+  predicateFromText,
+  reconcileSymbols,
+  symbolsInEquation,
+  type EquationEvent,
+  type SymbolDomain,
+  type SymbolRecord,
+  type SymbolRole,
+} from "./document";
+import {
+  applyEquationCommand,
+  inspectEquationNodes,
+  listApplicableEquationOperations,
+  type EquationCommand,
+} from "./engine";
 import { isEmbed } from "../../lib/embed";
 import {
   applyToolT,
@@ -82,12 +99,11 @@ import {
 import { toggleTreeFactorSelection, type SymbolSelection } from "./selection";
 import { treeActorDestinationTerm, treeAnimationStages, treeMoveStory } from "./treeanimation";
 import {
-  applySpecialActionT,
   specialActionLabel,
   type SpecialActionKind,
   type SpecialActionRef,
 } from "./specialactions";
-import { applyRewrite, detectFactorizationsEq, type Rewrite } from "./rewrites";
+import { detectFactorizationsEq, type Rewrite } from "./rewrites";
 
 /**
  * Equation Playground — a single large equation whose symbols are live
@@ -113,6 +129,8 @@ import { applyRewrite, detectFactorizationsEq, type Rewrite } from "./rewrites";
  */
 const BOOT: EquationState = { left: [leaf(2, 1), leaf(-3)], right: [leaf(-7)] };
 const BOOT_TREE: TreeEq = ensureTreeEqIds({ left: flatToTree(BOOT.left), right: flatToTree(BOOT.right) });
+const freshDocumentId = () =>
+  `eq_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 
 const SUP = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 /** x³ etc. in plain text */
@@ -235,6 +253,8 @@ interface Step {
   intermediateTree?: TreeEq;
   /** how this step's move happened — drives the replay choreography */
   story?: MoveStory;
+  /** Machine-replayable semantic operation. Step zero and old links omit it. */
+  event?: EquationEvent;
   text: string;
 }
 
@@ -280,6 +300,7 @@ interface TraceStep {
 }
 
 let stepCounter = 0;
+let commandCounter = 0;
 const makeStep = (
   label: string,
   state: EquationState,
@@ -308,7 +329,8 @@ const makeTreeStep = (
   note?: string,
   pill?: string,
   story?: MoveStory,
-  intermediateTree?: TreeEq
+  intermediateTree?: TreeEq,
+  event?: EquationEvent
 ): Step => ({
   id: stepCounter++,
   label,
@@ -316,6 +338,7 @@ const makeTreeStep = (
   dangerous,
   pill,
   story,
+  event,
   state: TREE_DUMMY(),
   tree: cloneTreeEq(tree),
   intermediateTree: intermediateTree ? cloneTreeEq(intermediateTree) : undefined,
@@ -503,6 +526,14 @@ const EquationBuilderTool = () => {
   const [equation, setEquation] = useState<EquationState>(() => TREE_DUMMY());
   const [treeEq, setTreeEq] = useState<TreeEq | null>(() => cloneTreeEq(BOOT_TREE));
   const [history, setHistory] = useState<Step[]>(() => [makeTreeStep("start", BOOT_TREE)]);
+  const [documentId, setDocumentId] = useState(freshDocumentId);
+  const [symbolRecords, setSymbolRecords] = useState<SymbolRecord[]>(() => symbolsInEquation(BOOT_TREE));
+  const [symbolBookOpen, setSymbolBookOpen] = useState(false);
+  const [hoveredSymbolId, setHoveredSymbolId] = useState<string | null>(null);
+  /** Mathematical view state belongs to the shareable document, not transient UI. */
+  const [fnView, setFnView] = useState<"mapping" | "slope" | "area">("slope");
+  const [bounds, setBounds] = useState<{ lo: number; hi: number }>({ lo: 0, hi: 2 });
+  const [probeValue, setProbeValue] = useState(1);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dragOver, setDragOver] = useState<Side | null>(null);
   const [parenHover, setParenHover] = useState<string | null>(null);
@@ -553,6 +584,10 @@ const EquationBuilderTool = () => {
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const equationRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (treeEq) setSymbolRecords((current) => reconcileSymbols(treeEq, current));
+  }, [treeEq]);
 
   useEffect(() => {
     try {
@@ -1626,8 +1661,25 @@ const EquationBuilderTool = () => {
 
   // --- Share: the whole derivation in a link ----
   const [copied, setCopied] = useState(false);
-  const currentShareUrl = () =>
-    shareUrl({
+  const currentShareUrl = () => {
+    const currentTree = treeEq ?? ensureTreeEqIds({ left: flatToTree(equation.left), right: flatToTree(equation.right) });
+    const document = makeEquationDocument(currentTree, {
+      documentId,
+      symbols: symbolRecords,
+      assumptions: Array.from(new Set(history.map((step) => step.pill).filter((pill): pill is string => !!pill)))
+        .map((pill) => predicateFromText(pill)),
+      history: history.map((step) => step.event).filter((event): event is EquationEvent => !!event),
+      presentation: { functionView: fnView, integrationBounds: [bounds.lo, bounds.hi], probeValue },
+    });
+    return shareUrl({
+      schemaVersion: 2,
+      document: {
+        documentId: document.documentId,
+        revision: document.revision,
+        symbols: document.symbols,
+        assumptions: document.assumptions,
+        presentation: document.presentation,
+      },
       steps: history.map((s) => ({
         label: s.label,
         note: s.note,
@@ -1636,8 +1688,10 @@ const EquationBuilderTool = () => {
         tree: s.tree ?? ensureTreeEqIds({ left: flatToTree(s.state.left), right: flatToTree(s.state.right) }),
         intermediateTree: s.intermediateTree,
         story: s.story,
+        event: s.event,
       })),
     });
+  };
   const copyShare = () => {
     navigator.clipboard?.writeText(currentShareUrl()).then(() => {
       setCopied(true);
@@ -1662,6 +1716,7 @@ const EquationBuilderTool = () => {
         dangerous: s.dangerous,
         pill: s.pill,
         story: s.story,
+        event: s.event,
         state: TREE_DUMMY(),
         tree,
         intermediateTree: s.intermediateTree ? cloneTreeEq(s.intermediateTree) : undefined,
@@ -1672,6 +1727,18 @@ const EquationBuilderTool = () => {
     setHistory(steps);
     setEquation(TREE_DUMMY());
     setTreeEq(cloneTreeEq(last.tree!));
+    if (shared.document) {
+      setDocumentId(shared.document.documentId);
+      setSymbolRecords(reconcileSymbols(last.tree!, shared.document.symbols));
+      const presentation = shared.document.presentation;
+      if (presentation?.functionView) setFnView(presentation.functionView);
+      if (presentation?.integrationBounds) {
+        setBounds({ lo: presentation.integrationBounds[0], hi: presentation.integrationBounds[1] });
+      }
+      if (typeof presentation?.probeValue === "number") setProbeValue(presentation.probeValue);
+    } else {
+      setSymbolRecords(symbolsInEquation(last.tree!));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1699,6 +1766,23 @@ const EquationBuilderTool = () => {
     () => Array.from(new Set(history.map((s) => s.pill).filter((p): p is string => !!p))),
     [history]
   );
+  useEffect(() => {
+    const predicates = assumptions.map((assumption) => predicateFromText(assumption));
+    setSymbolRecords((records) => {
+      let changed = false;
+      const next = records.map((record) => {
+        const relevant = predicates.filter((predicate) =>
+          new RegExp(`(^|[^A-Za-z0-9_])${record.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9_]|$)`).test(predicate.expression)
+        );
+        const same = relevant.length === record.assumptions.length &&
+          relevant.every((predicate, index) => predicate.id === record.assumptions[index]?.id);
+        if (same) return record;
+        changed = true;
+        return { ...record, assumptions: relevant };
+      });
+      return changed ? next : records;
+    });
+  }, [assumptions]);
   const xNonZeroAssumed = assumptions.includes("x ≠ 0");
   const nonZeroAssumed = (v: Variable) => assumptions.includes(`${v} ≠ 0`);
 
@@ -1929,11 +2013,6 @@ const EquationBuilderTool = () => {
     if (!vars.has("y") && vars.has("x")) return { kind: "graph" as const };
     return null;
   }, [treeEq]);
-
-  /** Which view function mode shows: curve & slope (default), mapping, or area */
-  const [fnView, setFnView] = useState<"mapping" | "slope" | "area">("slope");
-  /** Definite-integral bounds for the area view — draggable, or set by term drops */
-  const [bounds, setBounds] = useState<{ lo: number; hi: number }>({ lo: 0, hi: 2 });
 
   /** d/dx is only meaningful on an identity — exactly what function mode is */
   const ddxReady = treeEq ? treePane?.kind === "mapping" : !!functionMode;
@@ -2395,6 +2474,7 @@ const EquationBuilderTool = () => {
     setTreeEq(norm.te);
     setEquation(TREE_DUMMY());
     setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
+    setDocumentId(freshDocumentId());
     setSelection(null);
     setSpecialBubble(null);
     setDismissedFactorizationHints(new Set());
@@ -3143,56 +3223,104 @@ const EquationBuilderTool = () => {
   const withTreeStory = (o: TreeOutcome, payload: DragPayload, target: DropTarget): TreeOutcome =>
     o.story || !treeEq ? o : { ...o, story: treeMoveStory(treeEq, payload, target) };
 
-  const commitTreeOutcome = (o: TreeOutcome) => {
+  const commitTreeOutcome = (o: TreeOutcome, event?: EquationEvent) => {
     setTreeEq(o.treeNext);
     setEquation(TREE_DUMMY());
     setHistory((h) => [
       ...h,
-      makeTreeStep(o.label, o.treeNext, o.dangerous, o.note, o.pill, o.story, o.treeIntermediate),
+      makeTreeStep(o.label, o.treeNext, o.dangerous, o.note, o.pill, o.story, o.treeIntermediate, event),
     ]);
     setSelection(null);
     setSpecialBubble(null);
     setNotice(null);
   };
 
+  /** One semantic command path for pointer gestures, bubbles, rewrites, and AI adapters. */
+  const runEquationCommand = (command: EquationCommand) => {
+    if (!treeEq) return null;
+    return applyEquationCommand(treeEq, {
+      requestId: `human_${Date.now().toString(36)}_${(commandCounter++).toString(36)}`,
+      expectedRevision: equationRevision(treeEq),
+      actor: { kind: "human" },
+      command,
+    });
+  };
+
+  useEffect(() => {
+    if (!treeEq) return;
+    const equationAtRevision = treeEq;
+    const documentAssumptions = Array.from(
+      new Set(history.map((step) => step.pill).filter((pill): pill is string => !!pill))
+    ).map((pill) => predicateFromText(pill));
+    const api = {
+      getDocument: () => makeEquationDocument(equationAtRevision, {
+        documentId,
+        symbols: symbolRecords,
+        assumptions: documentAssumptions,
+        history: history.map((step) => step.event).filter((event): event is EquationEvent => !!event),
+        presentation: { functionView: fnView, integrationBounds: [bounds.lo, bounds.hi], probeValue },
+      }),
+      inspectNodes: () => inspectEquationNodes(equationAtRevision),
+      listApplicableOperations: () => listApplicableEquationOperations(equationAtRevision),
+      previewCommand: (request: Parameters<typeof applyEquationCommand>[1]) =>
+        applyEquationCommand(equationAtRevision, request),
+      applyCommand: (request: Parameters<typeof applyEquationCommand>[1]) => {
+        const result = applyEquationCommand(equationAtRevision, request);
+        if (result.status === "applied") {
+          const outcome =
+            request.command.type === "gesture"
+              ? withTreeStory(result.outcome, request.command.payload, request.command.target)
+              : result.outcome;
+          commitTreeOutcome(outcome, { ...result.event, animation: outcome.story });
+        }
+        return result;
+      },
+      updateSymbol: (symbolId: string, patch: Partial<Omit<SymbolRecord, "id">>) => {
+        if (!symbolRecords.some((record) => record.id === symbolId)) return false;
+        setSymbolRecords((records) => records.map((record) =>
+          record.id === symbolId ? { ...record, ...patch, id: record.id } : record
+        ));
+        return true;
+      },
+    };
+    window.visualMathEquation = api;
+    return () => {
+      if (window.visualMathEquation === api) delete window.visualMathEquation;
+    };
+  }, [treeEq, symbolRecords, history, documentId, fnView, bounds.lo, bounds.hi, probeValue]);
+
   const runSpecialAction = (action: SpecialActionRef, ownerId: string) => {
     if (!treeEq) return;
-    const result = applySpecialActionT(treeEq, action);
+    const result = runEquationCommand({ type: "special-action", action });
     setSpecialBubble(null);
-    if (result === null) return;
-    if (typeof result === "string") {
-      flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+    if (!result) return;
+    if (result.status !== "applied") {
+      const reason = result.status === "rejected" ? result.reason : "the equation changed — try that action again";
+      flashNotice(reason.charAt(0).toUpperCase() + reason.slice(1) + ".");
       return;
     }
-    commitTreeOutcome({
-      ...result,
-      story: result.story ?? {
+    const outcome = {
+      ...result.outcome,
+      story: result.outcome.story ?? {
         actors: [],
         site: [],
         born: [],
         kind: "simplify",
         emphasize: [ownerId],
       },
-    });
+    } satisfies TreeOutcome;
+    commitTreeOutcome(outcome, { ...result.event, animation: outcome.story });
   };
 
   const runRewrite = (side: Side, rewrite: Rewrite, ownerId: string) => {
     if (!treeEq) return;
-    const rewritten = applyRewrite(treeEq[side], rewrite);
-    const result = finalize(
-      side === "left" ? rewritten : treeEq.left,
-      side === "right" ? rewritten : treeEq.right,
-      rewrite.label,
-      rewrite.pill
-        ? {
-            dangerous: true,
-            note: `This identity is valid where ${rewrite.pill}.`,
-            pill: rewrite.pill,
-          }
-        : undefined
-    );
-    commitTreeOutcome({
-      ...result,
+    const result = runEquationCommand({ type: "rewrite", side, targetId: rewrite.before.id, kind: rewrite.kind });
+    if (!result || result.status !== "applied") {
+      if (result?.status === "rejected") flashNotice(result.reason);
+      return;
+    }
+    const outcome = {
+      ...result.outcome,
       story: {
         actors: [],
         site: [],
@@ -3200,7 +3328,8 @@ const EquationBuilderTool = () => {
         kind: "simplify",
         emphasize: [ownerId],
       },
-    });
+    } satisfies TreeOutcome;
+    commitTreeOutcome(outcome, { ...result.event, animation: outcome.story });
   };
 
   /** Live outcome preview: what would happen if the drag were released here */
@@ -3674,13 +3803,15 @@ const EquationBuilderTool = () => {
       return;
     }
     if (treeEq) {
-      const result = computeTreeDrop(payload, target);
-      if (result === null) return;
-      if (typeof result === "string") {
-        flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+      const result = runEquationCommand({ type: "gesture", payload, target });
+      if (!result) return;
+      if (result.status !== "applied") {
+        const reason = result.status === "rejected" ? result.reason : "the equation changed — try that move again";
+        flashNotice(reason.charAt(0).toUpperCase() + reason.slice(1) + ".");
         return;
       }
-      commitTreeOutcome(withTreeStory(result, payload, target));
+      const outcome = withTreeStory(result.outcome, payload, target);
+      commitTreeOutcome(outcome, { ...result.event, animation: outcome.story });
       return;
     }
     const result = computeDrop(payload, target);
@@ -4759,7 +4890,7 @@ const EquationBuilderTool = () => {
             onClick={() => setToolboxOpen((cur) => !cur)}
           >
             ƒ
-            <span className="font-sans text-xs text-muted-foreground">Symbols</span>
+            <span className="font-sans text-xs text-muted-foreground">Operations</span>
             <ChevronDown
               className={`h-3 w-3 text-muted-foreground transition-transform ${toolboxOpen ? "rotate-180" : ""}`}
             />
@@ -4801,13 +4932,18 @@ const EquationBuilderTool = () => {
                           }
                           if (!item.tool) return;
                           if (treeEq) {
-                            const result = applyToolT(item.tool, treeEq);
-                            if (result === null) return;
+                            const result = runEquationCommand({
+                              type: "gesture",
+                              payload: { kind: "tool", tool: item.tool },
+                              target: { kind: "side", side: "left" },
+                            });
+                            if (!result) return;
                             setToolboxOpen(false);
-                            if (typeof result === "string") {
-                              flashNotice(result.charAt(0).toUpperCase() + result.slice(1) + ".");
+                            if (result.status !== "applied") {
+                              const reason = result.status === "rejected" ? result.reason : "the equation changed — try again";
+                              flashNotice(reason.charAt(0).toUpperCase() + reason.slice(1) + ".");
                             } else {
-                              commitTreeOutcome(result);
+                              commitTreeOutcome(result.outcome, result.event);
                             }
                             return;
                           }
@@ -4838,6 +4974,163 @@ const EquationBuilderTool = () => {
                 click = both sides (a legal move) · drag onto one term = rebuild it (a new equation)
               </div>
             </div>
+          )}
+        </div>
+
+        <div className="relative" data-symbol-book>
+          <button
+            type="button"
+            aria-expanded={symbolBookOpen}
+            aria-controls="equation-symbol-book"
+            onClick={() => setSymbolBookOpen((open) => !open)}
+            className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs shadow-sm transition-colors ${
+              symbolBookOpen
+                ? "border-sky-300 bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-300"
+                : "border-border bg-card hover:border-foreground/40"
+            }`}
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+            Model symbols
+            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+              {symbolRecords.length}
+            </span>
+          </button>
+
+          {symbolBookOpen && (
+            <section
+              id="equation-symbol-book"
+              aria-label="Model symbols"
+              className="absolute left-0 top-[calc(100%+6px)] z-50 flex max-h-[min(70vh,34rem)] w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-xl sm:w-[22rem]"
+            >
+              <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+                <div>
+                  <h2 className="text-sm font-semibold">Model symbols</h2>
+                  <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                    Definitions travel with the equation and are available to AI tools.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Close model symbols"
+                  onClick={() => setSymbolBookOpen(false)}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </header>
+
+              <div className="overflow-y-auto p-2">
+                {symbolRecords.length === 0 ? (
+                  <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+                    Type an equation with a variable to create its first record.
+                  </p>
+                ) : (
+                  symbolRecords.map((record) => (
+                    <article
+                      key={record.id}
+                      onPointerEnter={() => setHoveredSymbolId(record.id)}
+                      onPointerLeave={() => setHoveredSymbolId(null)}
+                      className="mb-2 rounded-xl border border-transparent bg-muted/35 p-3 last:mb-0 hover:border-sky-300/70 hover:bg-sky-50/60 dark:hover:bg-sky-950/20"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background font-serif text-xl italic">
+                          {record.name}
+                        </span>
+                        <label className="min-w-0 flex-1">
+                          <span className="sr-only">Role for {record.name}</span>
+                          <select
+                            value={record.role}
+                            onChange={(event) => {
+                              const role = event.target.value as SymbolRole;
+                              setSymbolRecords((records) => records.map((item) =>
+                                item.id === record.id
+                                  ? { ...item, role, provenance: { ...item.provenance, confirmedByHuman: true } }
+                                  : item
+                              ));
+                            }}
+                            className="h-8 w-full rounded-lg border border-border bg-background px-2 text-xs"
+                          >
+                            <option value="independent">independent variable</option>
+                            <option value="dependent">dependent variable</option>
+                            <option value="parameter">parameter</option>
+                            <option value="unknown">unclassified</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span className="sr-only">Domain for {record.name}</span>
+                          <select
+                            value={record.domain}
+                            onChange={(event) => {
+                              const domain = event.target.value as SymbolDomain;
+                              setSymbolRecords((records) => records.map((item) =>
+                                item.id === record.id
+                                  ? { ...item, domain, provenance: { ...item.provenance, confirmedByHuman: true } }
+                                  : item
+                              ));
+                            }}
+                            className="h-8 rounded-lg border border-border bg-background px-2 text-xs"
+                          >
+                            <option value="real">real</option>
+                            <option value="integer">integer</option>
+                            <option value="complex">complex</option>
+                          </select>
+                        </label>
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-[1fr_5.5rem] gap-2">
+                        <label>
+                          <span className="sr-only">Meaning of {record.name}</span>
+                          <input
+                            value={record.meaning ?? ""}
+                            onChange={(event) => {
+                              const meaning = event.target.value;
+                              setSymbolRecords((records) => records.map((item) =>
+                                item.id === record.id
+                                  ? { ...item, meaning: meaning || undefined, provenance: { ...item.provenance, confirmedByHuman: true } }
+                                  : item
+                              ));
+                            }}
+                            placeholder="meaning, e.g. time"
+                            className="h-8 w-full rounded-lg border border-border bg-background px-2 text-xs placeholder:text-muted-foreground/60"
+                          />
+                        </label>
+                        <label>
+                          <span className="sr-only">Unit of {record.name}</span>
+                          <input
+                            value={record.unit ?? ""}
+                            onChange={(event) => {
+                              const unit = event.target.value;
+                              setSymbolRecords((records) => records.map((item) =>
+                                item.id === record.id
+                                  ? { ...item, unit: unit || undefined, provenance: { ...item.provenance, confirmedByHuman: true } }
+                                  : item
+                              ));
+                            }}
+                            placeholder="unit"
+                            className="h-8 w-full rounded-lg border border-border bg-background px-2 text-xs placeholder:text-muted-foreground/60"
+                          />
+                        </label>
+                      </div>
+
+                      {(record.dependsOn.length > 0 || record.assumptions.length > 0) && (
+                        <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
+                          {record.dependsOn.length > 0 && (
+                            <span className="rounded-full border border-border bg-background px-2 py-0.5">
+                              depends on {record.dependsOn.map((id) => symbolRecords.find((item) => item.id === id)?.name ?? id).join(", ")}
+                            </span>
+                          )}
+                          {record.assumptions.map((assumption) => (
+                            <span key={assumption.id} className="rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 text-amber-700 dark:bg-amber-950/20 dark:text-amber-300">
+                              {assumption.expression}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
           )}
         </div>
       </div>
@@ -5009,6 +5302,7 @@ const EquationBuilderTool = () => {
                     hoveredTermId={hoveredTermId}
                     selectedIds={selection?.side === side ? selection.termIds : null}
                     factorizationHints={factorizationHints[side]}
+                    highlightedSymbolId={hoveredSymbolId}
                     onHover={symHandlers.hover}
                   />
                   {spread?.kind === "wrap" && (
@@ -5133,9 +5427,9 @@ const EquationBuilderTool = () => {
           return (
             <>
               {fnView === "slope" ? (
-                <TangentPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} />
+                <TangentPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} probeValue={probeValue} onProbeValue={setProbeValue} />
               ) : fnView === "mapping" ? (
-                <MappingPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} />
+                <MappingPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} outputVar={fn.output} probeValue={probeValue} onProbeValue={setProbeValue} />
               ) : (
                 <AreaPane f={fn.f} depKey={fn.depKey} inputVar={fn.input} bounds={bounds} onBounds={setBounds} />
               )}

@@ -19,6 +19,8 @@ interface Ctx {
   side: Side;
   onHover: (id: string | null) => void;
   selectedIds?: ReadonlySet<string>;
+  /** Symbol-book hover highlights every occurrence without changing selection. */
+  highlightedSymbolId?: string;
   /** Opt-in factorization cards, addressed by stable semantic node id. */
   factorizationHints?: ReadonlyMap<string, FactorizationHintView>;
   /** inside a factor handle: the handle is the one grab box, glyphs go quiet */
@@ -207,7 +209,18 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
     case "named":
       return <TSym ctx={ctx} role={role} className="italic">π</TSym>;
     case "var":
-      return <TSym ctx={ctx} className="italic">{node.name}</TSym>;
+      return (
+        <span
+          data-model-symbol={node.symbolId}
+          className={`rounded-md transition-colors duration-150 ${
+            ctx.highlightedSymbolId === node.symbolId
+              ? "bg-sky-50 text-sky-600 outline outline-1 outline-dashed outline-sky-400/80 outline-offset-2 dark:bg-sky-950/30 dark:text-sky-300"
+              : ""
+          }`}
+        >
+          <TSym ctx={ctx} className="italic">{node.name}</TSym>
+        </span>
+      );
     case "add":
       return (
         <span className="inline-flex items-center">
@@ -604,6 +617,7 @@ export function TreeSideView({
   hoveredTermId,
   selectedIds,
   factorizationHints,
+  highlightedSymbolId,
   onHover,
 }: {
   node: TNode;
@@ -611,12 +625,13 @@ export function TreeSideView({
   hoveredTermId: string | null;
   selectedIds: string[] | null;
   factorizationHints?: ReadonlyMap<string, FactorizationHintView> | null;
+  highlightedSymbolId?: string | null;
   onHover: (id: string | null) => void;
 }) {
   const addends = addendsOf(node);
   const selectedSet = new Set(selectedIds ?? []);
   if (addends.length === 0) {
-    const ctx: Ctx = { id: node.id, side, onHover, selectedIds: selectedSet, factorizationHints: factorizationHints ?? undefined };
+    const ctx: Ctx = { id: node.id, side, onHover, selectedIds: selectedSet, factorizationHints: factorizationHints ?? undefined, highlightedSymbolId: highlightedSymbolId ?? undefined };
     return (
       <span className="inline-flex items-center">
         <TSym ctx={ctx}>0</TSym>
@@ -628,7 +643,7 @@ export function TreeSideView({
     <span className="relative inline-flex items-center">
       {addends.map((a, i) => {
         const id = a.id;
-        const ctx: Ctx = { id, side, onHover, selectedIds: selectedSet, factorizationHints: factorizationHints ?? undefined };
+        const ctx: Ctx = { id, side, onHover, selectedIds: selectedSet, factorizationHints: factorizationHints ?? undefined, highlightedSymbolId: highlightedSymbolId ?? undefined };
         const { neg, body } = signSplit(a);
         const highlighted = hoveredTermId === id || (selectedIds?.includes(id) ?? false);
         return (

@@ -285,8 +285,8 @@ console.log("\n== L2. pencil-style cross-variable products ==");
   check("L2.6 parentheses raise the complete product", printTreeEq(parsedTree("(xy)^2 = 1")) === "x²·y² = 1");
   const unknown = parseEquation("velocity = 1");
   check(
-    "L2.7 unknown multi-letter symbols remain unsupported",
-    !unknown.ok && unknown.stage === "convert" && unknown.message.includes('"velocity"')
+    "L2.7 arbitrary multi-letter symbols enter the canonical tree",
+    unknown.ok && printTreeEq(unknown.tree) === "velocity = 1"
   );
 
   const factorLayout = treeFactorLayout(xy.left.id, xy.left);

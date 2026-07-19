@@ -70,7 +70,7 @@ const TREE_FN = {
   sqrt: "sqrt",
 } as const;
 
-type VariableName = "x" | "y";
+type VariableName = string;
 
 /**
  * mathjs reads pencil-style `xy` as one SymbolNode, not as implicit
@@ -89,7 +89,6 @@ function mathToTree(node: Node): TNode {
   if (constant) return tc(constant.num, constant.den);
   switch (node.type) {
     case "SymbolNode":
-      if (node.name === "x" || node.name === "y") return tv(node.name);
       if (node.name === "pi" || node.name === "π") return tnamed("pi");
       // Keep Euler's constant in the same canonical form used by e^u.  The
       // tree already knows exp(1) is positive/nonzero, evaluates it exactly,
@@ -98,9 +97,9 @@ function mathToTree(node: Node): TNode {
       if (node.name === "e") return tfn("exp", tc(1));
       {
         const variables = splitVariableProduct(node.name);
-        if (variables) return tmul(...variables.map(tv));
+        if (variables) return tmul(...variables.map((name) => tv(name)));
       }
-      throw new Unsupported(`the constant "${node.name}" isn't playable yet`);
+      return tv(node.name);
     case "ParenthesisNode":
       return mathToTree(node.content);
     case "FunctionNode": {
@@ -132,7 +131,7 @@ function mathToTree(node: Node): TNode {
           const variables = splitVariableProduct(a.name);
           if (variables) {
             const last = variables[variables.length - 1];
-            return tmul(...variables.slice(0, -1).map(tv), tpow(tv(last), mathToTree(b)));
+            return tmul(...variables.slice(0, -1).map((name) => tv(name)), tpow(tv(last), mathToTree(b)));
           }
         }
         const base = unwrapParens(a);

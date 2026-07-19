@@ -23,11 +23,15 @@ export function TangentPane({
   depKey,
   inputVar,
   outputVar,
+  probeValue,
+  onProbeValue,
 }: {
   f: (x: number) => number;
   depKey: string;
   inputVar: string;
   outputVar: string;
+  probeValue: number;
+  onProbeValue: (value: number) => void;
 }) {
   const [shown, setShown] = useState(false);
   useEffect(() => {
@@ -35,7 +39,7 @@ export function TangentPane({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const [x0, setX0] = useState(1);
+  const x0 = probeValue;
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef(false);
 
@@ -96,10 +100,10 @@ export function TangentPane({
   const down = (e: ReactPointerEvent) => {
     dragging.current = true;
     (e.target as Element).setPointerCapture(e.pointerId);
-    setX0(clientToX(e));
+    onProbeValue(clientToX(e));
   };
   const move = (e: ReactPointerEvent) => {
-    if (dragging.current) setX0(clientToX(e));
+    if (dragging.current) onProbeValue(clientToX(e));
   };
   const up = () => {
     dragging.current = false;
