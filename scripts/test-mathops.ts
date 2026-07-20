@@ -17,6 +17,7 @@ import {
   tnamed,
   simplify,
   printNode,
+  displayedProductFactors,
   printTreeEq,
   evalNode,
   keyOf,
@@ -636,6 +637,64 @@ console.log("\n== O. contextual special-symbol actions ==");
     "O9 each special anchor advertises one concise operation",
     specialActionLabel({ kind: "root", n: 5, nodeId: cubeExp.left.id, side: "left" }) ===
       "Take the 5th root of both sides"
+  );
+}
+
+// --- P: same-base symbolic powers and ln distribution ------------------------
+{
+  // A provably nonzero base merges symbolic exponents; unknowable bases don't.
+  check(
+    "P1 2^x·2^(−x) cancels — base 2 can never be zero",
+    printNode(simplify(tmul(tpow(tc(2), tv("x")), tpow(tc(2), tmul(tc(-1), tv("x")))))) === "1",
+    printNode(simplify(tmul(tpow(tc(2), tv("x")), tpow(tc(2), tmul(tc(-1), tv("x"))))))
+  );
+  check(
+    "P2 2^x·2^x merges to 2^(2x)",
+    printNode(simplify(tmul(tpow(tc(2), tv("x")), tpow(tc(2), tv("x"))))) === "2^(2x)",
+    printNode(simplify(tmul(tpow(tc(2), tv("x")), tpow(tc(2), tv("x")))))
+  );
+  check(
+    "P3 x^x·x^(−x) does NOT merge — x could be zero",
+    printNode(simplify(tmul(tpow(tv("x"), tv("x")), tpow(tv("x"), tmul(tc(-1), tv("x")))))) !== "1"
+  );
+  check(
+    "P4 (2^x)^−1 folds to the canonical 2^(−x)",
+    printNode(simplify(tpow(tpow(tc(2), tv("x")), tc(-1)))) === "2^(−x)",
+    printNode(simplify(tpow(tpow(tc(2), tv("x")), tc(-1))))
+  );
+  check(
+    "P5 the canonical 2^(−x) still reads as a denominator",
+    displayedProductFactors(simplify(tpow(tpow(tc(2), tv("x")), tc(-1)))).denominator.length === 1
+  );
+
+  // The user flow that motivated all of this: sin(x)·e^x/2^x = y, ×2^x
+  const flow = parsedTree("sin(x)*e^x/2^x = y");
+  move(
+    "P6 multiplying by 2^x cancels the denominator twin",
+    multiplyBothT(flow, tpow(tc(2), tv("x")), "2^x"),
+    "e^x·sin(x) = y·2^x"
+  );
+
+  // ln distributes across a product instead of sealing the whole side
+  const lnFlow = parsedTree("sin(x)*e^x/2^x = y");
+  const lnResult = applyToolT("ln", lnFlow);
+  check(
+    "P7 ln distributes: e^x thaws, 2^x thaws, sin keeps its own ln",
+    typeof lnResult === "object" && lnResult !== null &&
+      printNode(lnResult.treeNext.left) === "x + ln(sin(x)) − ln(2)·x",
+    typeof lnResult === "object" && lnResult ? printNode(lnResult.treeNext.left) : String(lnResult)
+  );
+  check(
+    "P8 …naming each opaque factor in the pill",
+    typeof lnResult === "object" && lnResult !== null && (lnResult.pill ?? "").includes("sin(x) > 0"),
+    typeof lnResult === "object" && lnResult ? lnResult.pill ?? "" : ""
+  );
+  check(
+    "P9 an opaque-only product keeps the classic single wrap",
+    (() => {
+      const r = applyToolT("ln", parsedTree("x*y = 3"));
+      return typeof r === "object" && r !== null && printNode(r.treeNext.left) === "ln(x·y)";
+    })()
   );
 }
 

@@ -329,10 +329,21 @@ export function raiseBothT(te: TreeEq, n: number): TreeMoveResult {
 
 type SideResult = { node: TNode; pill?: string; dangerous?: boolean; note?: string } | string;
 
-/** ln of one side: thaws e^u and a^u exactly; wraps the rest with sides > 0 */
+/**
+ * ln of one side: thaws e^u and a^u exactly, and DISTRIBUTES over the whole
+ * product — an opaque factor (sin(x), y) keeps its own ln instead of making
+ * the entire side opaque, so ln of e^x·sin(x)/2^x is x + ln(sin(x)) − x·ln 2
+ * rather than one sealed ln(…). The log law needs each factor positive, so
+ * every opaque factor is named in the pill. A product with nothing to thaw
+ * keeps the classic single wrap (splitting it would add pills for no gain).
+ */
 function lnOfNode(side: TNode): SideResult {
   const factors = side.kind === "mul" ? side.factors : [side];
+  const thawable = factors.some(
+    (f) => (f.kind === "fn" && f.fn === "exp") || f.kind === "pow"
+  );
   const parts: TNode[] = [];
+  const positives: string[] = [];
   for (const f of factors) {
     if (f.kind === "const") {
       if (f.num <= 0) return "ln is only defined for positive numbers — one side isn't positive";
@@ -352,15 +363,31 @@ function lnOfNode(side: TNode): SideResult {
       if (f.base.num !== f.base.den) parts.push(tmul(f.exp, tfn("ln", f.base)));
       continue;
     }
-    // an opaque factor: wrap the whole side instead, with the assumption
-    return {
-      node: tfn("ln", side),
-      dangerous: true,
-      note: "ln is only defined where both sides are positive — solutions elsewhere are lost",
-      pill: "sides > 0",
-    };
+    if (!thawable) {
+      // nothing here thaws: keep the whole side under one ln, one assumption
+      return {
+        node: tfn("ln", side),
+        dangerous: true,
+        note: "ln is only defined where both sides are positive — solutions elsewhere are lost",
+        pill: "sides > 0",
+      };
+    }
+    if (f.kind === "pow") {
+      // ln(u^v) = v·ln u — legal exactly where u > 0, named in the pill
+      parts.push(tmul(f.exp, tfn("ln", { ...f.base, id: freshNodeId() })));
+      positives.push(printNode(f.base));
+      continue;
+    }
+    parts.push(tfn("ln", { ...f, id: freshNodeId() }));
+    positives.push(printNode(f));
   }
-  return { node: sideFromAddends(parts) };
+  if (positives.length === 0) return { node: sideFromAddends(parts) };
+  return {
+    node: sideFromAddends(parts),
+    dangerous: true,
+    note: "ln split across the product — each named factor must be positive; solutions elsewhere are lost",
+    pill: positives.map((text) => `${text} > 0`).join(", "),
+  };
 }
 
 /** e^( ) of one side: unwraps ln u to u; wraps anything else */
@@ -419,12 +446,17 @@ export function applyToolT(tool: TreeToolKind, te: TreeEq): TreeMoveResult {
     if (typeof l === "string") return l;
     const r = of(te.right);
     if (typeof r === "string") return r;
-    const withPill = [l, r].find((s) => s.pill);
+    // BOTH sides may carry assumptions (ln(y) on the right needs y > 0 even
+    // when the left thawed exactly) — merge them instead of keeping the first
+    const pills = Array.from(new Set([l, r].map((s) => s.pill).filter((p): p is string => !!p)));
+    const notes = Array.from(new Set([l, r].map((s) => s.note).filter((n): n is string => !!n)));
     return finalize(
       l.node,
       r.node,
       tool === "ln" ? "took the natural log of both sides" : "exponentiated both sides (e to each side)",
-      withPill ? { dangerous: true, note: withPill.note, pill: withPill.pill } : undefined
+      pills.length > 0
+        ? { dangerous: true, note: notes.join("; ") || undefined, pill: pills.join(" · ") }
+        : undefined
     );
   }
   if (tool === "square") {

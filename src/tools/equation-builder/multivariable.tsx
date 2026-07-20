@@ -42,7 +42,7 @@ const crossing = (a: Point, av: number, b: Point, bv: number): Point | null => {
 
 /** Marching-squares contour of G(horizontal, vertical) = 0. */
 export const marchingSquaresContour = (g: (x: number, y: number) => number): ContourSegment[] => {
-  const cells = 72;
+  const cells = 96;
   const step = (MAX - MIN) / cells;
   const values: number[][] = [];
   for (let row = 0; row <= cells; row++) {
@@ -50,6 +50,8 @@ export const marchingSquaresContour = (g: (x: number, y: number) => number): Con
     values[row] = [];
     for (let col = 0; col <= cells; col++) values[row][col] = g(MIN + col * step, y);
   }
+  const samePoint = (a: Point, b: Point) =>
+    Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
   const segments: ContourSegment[] = [];
   for (let row = 0; row < cells; row++) {
     for (let col = 0; col < cells; col++) {
@@ -67,14 +69,28 @@ export const marchingSquaresContour = (g: (x: number, y: number) => number): Con
         values[row + 1][col + 1],
         values[row + 1][col],
       ];
-      const hits = [
+      // A corner value of exactly 0 makes BOTH its edges report the same
+      // corner point — dedupe, or the curve gets an invisible zero-length
+      // segment exactly where it passes through a grid node (the classic
+      // hole at the origin for curves through (0, 0)).
+      const raw = [
         crossing(corners[0], vals[0], corners[1], vals[1]),
         crossing(corners[1], vals[1], corners[2], vals[2]),
         crossing(corners[2], vals[2], corners[3], vals[3]),
         crossing(corners[3], vals[3], corners[0], vals[0]),
       ].filter((point): point is Point => !!point);
-      if (hits.length === 2) segments.push({ a: hits[0], b: hits[1] });
-      else if (hits.length === 4) {
+      const hits: Point[] = [];
+      for (const hit of raw) if (!hits.some((seen) => samePoint(seen, hit))) hits.push(hit);
+      if (hits.length === 2) {
+        if (!samePoint(hits[0], hits[1])) segments.push({ a: hits[0], b: hits[1] });
+      } else if (hits.length === 3) {
+        // The curve passes through a corner: connect through it.
+        const hub =
+          hits.find((point) => corners.some((corner) => samePoint(corner, point))) ?? hits[1];
+        for (const other of hits) {
+          if (other !== hub) segments.push({ a: hub, b: other });
+        }
+      } else if (hits.length === 4) {
         // The center resolves the two ambiguous marching-squares cases.
         const center = g(x0 + step / 2, y0 + step / 2);
         const cornerPositive = vals[0] >= 0;
@@ -87,6 +103,54 @@ export const marchingSquaresContour = (g: (x: number, y: number) => number): Con
     }
   }
   return segments;
+};
+
+/**
+ * Chain cell segments into polylines so the curve renders as continuous
+ * strokes with proper joins — per-cell <line> pieces read as a dashed curve
+ * at some zoom levels, and any dropped cell shows twice as wide a hole.
+ */
+export const contourPolylines = (segments: ContourSegment[]): Point[][] => {
+  const key = (p: Point) => `${Math.round(p.x * 1e7)}:${Math.round(p.y * 1e7)}`;
+  const atPoint = new Map<string, number[]>();
+  segments.forEach((segment, index) => {
+    for (const end of [segment.a, segment.b]) {
+      const k = key(end);
+      const bucket = atPoint.get(k) ?? [];
+      bucket.push(index);
+      atPoint.set(k, bucket);
+    }
+  });
+  const used = new Array(segments.length).fill(false);
+  const walk = (startIndex: number, startPoint: Point): Point[] => {
+    const chain: Point[] = [startPoint];
+    let current = startIndex;
+    let at = startPoint;
+    for (;;) {
+      used[current] = true;
+      const segment = segments[current];
+      const next = key(segment.a) === key(at) ? segment.b : segment.a;
+      chain.push(next);
+      const candidates = (atPoint.get(key(next)) ?? []).filter((index) => !used[index]);
+      if (candidates.length === 0) return chain;
+      current = candidates[0];
+      at = next;
+    }
+  };
+  const chains: Point[][] = [];
+  // open chains first (start from degree-1 endpoints), then closed loops
+  segments.forEach((segment, index) => {
+    if (used[index]) return;
+    for (const end of [segment.a, segment.b]) {
+      if ((atPoint.get(key(end)) ?? []).length === 1 && !used[index]) {
+        chains.push(walk(index, end));
+      }
+    }
+  });
+  segments.forEach((segment, index) => {
+    if (!used[index]) chains.push(walk(index, segment.a));
+  });
+  return chains;
 };
 
 const nearestOnSegment = (point: Point, segment: ContourSegment): Point => {
@@ -117,6 +181,7 @@ export function ImplicitRelationPane({
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef(false);
   const segments = useMemo(() => marchingSquaresContour(g), [depKey]);
+  const polylines = useMemo(() => contourPolylines(segments), [segments]);
 
   const snap = (point: Point): Point => {
     let best = point;
@@ -181,16 +246,17 @@ export function ImplicitRelationPane({
         <line x1={PAD} y1={py(0)} x2={W - PAD} y2={py(0)} className="stroke-muted-foreground/30" />
         <line x1={px(0)} y1={PAD} x2={px(0)} y2={H - PAD} className="stroke-muted-foreground/30" />
         <g clipPath="url(#implicit-clip)">
-          {segments.map((segment, index) => (
-            <line
+          {polylines.map((chain, index) => (
+            <path
               key={index}
-              x1={px(segment.a.x)}
-              y1={py(segment.a.y)}
-              x2={px(segment.b.x)}
-              y2={py(segment.b.y)}
+              d={chain
+                .map((point, i) => `${i === 0 ? "M" : "L"}${px(point.x).toFixed(2)} ${py(point.y).toFixed(2)}`)
+                .join(" ")}
+              fill="none"
               className="stroke-foreground/75"
               strokeWidth="1.7"
               strokeLinecap="round"
+              strokeLinejoin="round"
             />
           ))}
           {tangent && (

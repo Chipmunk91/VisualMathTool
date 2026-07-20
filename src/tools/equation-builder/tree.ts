@@ -344,14 +344,28 @@ export function displayedProductUnits(
     if (factor.kind === "const" && factor.den !== 1) {
       if (factor.num !== 1) numerator.push({ expr: tc(factor.num), sourceId: factor.id });
       denominator.push({ expr: tc(factor.den), sourceId: factor.id });
-    } else if (factor.kind === "pow" && factor.exp.kind === "const" && factor.exp.num < 0) {
+      continue;
+    }
+    if (factor.kind === "pow" && factor.exp.kind === "const" && factor.exp.num < 0) {
       denominator.push({
         expr: simplify(tpow(factor.base, tc(-factor.exp.num, factor.exp.den))),
         sourceId: factor.id,
       });
-    } else {
-      numerator.push({ expr: factor, sourceId: factor.id });
+      continue;
     }
+    // A negative SYMBOLIC exponent is a denominator too: the canonical form
+    // of 1/2^x is 2^(−x), and it must keep reading (and dragging) as 1/2^x.
+    if (factor.kind === "pow" && factor.exp.kind !== "const") {
+      const split = signSplit(factor.exp);
+      if (split.neg) {
+        denominator.push({
+          expr: simplify(tpow(factor.base, split.body)),
+          sourceId: factor.id,
+        });
+        continue;
+      }
+    }
+    numerator.push({ expr: factor, sourceId: factor.id });
   }
 
   return { numerator, denominator };
@@ -457,6 +471,20 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
         if ((m > 0 && p > 0) || m * p < 0 || nonzeroNode(base.base, assume)) {
           return simplifyPass(tpow(base.base, m * p), assume);
         }
+      }
+      // (b^u)^p for an integer p and a POSITIVE constant base folds by
+      // scaling the exponent: b^u > 0 for every real u, so (2^x)^−1 = 2^(−x)
+      // unconditionally — this is what lets a 2^x denominator meet its
+      // numerator twin in the factor merge below.
+      if (
+        base.kind === "pow" &&
+        base.base.kind === "const" &&
+        base.base.num > 0 &&
+        base.base.den > 0 &&
+        exp.kind === "const" &&
+        exp.den === 1
+      ) {
+        return simplifyPass(tpow(base.base, tmul(exp, base.exp)), assume);
       }
       // The reciprocal of a canonical root keeps the same real domain when
       // written as a negative reciprocal exponent. Normalizing this exact
@@ -578,14 +606,14 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
         }
       }
       // same-base powers: merge only within a sign class (the x/x guard)
-      const byBase = new Map<string, { base: TNode; pos: { n: number; d: number }; neg: { n: number; d: number }; other: TNode[] }>();
+      const byBase = new Map<string, { base: TNode; pos: { n: number; d: number }; neg: { n: number; d: number }; sym: TNode[]; other: TNode[] }>();
       const order: string[] = [];
       for (const f of rest) {
         const b = f.kind === "pow" ? f.base : f;
         const e: TNode = f.kind === "pow" ? f.exp : tc(1);
         const k = keyOf(b);
         if (!byBase.has(k)) {
-          byBase.set(k, { base: b, pos: { n: 0, d: 1 }, neg: { n: 0, d: 1 }, other: [] });
+          byBase.set(k, { base: b, pos: { n: 0, d: 1 }, neg: { n: 0, d: 1 }, sym: [], other: [] });
           order.push(k);
         }
         const slot = byBase.get(k)!;
@@ -594,6 +622,7 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
           acc.n = acc.n * e.den + e.num * acc.d;
           acc.d *= e.den;
         } else {
+          slot.sym.push(e);
           slot.other.push(f);
         }
       }
@@ -601,7 +630,22 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
       // a base may cancel across sign classes only when it cannot be zero:
       // a provably nonzero constant, e^(anything), or a declared ≠ 0
       for (const k of order) {
-        const { base, pos, neg, other } = byBase.get(k)!;
+        const { base, pos, neg, sym, other } = byBase.get(k)!;
+        // SYMBOLIC exponents on a provably nonzero base merge by adding —
+        // 2^x·2^(−x) = 2^0 = 1 is unconditional for base 2 > 0. Without the
+        // nonzero license they stay apart (x^x·x^(−x) would claim 0⁰ facts).
+        if (sym.length > 0 && nonzeroNode(base, assume)) {
+          const constSum = { n: pos.n * neg.d + neg.n * pos.d, d: pos.d * neg.d };
+          const parts: TNode[] = [...sym];
+          if (constSum.n !== 0) {
+            parts.push(normRat({ kind: "const", num: constSum.n, den: constSum.d }));
+          }
+          const total = simplifyPass(parts.length === 1 ? parts[0] : tadd(...parts), assume);
+          if (!isNum(total, 0)) {
+            out.push(isNum(total, 1) ? base : simplifyPass(tpow(base, total), assume));
+          }
+          continue;
+        }
         let accs = [pos, neg].filter((a) => a.n !== 0);
         if (accs.length === 2 && nonzeroNode(base, assume)) {
           const merged = { n: pos.n * neg.d + neg.n * pos.d, d: pos.d * neg.d };
