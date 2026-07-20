@@ -23,6 +23,15 @@ export type DifferentiationMode = "ordinary" | "partial" | "implicit" | "total";
 export type IntegrationMode = "ordinary" | "partial";
 
 /**
+ * How a born derivative is WRITTEN. "leibniz" keeps the classic operator node
+ * (dy/dx). "lagrange" and "subscript" instead birth a NEW NAMED SYMBOL
+ * (y′ or y_x) — semantically the same derivative, but atomic by construction:
+ * a plain symbol obeys every rule of the move grammar with zero exceptions,
+ * cannot be torn apart like a fraction, and keeps the relation plottable.
+ */
+export type DerivativeNotationStyle = "leibniz" | "lagrange" | "subscript";
+
+/**
  * Every non-differentiation symbol must be classified. Nothing in this
  * object is inferred from x/y names or which side happens to be isolated.
  */
@@ -33,6 +42,8 @@ export interface DifferentiationContext {
   heldConstant: string[];
   /** Explicit confirmation for identities that have no dependent symbol. */
   treatAsIdentity?: boolean;
+  /** Presentation of born derivatives; omitted means classic Leibniz nodes. */
+  notation?: DerivativeNotationStyle;
 }
 
 export interface IntegrationContext {
@@ -117,11 +128,29 @@ export function validateCalculusContext(
 const isZero = (node: TNode): boolean =>
   node.kind === "const" && node.num === 0;
 
+/**
+ * The name a derivative-born symbol receives. Lagrange appends a prime
+ * (y → y′ → y′′); subscript appends the operation variable to the subscript
+ * chunk (z → z_x → z_xx), so repeated differentiation stays readable.
+ */
+export function derivedSymbolName(
+  dependent: string,
+  withRespectTo: string,
+  style: Exclude<DerivativeNotationStyle, "leibniz">
+): string {
+  if (style === "lagrange") return `${dependent}′`;
+  const subscripted = dependent.match(/^(.+)_([^_]+)$/);
+  return subscripted
+    ? `${subscripted[1]}_${subscripted[2]}${withRespectTo}`
+    : `${dependent}_${withRespectTo}`;
+}
+
 interface DerivativeState {
   context: DifferentiationContext;
   dependent: ReadonlySet<string>;
   held: ReadonlySet<string>;
   notation: TCalculusNotation;
+  style: DerivativeNotationStyle;
   operationVariable: TVariableRef;
   assumptions: Set<string>;
 }
@@ -173,6 +202,10 @@ function derivativeInContext(node: TNode, state: DerivativeState): TNode {
       if (node.name === context.withRespectTo) return tc(1);
       if (held.has(node.name)) return tc(0);
       if (dependent.has(node.name)) {
+        if (state.style !== "leibniz") {
+          const name = derivedSymbolName(node.name, context.withRespectTo, state.style);
+          return tv(name, symbolIdForName(name));
+        }
         return tdiff(tv(node.name, node.symbolId), state.operationVariable, notation);
       }
       // validateCalculusContext prevents this path. Keep the thrown error so
@@ -261,11 +294,13 @@ export function differentiateRelation(
   const validation = validateCalculusContext(equation, context);
   if (!validation.ok) return validation.message ?? "The differentiation context is incomplete.";
   const assumptions = new Set<string>();
+  const style = context.notation ?? "leibniz";
   const state: DerivativeState = {
     context,
     dependent: new Set(context.dependent),
     held: new Set(context.heldConstant),
     notation: context.mode === "partial" ? "partial" : "ordinary",
+    style,
     operationVariable: symbolRefInEquation(equation, context.withRespectTo),
     assumptions,
   };
@@ -279,11 +314,17 @@ export function differentiateRelation(
   const heldText = context.heldConstant.length > 0
     ? `; held ${context.heldConstant.join(", ")} constant`
     : "";
+  const mark = context.mode === "partial" ? "∂" : "d";
+  const namedText = style !== "leibniz" && context.dependent.length > 0
+    ? `; wrote ${context.dependent
+        .map((name) => `${derivedSymbolName(name, context.withRespectTo, style)} for ${mark}${name}/${mark}${context.withRespectTo}`)
+        .join(", ")}`
+    : "";
   const assumptionText = Array.from(assumptions).join(", ");
   return {
     equation: next,
     label: `${context.mode} derivative with respect to ${context.withRespectTo}`,
-    note: `Differentiated both sides; ${dependentText}${heldText}.`,
+    note: `Differentiated both sides; ${dependentText}${heldText}${namedText}.`,
     pill: assumptionText || undefined,
   };
 }
@@ -339,6 +380,113 @@ export function integrateRelation(
     pill: introducedLn ? "logarithm argument > 0" : undefined,
   };
 }
+
+/**
+ * The four readiness states of the calculus operators, decided purely from
+ * relation structure (see docs/design/calculus-ux.md):
+ *
+ *   no-symbols     — a constant relation; there is nothing to vary, hide/disable.
+ *   solution-set   — symbols exist but the relation only holds at isolated
+ *                    solutions (x² = 4). Differentiating both sides would
+ *                    destroy them; refuse with the explanation, and leave the
+ *                    context panel's explicit identity confirmation as the
+ *                    deliberate escape hatch.
+ *   deterministic  — exactly one reading exists (y = 2x²). The returned
+ *                    context is complete; apply it in one tap with a visible
+ *                    receipt instead of asking.
+ *   needs-context  — several readings exist. Open the panel, but seeded with
+ *                    the best-ranked suggestion so accepting is one confirm.
+ */
+export type CalculusReadiness =
+  | { state: "no-symbols"; explanation: string }
+  | { state: "solution-set"; explanation: string }
+  | { state: "deterministic"; context: DifferentiationContext; explanation: string }
+  | { state: "needs-context"; suggestion: DifferentiationContext; explanation: string };
+
+interface AnalysisShape {
+  symbols: string[];
+  isolations: { output: string; inputs: string[] }[];
+}
+
+export function inferCalculusDefaults(analysis: AnalysisShape): CalculusReadiness {
+  const { symbols, isolations } = analysis;
+  if (symbols.length === 0) {
+    return { state: "no-symbols", explanation: "Both sides are constant — nothing varies, so there is no rate of change to take." };
+  }
+  if (isolations.length === 1) {
+    const [isolation] = isolations;
+    if (isolation.inputs.length === 1) {
+      return {
+        state: "deterministic",
+        context: {
+          mode: "ordinary",
+          withRespectTo: isolation.inputs[0],
+          dependent: [isolation.output],
+          heldConstant: [],
+          notation: "lagrange",
+        },
+        explanation: `${isolation.output} is a function of ${isolation.inputs[0]} — differentiate d/d${isolation.inputs[0]} with ${isolation.output} dependent.`,
+      };
+    }
+    if (isolation.inputs.length === 0) {
+      return {
+        state: "solution-set",
+        explanation: `This pins ${isolation.output} to a single value — a point, not a function, so there is no rate of change.`,
+      };
+    }
+    return {
+      state: "needs-context",
+      suggestion: {
+        mode: "partial",
+        withRespectTo: isolation.inputs[0],
+        dependent: [isolation.output],
+        heldConstant: isolation.inputs.slice(1),
+        notation: "subscript",
+      },
+      explanation: `${isolation.output} depends on several symbols — choose which one varies; the others are held constant.`,
+    };
+  }
+  if (isolations.length >= 2) {
+    const [isolation] = isolations;
+    return {
+      state: "needs-context",
+      suggestion: {
+        mode: "ordinary",
+        withRespectTo: isolation.inputs[0] ?? "",
+        dependent: [isolation.output],
+        heldConstant: isolation.inputs.slice(1),
+        notation: "lagrange",
+      },
+      explanation: "Either symbol could be the dependent one — confirm which side is the function.",
+    };
+  }
+  if (symbols.length === 1) {
+    return {
+      state: "solution-set",
+      explanation: `This equation only holds at particular values of ${symbols[0]} — differentiating both sides would destroy those solutions. Solve it instead, or confirm it as an identity.`,
+    };
+  }
+  return {
+    state: "needs-context",
+    suggestion: {
+      mode: "implicit",
+      withRespectTo: symbols[0],
+      dependent: symbols.slice(1),
+      heldConstant: [],
+      notation: "lagrange",
+    },
+    explanation: "An implicit relation — confirm which symbol varies freely and which depend on it.",
+  };
+}
+
+/** The matching integration context for an inferred differentiation reading. */
+export const integrationDefaultsFrom = (context: DifferentiationContext): IntegrationContext => ({
+  mode: context.mode === "partial" ? "partial" : "ordinary",
+  withRespectTo: context.withRespectTo,
+  dependent: context.dependent,
+  heldConstant: context.heldConstant,
+  treatAsIdentity: context.treatAsIdentity,
+});
 
 /** Convenience for UI/API callers that need a blank, deliberately incomplete context. */
 export const emptyDifferentiationContext = (): DifferentiationContext => ({
