@@ -12,6 +12,7 @@
     "test:symbols": "tsx scripts/test-symbol-handles.ts",
     "test:architecture": "tsx scripts/test-tree-architecture.ts",
     "test:calculus-defaults": "tsx scripts/test-calculus-defaults.ts",
+    "test:special-actions": "tsx scripts/test-special-actions.ts",
     "test:tree-animation": "tsx scripts/test-tree-animation.ts",
     "test:protocol": "node --import tsx scripts/test-equation-protocol.ts",
     "test:mcp": "node --import tsx scripts/test-equation-mcp.ts",

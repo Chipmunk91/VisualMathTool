@@ -181,6 +181,24 @@ async function main() {
       !constBaseExpSpecials.some((special) => special.action === "root"),
     JSON.stringify(constBaseExpSpecials)
   );
+  check(
+    "S8b2 2^x's exponent is its own u-th-root surface",
+    constBaseExpSpecials.some((special) => special.action === "rootexpr" && special.surface === "operator"),
+    JSON.stringify(constBaseExpSpecials)
+  );
+  const symbolicEArgSpecials = specialAnchorsIn(renderSide(tfn("exp", tv("x")), "left"));
+  check(
+    "S8b3 e^x's exponent offers the x-th root beside the base's ln",
+    symbolicEArgSpecials.some((special) => special.action === "ln") &&
+      symbolicEArgSpecials.some((special) => special.action === "rootexpr" && special.surface === "operator"),
+    JSON.stringify(symbolicEArgSpecials)
+  );
+  const trigTargetHtml = renderSide(tfn("sin", tv("x")), "left");
+  check(
+    "S8b4 sin's anchor names its exact tree node for isolate-then-invert",
+    /data-special-action="asin"[^>]*data-special-target="/.test(trigTargetHtml),
+    trigTargetHtml.slice(0, 200)
+  );
   const varBaseExpSpecials = specialAnchorsIn(renderSide(tpow(tv("b"), tv("x")), "left"));
   check(
     "S8c b^x offers the ln tap anchor",
@@ -273,12 +291,15 @@ async function main() {
 
   const variableExpHtml = renderSide(tfn("exp", tmul(tc(-1), tv("x"))), "right");
   check(
-    "S16 every pixel of e^(-x) belongs to its structural ln action",
+    "S16 e^(-x) splits its inverses: base ln, exponent u-th root",
     variableExpHtml.includes("data-special-hitbox=\"true\"") &&
-      variableExpHtml.includes("data-exponent-layer=\"passive\"") &&
+      variableExpHtml.includes("data-exponent-layer=\"action\"") &&
       !variableExpHtml.includes("pointer-events-none") &&
       specialAnchorsIn(variableExpHtml).some(
         (special) => special.action === "ln" && special.surface === "structure"
+      ) &&
+      specialAnchorsIn(variableExpHtml).some(
+        (special) => special.action === "rootexpr" && special.surface === "operator"
       ),
     variableExpHtml
   );

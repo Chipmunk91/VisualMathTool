@@ -10,7 +10,7 @@
  */
 import { Fragment, type ReactNode } from "react";
 import type { Side } from "./model";
-import { TNode, addendsOf, signSplit, varsIn, tc, tpow, simplify } from "./tree";
+import { TNode, addendsOf, printNode, signSplit, varsIn, tc, tpow, simplify } from "./tree";
 import type { SpecialActionKind } from "./specialactions";
 import { treeFactorLayout, type TreeFactorUnit } from "./treeunits";
 
@@ -155,6 +155,8 @@ const SpecialActionAnchor = ({
   nodeId,
   action,
   n,
+  targetId,
+  expr,
   surface = "structure",
   title,
   className = "",
@@ -164,6 +166,10 @@ const SpecialActionAnchor = ({
   nodeId: string;
   action: SpecialActionKind;
   n?: number;
+  /** Exact tree node the action unwinds, for isolate-then-invert actions. */
+  targetId?: string;
+  /** Display text of a symbolic exponent, for the bubble label. */
+  expr?: string;
   surface?: "structure" | "operator";
   title: string;
   className?: string;
@@ -173,6 +179,8 @@ const SpecialActionAnchor = ({
     data-special-hitbox
     data-special-action={action}
     data-special-node={nodeId}
+    data-special-target={targetId}
+    data-special-expr={expr}
     data-side={ctx.side}
     data-special-n={n}
     data-special-surface={surface}
@@ -394,6 +402,11 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
       const wrapBase = node.base.kind === "mul" || node.base.kind === "pow";
       const expInt = node.exp.kind === "const" && node.exp.den === 1;
       const inner = { ...ctx, inert: true };
+      // A symbolic exponent is its own inverse surface: tapping u on a^u
+      // takes the u-th root (freeing the base), while the base/whole keeps
+      // ln (freeing the exponent). closest() in the pointer layer lets the
+      // nested, more specific action win.
+      const symbolicExp = !expInt && varsIn(node.exp).size > 0;
       const expression = (
         <span className="inline-flex items-start">
           {wrapBase ? (
@@ -410,9 +423,21 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
               pass-through tap lands on the page background instead of the
               surrounding inverse-operation anchor (the e^u branch already
               works this way). Inert rendering keeps it out of drag targeting. */}
-          <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
+          <span className={`mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none ${symbolicExp ? "relative z-30" : ""}`}>
             {expInt ? (
               <span className="select-none">{supInt((node.exp as { num: number }).num)}</span>
+            ) : symbolicExp ? (
+              <SpecialActionAnchor
+                ctx={ctx}
+                nodeId={ctx.actionOwnerId ?? node.id}
+                action="rootexpr"
+                targetId={node.id}
+                expr={printNode(node.exp)}
+                surface="operator"
+                title={`Tap the exponent to take the ${printNode(node.exp)}-th root of both sides`}
+              >
+                <TN node={node.exp} ctx={inner} />
+              </SpecialActionAnchor>
             ) : (
               <TN node={node.exp} ctx={inner} />
             )}
@@ -473,19 +498,21 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
           );
         }
         // The complete exponential is the ln tap surface. A positive integer
-        // exponent contributes a smaller, nested root surface; closest( ) in
-        // the pointer layer makes the more specific action win.
+        // exponent contributes a smaller, nested root surface, and a SYMBOLIC
+        // exponent contributes its u-th-root surface (freeing the base);
+        // closest( ) in the pointer layer makes the more specific action win.
         const rootN =
           node.arg.kind === "const" && node.arg.den === 1 && node.arg.num >= 2
             ? node.arg.num
             : null;
+        const symbolicArg = rootN === null && varsIn(node.arg).size > 0;
         const expression = (
           <span className="inline-flex items-start">
             <span className="italic">e</span>
             <span
-              data-exponent-layer={rootN === null ? "passive" : "action"}
+              data-exponent-layer={rootN === null && !symbolicArg ? "passive" : "action"}
               className={`mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none ${
-                rootN === null ? "" : "relative z-30"
+                rootN === null && !symbolicArg ? "" : "relative z-30"
               }`}
             >
               {rootN !== null ? (
@@ -498,6 +525,18 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
                   title={`Tap to take the ${rootN === 2 ? "square" : rootN === 3 ? "cube" : `${rootN}th`} root of both sides`}
                 >
                   {constText(rootN, 1)}
+                </SpecialActionAnchor>
+              ) : symbolicArg ? (
+                <SpecialActionAnchor
+                  ctx={ctx}
+                  nodeId={ctx.actionOwnerId ?? node.id}
+                  action="rootexpr"
+                  targetId={node.id}
+                  expr={printNode(node.arg)}
+                  surface="operator"
+                  title={`Tap the exponent to take the ${printNode(node.arg)}-th root of both sides`}
+                >
+                  <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
                 </SpecialActionAnchor>
               ) : (
                 <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
@@ -555,6 +594,7 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
               ctx={ctx}
               nodeId={ctx.actionOwnerId ?? node.id}
               action={inverseAction}
+              targetId={node.id}
               title={`Tap ${shownName}(…) to apply ${inverseAction === "exp" ? "e^" : shownName === "sin" ? "arcsin" : shownName === "cos" ? "arccos" : "arctan"} to both sides`}
             >
               <span className="inline-flex items-center">
