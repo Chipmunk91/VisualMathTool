@@ -132,6 +132,12 @@ squaring resolves √ with its check-roots pill).
 
 ## Still honestly gated
 
+> Architectural context for everything below:
+> [docs/design/architecture-review.md](../../../docs/design/architecture-review.md)
+> — why edge cases are intrinsic (Richardson), where they actually cluster
+> (rules-as-code, hand-wired affordances, the flat legacy), and the phased
+> registry recommendation new work should move toward.
+
 - **Bare `e` outside `e^( )`** — `π` is now an exact named constant, while
   Euler's constant still enters through exponential notation.
 - **Per-term rebuilding in tree mode** (drag a toolbox symbol onto one tree
