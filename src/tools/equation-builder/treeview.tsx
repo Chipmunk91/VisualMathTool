@@ -12,6 +12,7 @@ import { Fragment, type ReactNode } from "react";
 import type { Side } from "./model";
 import { TNode, addendsOf, printNode, signSplit, varsIn, tc, tpow, simplify } from "./tree";
 import type { SpecialActionKind } from "./specialactions";
+import { anchorsForNode, type AnchorSlot, type AnchorSpec } from "./registry";
 import { treeFactorLayout, type TreeFactorUnit } from "./treeunits";
 
 interface Ctx {
@@ -190,6 +191,47 @@ const SpecialActionAnchor = ({
     {children}
   </span>
 );
+
+/** The registry spec for one of a node's anchor slots (single lookup). */
+const anchorAt = (node: TNode, slot: AnchorSlot): AnchorSpec | undefined =>
+  anchorsForNode(node).find((spec) => spec.slot === slot);
+
+/**
+ * Wrap layout JSX in the anchor the registry declares — or render it bare
+ * when no spec exists. Keeps SpecialActionAnchor (and its data-* contract)
+ * untouched while making the REGISTRY the only decider of which glyph
+ * offers which inverse operation.
+ */
+const Anchored = ({
+  ctx,
+  node,
+  spec,
+  className,
+  children,
+}: {
+  ctx: Ctx;
+  node: TNode;
+  spec: AnchorSpec | undefined;
+  className?: string;
+  children: ReactNode;
+}) =>
+  spec ? (
+    <SpecialActionAnchor
+      ctx={ctx}
+      nodeId={ctx.actionOwnerId ?? node.id}
+      action={spec.kind}
+      n={spec.n}
+      targetId={spec.targetId}
+      expr={spec.exprText}
+      surface={spec.surface}
+      title={spec.title}
+      className={className}
+    >
+      {children}
+    </SpecialActionAnchor>
+  ) : (
+    <>{children}</>
+  );
 
 const constText = (num: number, den: number): string =>
   den === 1 ? String(num).replace("-", "−") : `${String(num).replace("-", "−")}/${den}`;
@@ -382,14 +424,7 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
         const n = node.exp.den;
         return (
           <TermRegion ctx={ctx}>
-            <SpecialActionAnchor
-              ctx={ctx}
-              nodeId={ctx.actionOwnerId ?? node.id}
-              action="raise"
-              n={n}
-              title={`Tap to raise both sides to the power ${n}`}
-              className="items-start"
-            >
+            <Anchored ctx={ctx} node={node} spec={anchorAt(node, "whole")} className="items-start">
               <span className="inline-flex items-start">
                 {n !== 2 && (
                   <span className="mr-[-0.18em] mt-[-0.34em] text-[0.38em] leading-none">{n}</span>
@@ -399,7 +434,7 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
                   <TN node={node.base} ctx={{ ...ctx, inert: true }} />
                 </span>
               </span>
-            </SpecialActionAnchor>
+            </Anchored>
           </TermRegion>
         );
       }
@@ -407,11 +442,10 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
       const wrapBase = node.base.kind === "mul" || node.base.kind === "pow";
       const expInt = node.exp.kind === "const" && node.exp.den === 1;
       const inner = { ...ctx, inert: true };
-      // A symbolic exponent is its own inverse surface: tapping u on a^u
-      // takes the u-th root (freeing the base), while the base/whole keeps
-      // ln (freeing the exponent). closest() in the pointer layer lets the
-      // nested, more specific action win.
-      const symbolicExp = !expInt && varsIn(node.exp).size > 0;
+      // The registry decides the surfaces: an exponent spec makes u its own
+      // inverse anchor (the u-th root that frees the base) while the whole
+      // keeps ln — closest() in the pointer layer lets the nested win.
+      const expSpec = anchorAt(node, "exponent");
       const expression = (
         <span className="inline-flex items-start">
           {wrapBase ? (
@@ -428,59 +462,22 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
               pass-through tap lands on the page background instead of the
               surrounding inverse-operation anchor (the e^u branch already
               works this way). Inert rendering keeps it out of drag targeting. */}
-          <span className={`mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none ${symbolicExp ? "relative z-30" : ""}`}>
+          <span className={`mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none ${expSpec ? "relative z-30" : ""}`}>
             {expInt ? (
               <span className="select-none">{supInt((node.exp as { num: number }).num)}</span>
-            ) : symbolicExp ? (
-              <SpecialActionAnchor
-                ctx={ctx}
-                nodeId={ctx.actionOwnerId ?? node.id}
-                action="rootexpr"
-                targetId={node.id}
-                expr={printNode(node.exp)}
-                surface="operator"
-                title={`Tap the exponent to take the ${printNode(node.exp)}-th root of both sides`}
-              >
-                <TN node={node.exp} ctx={inner} />
-              </SpecialActionAnchor>
             ) : (
-              <TN node={node.exp} ctx={inner} />
+              <Anchored ctx={ctx} node={node} spec={expSpec}>
+                <TN node={node.exp} ctx={inner} />
+              </Anchored>
             )}
           </span>
         </span>
       );
-      const rootN = expInt && (node.exp as { num: number }).num >= 2
-        ? (node.exp as { num: number }).num
-        : null;
-      // A variable exponent makes the power an EXPONENTIAL (2^x, b^x, x^b) —
-      // its inverse is the logarithm, same as e^u. The ln move itself knows
-      // the exact rules: a positive constant base thaws to u·ln(a); an opaque
-      // base wraps both sides with the sides > 0 assumption pill.
-      const lnExponential = rootN === null && varsIn(node.exp).size > 0;
       return (
         <TermRegion ctx={ctx}>
-          {rootN !== null ? (
-            <SpecialActionAnchor
-              ctx={ctx}
-              nodeId={ctx.actionOwnerId ?? node.id}
-              action="root"
-              n={rootN}
-              title={`Tap to take the ${rootN === 2 ? "square" : rootN === 3 ? "cube" : `${rootN}th`} root of both sides`}
-            >
-              {expression}
-            </SpecialActionAnchor>
-          ) : lnExponential ? (
-            <SpecialActionAnchor
-              ctx={ctx}
-              nodeId={ctx.actionOwnerId ?? node.id}
-              action="ln"
-              title="Tap the exponential to take ln of both sides"
-            >
-              {expression}
-            </SpecialActionAnchor>
-          ) : (
-            expression
-          )}
+          <Anchored ctx={ctx} node={node} spec={anchorAt(node, "whole")}>
+            {expression}
+          </Anchored>
         </TermRegion>
       );
     }
@@ -490,125 +487,71 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
         if (node.arg.kind === "const" && node.arg.num === 1 && node.arg.den === 1) {
           return (
             <TermRegion ctx={ctx}>
-              <SpecialActionAnchor
-                ctx={ctx}
-                nodeId={ctx.actionOwnerId ?? node.id}
-                action="ln"
-                title="Tap to take ln of both sides"
-                className="italic"
-              >
+              <Anchored ctx={ctx} node={node} spec={anchorAt(node, "whole")} className="italic">
                 e
-              </SpecialActionAnchor>
+              </Anchored>
             </TermRegion>
           );
         }
-        // The complete exponential is the ln tap surface. A positive integer
-        // exponent contributes a smaller, nested root surface, and a SYMBOLIC
-        // exponent contributes its u-th-root surface (freeing the base);
-        // closest( ) in the pointer layer makes the more specific action win.
-        const rootN =
-          node.arg.kind === "const" && node.arg.den === 1 && node.arg.num >= 2
-            ? node.arg.num
-            : null;
-        const symbolicArg = rootN === null && varsIn(node.arg).size > 0;
+        // The complete exponential is the ln tap surface; the registry may
+        // declare a smaller, nested exponent surface (integer root, or the
+        // u-th root that frees the base) — closest( ) in the pointer layer
+        // makes the more specific action win.
+        const expSpec = anchorAt(node, "exponent");
         const expression = (
           <span className="inline-flex items-start">
             <span className="italic">e</span>
             <span
-              data-exponent-layer={rootN === null && !symbolicArg ? "passive" : "action"}
+              data-exponent-layer={expSpec ? "action" : "passive"}
               className={`mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none ${
-                rootN === null && !symbolicArg ? "" : "relative z-30"
+                expSpec ? "relative z-30" : ""
               }`}
             >
-              {rootN !== null ? (
-                <SpecialActionAnchor
-                  ctx={ctx}
-                  nodeId={ctx.actionOwnerId ?? node.id}
-                  action="root"
-                  n={rootN}
-                  surface="operator"
-                  title={`Tap to take the ${rootN === 2 ? "square" : rootN === 3 ? "cube" : `${rootN}th`} root of both sides`}
-                >
-                  {constText(rootN, 1)}
-                </SpecialActionAnchor>
-              ) : symbolicArg ? (
-                <SpecialActionAnchor
-                  ctx={ctx}
-                  nodeId={ctx.actionOwnerId ?? node.id}
-                  action="rootexpr"
-                  targetId={node.id}
-                  expr={printNode(node.arg)}
-                  surface="operator"
-                  title={`Tap the exponent to take the ${printNode(node.arg)}-th root of both sides`}
-                >
+              <Anchored ctx={ctx} node={node} spec={expSpec}>
+                {expSpec?.kind === "root" ? (
+                  constText(expSpec.n ?? 2, 1)
+                ) : (
                   <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
-                </SpecialActionAnchor>
-              ) : (
-                <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
-              )}
+                )}
+              </Anchored>
             </span>
           </span>
         );
         return (
           <TermRegion ctx={ctx}>
-            <SpecialActionAnchor
-              ctx={ctx}
-              nodeId={ctx.actionOwnerId ?? node.id}
-              action="ln"
-              title="Tap the exponential to take ln of both sides"
-            >
+            <Anchored ctx={ctx} node={node} spec={anchorAt(node, "whole")}>
               {expression}
-            </SpecialActionAnchor>
+            </Anchored>
           </TermRegion>
         );
       }
       if (node.fn === "sqrt") {
         return (
           <TermRegion ctx={ctx}>
-            <SpecialActionAnchor
-              ctx={ctx}
-              nodeId={ctx.actionOwnerId ?? node.id}
-              action="square"
-              title="Tap the radical to square both sides"
-            >
+            <Anchored ctx={ctx} node={node} spec={anchorAt(node, "whole")}>
               <span className="inline-flex items-baseline">
                 <span>√</span>
                 <span className="border-t-[0.06em] border-current pt-[0.02em]">
                   <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
                 </span>
               </span>
-            </SpecialActionAnchor>
+            </Anchored>
           </TermRegion>
         );
       }
-      const inverseAction: SpecialActionKind | null =
-        node.fn === "sin"
-          ? "asin"
-          : node.fn === "cos"
-            ? "acos"
-            : node.fn === "tan"
-              ? "atan"
-              : node.fn === "ln"
-                ? "exp"
-                : null;
+      const wholeSpec = anchorAt(node, "whole");
       const shownName = node.fn === "asin" ? "arcsin" : node.fn === "acos" ? "arccos" : node.fn === "atan" ? "arctan" : node.fn;
       return (
         <TermRegion ctx={ctx}>
-          {inverseAction ? (
-            <SpecialActionAnchor
-              ctx={ctx}
-              nodeId={ctx.actionOwnerId ?? node.id}
-              action={inverseAction}
-              targetId={node.id}
-              title={`Tap ${shownName}(…) to apply ${inverseAction === "exp" ? "e^" : shownName === "sin" ? "arcsin" : shownName === "cos" ? "arccos" : "arctan"} to both sides`}
-            >
+          {wholeSpec ? (
+            <Anchored ctx={ctx} node={node} spec={wholeSpec}>
               <span className="inline-flex items-center">
                 <span className="mr-0.5">{shownName}</span>
                 <span className="select-none">(</span>
                 <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
                 <span className="select-none">)</span>
               </span>
-            </SpecialActionAnchor>
+            </Anchored>
           ) : (
             <span className="inline-flex items-center">
               <span className="mr-0.5 select-none">{shownName}</span>

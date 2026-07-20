@@ -15,6 +15,7 @@ import {
 import { computeTreeOperation, type DragPayload, type DropTarget } from "./operations";
 import { applyRewrite, detectRewritesEq } from "./rewrites";
 import { applySpecialActionT, type SpecialActionRef } from "./specialactions";
+import { listSpecialOperations, TOOL_ROWS, TOOL_ROW_ORDER } from "./registry";
 import { addendsOf, cloneTreeEq, printNode, type TreeEq } from "./tree";
 import { finalize, type TreeMoveResult, type TreeOutcome } from "./treemoves";
 import { treeFactorLayout } from "./treeunits";
@@ -267,23 +268,14 @@ export function listApplicableEquationOperations(equation: TreeEq): ApplicableEq
       }
     }
 
-    const root = equation[side];
-    const special = (action: SpecialActionRef, label: string) =>
-      candidates.push({ id: `special:${side}:${action.kind}:${root.id}`, label, command: { type: "special-action", action } });
-    if (root.kind === "fn") {
-      if (root.fn === "exp") special({ kind: "ln", nodeId: root.id, side }, "Take ln of both sides");
-      if (root.fn === "ln") special({ kind: "exp", nodeId: root.id, side }, "Exponentiate both sides");
-      if (root.fn === "sin") special({ kind: "asin", nodeId: root.id, side }, "Apply arcsin to both sides");
-      if (root.fn === "cos") special({ kind: "acos", nodeId: root.id, side }, "Apply arccos to both sides");
-      if (root.fn === "tan") special({ kind: "atan", nodeId: root.id, side }, "Apply arctan to both sides");
-    }
-    if (root.kind === "pow" && root.exp.kind === "const") {
-      if (root.exp.den === 1 && root.exp.num >= 2) {
-        special({ kind: "root", n: root.exp.num, nodeId: root.id, side }, `Take the ${root.exp.num}th root of both sides`);
-      } else if (root.exp.num === 1 && root.exp.den >= 2) {
-        special({ kind: "raise", n: root.exp.den, nodeId: root.id, side }, `Raise both sides to the power ${root.exp.den}`);
-      }
-    }
+  }
+
+  // Special actions come from the registry's tree walk — the SAME
+  // anchorsForNode() the renderer derives its tap surfaces from, so an AI
+  // caller discovers exactly what a hand can tap (minus the dry-run-filtered
+  // teaching refusals below).
+  for (const { id, label, action } of listSpecialOperations(equation)) {
+    candidates.push({ id, label, command: { type: "special-action", action } });
   }
 
   for (const { side, rewrite } of detectRewritesEq(equation)) {
@@ -294,11 +286,10 @@ export function listApplicableEquationOperations(equation: TreeEq): ApplicableEq
     });
   }
 
-  const tools = ["ln", "exp", "sin", "cos", "tan", "sqrt", "square", "recip"] as const;
-  for (const tool of tools) {
+  for (const tool of TOOL_ROW_ORDER) {
     candidates.push({
       id: `tool:${tool}`,
-      label: `Apply ${tool} to both sides`,
+      label: TOOL_ROWS[tool].protocolLabel,
       command: {
         type: "gesture",
         payload: { kind: "tool", tool },
