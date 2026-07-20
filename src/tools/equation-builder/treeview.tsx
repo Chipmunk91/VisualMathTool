@@ -350,9 +350,14 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
       );
     }
     case "pow": {
-      // a bare negative power is a fraction: (x+1)⁻¹ reads as 1/(x+1)
-      if (node.exp.kind === "const" && node.exp.num < 0) {
-        const inv = simplify(tpow(node.base, tc(-node.exp.num, node.exp.den)));
+      // a bare negative power is a fraction: (x+1)⁻¹ reads as 1/(x+1), and
+      // the canonical 2^(−x) reads as 1/2^x — const or symbolic, a leading
+      // minus in the exponent puts the power under the bar
+      const expSplit = node.exp.kind !== "const" ? signSplit(node.exp) : null;
+      if ((node.exp.kind === "const" && node.exp.num < 0) || expSplit?.neg) {
+        const inv = simplify(
+          tpow(node.base, expSplit?.neg ? expSplit.body : tc(-(node.exp as { num: number }).num, (node.exp as { den: number }).den))
+        );
         const denominatorId = treeFactorLayout(ctx.id, node).denominator[0]?.id;
         return (
           <span className="mx-1 inline-flex flex-col items-center self-center text-[0.62em] leading-none">
