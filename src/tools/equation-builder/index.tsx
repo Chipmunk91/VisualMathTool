@@ -2604,7 +2604,14 @@ const EquationBuilderTool = () => {
     if (!kind || !nodeId || (side !== "left" && side !== "right")) return null;
     const rawN = el.dataset.specialN;
     const n = rawN === undefined || rawN === "" ? undefined : Number(rawN);
-    return { kind, nodeId, side, n: n !== undefined && Number.isFinite(n) ? n : undefined };
+    return {
+      kind,
+      nodeId,
+      side,
+      n: n !== undefined && Number.isFinite(n) ? n : undefined,
+      targetId: el.dataset.specialTarget || undefined,
+      exprText: el.dataset.specialExpr || undefined,
+    };
   };
 
   // --- Marquee (drag-to-select a block of symbols on empty space) ---
