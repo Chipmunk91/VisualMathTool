@@ -2496,10 +2496,18 @@ const EquationBuilderTool = () => {
     };
   };
 
-  // Typed equation: live pretty-math preview and Enter-to-load
+  // Typed equation: live pretty-math preview and Enter-to-load. Once the
+  // text IS the loaded equation the preview disappears — leaving it up keeps
+  // a stale "press Enter to load" hint floating in a z-50 data-ui box that
+  // swallows stage taps beneath it (tall superscripts poke into exactly that
+  // area, killing their inverse-operation bubbles). Editing brings it back.
+  const [loadedText, setLoadedText] = useState("");
   const inputPreview = useMemo(
-    () => (!searchMode && inputText.trim() ? renderMathPreview(inputText) : null),
-    [inputText, searchMode]
+    () =>
+      !searchMode && inputText.trim() && inputText.trim() !== loadedText.trim()
+        ? renderMathPreview(inputText)
+        : null,
+    [inputText, searchMode, loadedText]
   );
 
   // Word search: matches for what's typed — or the whole catalog while the
@@ -2540,6 +2548,7 @@ const EquationBuilderTool = () => {
     if (!result.ok) return; // catalog rows are pre-vetted — this can't happen
     applyParse(result);
     setInputText("");
+    setLoadedText("");
     setSearchMode(false); // choosing is the end of the search
     searchInputRef.current?.blur(); // back to default mode — shortcuts work again
   };
@@ -2559,6 +2568,7 @@ const EquationBuilderTool = () => {
     const result = parseEquation(inputText);
     if (result.ok) {
       applyParse(result);
+      setLoadedText(inputText);
       searchInputRef.current?.blur(); // loaded — hand focus back to the playground
     } else {
       setInputMsg({ kind: result.stage === "parse" ? "err" : "warn", text: result.message });

@@ -171,6 +171,34 @@ async function main() {
     JSON.stringify({ handles: standalonePower, specials: standalonePowerSpecials })
   );
 
+  // A variable exponent makes a power an EXPONENTIAL — its inverse anchor is
+  // ln, exactly like e^u (2^x thaws to x·ln 2; an opaque base wraps with the
+  // sides > 0 pill). Integer powers keep their root anchor and never gain ln.
+  const constBaseExpSpecials = specialAnchorsIn(renderSide(tpow(tc(2), tv("x")), "left"));
+  check(
+    "S8b 2^x is an exponential: ln tap anchor, no root",
+    constBaseExpSpecials.some((special) => special.action === "ln") &&
+      !constBaseExpSpecials.some((special) => special.action === "root"),
+    JSON.stringify(constBaseExpSpecials)
+  );
+  const varBaseExpSpecials = specialAnchorsIn(renderSide(tpow(tv("b"), tv("x")), "left"));
+  check(
+    "S8c b^x offers the ln tap anchor",
+    varBaseExpSpecials.some((special) => special.action === "ln"),
+    JSON.stringify(varBaseExpSpecials)
+  );
+  const varExponentSpecials = specialAnchorsIn(renderSide(tpow(tv("x"), tv("b")), "left"));
+  check(
+    "S8d x^b offers the ln tap anchor",
+    varExponentSpecials.some((special) => special.action === "ln"),
+    JSON.stringify(varExponentSpecials)
+  );
+  check(
+    "S8e x^3 keeps root-only — an integer power is not an exponential",
+    !standalonePowerSpecials.some((special) => special.action === "ln"),
+    JSON.stringify(standalonePowerSpecials)
+  );
+
   const screenshot = parseEquation("e^5/x = 3*e^2*sin(y)");
   if (!screenshot.ok || !screenshot.tree) throw new Error("screenshot equation did not reach tree mode");
   const screenshotRight = renderSide(screenshot.tree.right, "right");

@@ -405,7 +405,12 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
           ) : (
             <TN node={node.base} ctx={inner} coefZone={coefZone} />
           )}
-          <span className="pointer-events-none mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
+          {/* The exponent must CATCH pointer events, not pass them through:
+              its negative top margin pokes above the anchor's hit box, so a
+              pass-through tap lands on the page background instead of the
+              surrounding inverse-operation anchor (the e^u branch already
+              works this way). Inert rendering keeps it out of drag targeting. */}
+          <span className="mt-[-0.2em] inline-flex items-center text-[0.55em] leading-none">
             {expInt ? (
               <span className="select-none">{supInt((node.exp as { num: number }).num)}</span>
             ) : (
@@ -417,9 +422,14 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
       const rootN = expInt && (node.exp as { num: number }).num >= 2
         ? (node.exp as { num: number }).num
         : null;
+      // A variable exponent makes the power an EXPONENTIAL (2^x, b^x, x^b) —
+      // its inverse is the logarithm, same as e^u. The ln move itself knows
+      // the exact rules: a positive constant base thaws to u·ln(a); an opaque
+      // base wraps both sides with the sides > 0 assumption pill.
+      const lnExponential = rootN === null && varsIn(node.exp).size > 0;
       return (
         <TermRegion ctx={ctx}>
-          {rootN === null ? expression : (
+          {rootN !== null ? (
             <SpecialActionAnchor
               ctx={ctx}
               nodeId={ctx.actionOwnerId ?? node.id}
@@ -429,6 +439,17 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
             >
               {expression}
             </SpecialActionAnchor>
+          ) : lnExponential ? (
+            <SpecialActionAnchor
+              ctx={ctx}
+              nodeId={ctx.actionOwnerId ?? node.id}
+              action="ln"
+              title="Tap the exponential to take ln of both sides"
+            >
+              {expression}
+            </SpecialActionAnchor>
+          ) : (
+            expression
           )}
         </TermRegion>
       );
