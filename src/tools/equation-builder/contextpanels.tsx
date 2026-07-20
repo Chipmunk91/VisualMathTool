@@ -93,6 +93,7 @@ export function CalculusContextPanel({
   validationMessage,
   onApply,
   onClose,
+  onOperation,
 }: {
   operation: "differentiate" | "integrate";
   symbols: string[];
@@ -101,6 +102,8 @@ export function CalculusContextPanel({
   validationMessage?: string;
   onApply: () => void;
   onClose: () => void;
+  /** When provided, the panel shows a switch between the two operations. */
+  onOperation?: (operation: "differentiate" | "integrate") => void;
 }) {
   const classify = (name: string): "" | "dependent" | "constant" =>
     context.dependent.includes(name)
@@ -130,9 +133,30 @@ export function CalculusContextPanel({
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold">
-            {operation === "differentiate" ? "Differentiate the relation" : "Integrate the relation"}
-          </h2>
+          {onOperation ? (
+            <div className="inline-flex rounded-lg border border-border p-0.5" role="tablist" aria-label="Calculus operation">
+              {(["differentiate", "integrate"] as const).map((candidate) => (
+                <button
+                  key={candidate}
+                  type="button"
+                  role="tab"
+                  aria-selected={operation === candidate}
+                  onClick={() => onOperation(candidate)}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                    operation === candidate
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {candidate === "differentiate" ? "Differentiate" : "Integrate"}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <h2 className="text-sm font-semibold">
+              {operation === "differentiate" ? "Differentiate the relation" : "Integrate the relation"}
+            </h2>
+          )}
           <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
             Choose every symbol’s role. The operation applies to both sides; no target or source is inferred.
           </p>
@@ -203,6 +227,27 @@ export function CalculusContextPanel({
           </label>
         ))}
       </div>
+
+      {operation === "differentiate" && (
+        <label className="mt-3 block text-[11px] text-muted-foreground">
+          Write derivatives as
+          <select
+            aria-label="Derivative notation"
+            value={(context as DifferentiationContext).notation ?? "leibniz"}
+            onChange={(event) =>
+              onContext({
+                ...context,
+                notation: event.target.value as DifferentiationContext["notation"],
+              } as CalculusContext)
+            }
+            className="mt-1 h-9 w-full rounded-lg border border-border bg-background px-2 text-xs text-foreground"
+          >
+            <option value="lagrange">y′ — a new symbol, moves like any other</option>
+            <option value="subscript">y_x — a new symbol, names the variable</option>
+            <option value="leibniz">dy/dx — the classic operator form</option>
+          </select>
+        </label>
+      )}
 
       <label className="mt-3 flex items-start gap-2 rounded-lg border border-border p-2.5 text-xs">
         <input

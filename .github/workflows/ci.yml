@@ -25,6 +25,8 @@ jobs:
         run: npx tsx scripts/test-tree-architecture.ts
       - name: Tree animation state contract
         run: npx tsx scripts/test-tree-animation.ts
+      - name: Calculus readiness and notation contract
+        run: npm run test:calculus-defaults
       - name: Equation protocol contract
         run: npm run test:protocol
       - name: Equation MCP contract

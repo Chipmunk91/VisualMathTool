@@ -111,8 +111,11 @@ import {
   type ViewSpec,
 } from "./relation";
 import {
+  derivedSymbolName,
   emptyDifferentiationContext,
   emptyIntegrationContext,
+  inferCalculusDefaults,
+  integrationDefaultsFrom,
   validateCalculusContext,
   type DifferentiationContext,
   type IntegrationContext,
@@ -367,7 +370,7 @@ interface ToolItem {
   glyph: string;
   tool?: ToolKind; // absent = shown as roadmap, disabled
   /** click-only operators with their own gate (calculus needs function mode) */
-  action?: "ddx" | "int";
+  action?: "ddx" | "int" | "calculus-custom";
   title?: string;
 }
 
@@ -398,6 +401,7 @@ const TOOLBOX: { id: string; label: string; items: ToolItem[] }[] = [
     items: [
       { glyph: "d⁄dx", action: "ddx" },
       { glyph: "∫", action: "int" },
+      { glyph: "⚙", action: "calculus-custom" },
     ],
   },
 ];
@@ -612,13 +616,32 @@ const EquationBuilderTool = () => {
   const equationRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  /** Meanings queued for symbols a calculus step is about to birth (y′, z_x). */
+  const pendingSymbolMeaningsRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
-    if (treeEq) setSymbolRecords((current) => reconcileSymbols(treeEq, current));
+    if (!treeEq) return;
+    setSymbolRecords((current) => {
+      const reconciled = reconcileSymbols(treeEq, current);
+      const pending = pendingSymbolMeaningsRef.current;
+      if (pending.size === 0) return reconciled;
+      const enriched = reconciled.map((record) =>
+        pending.has(record.name) && !record.meaning
+          ? { ...record, meaning: pending.get(record.name)! }
+          : record
+      );
+      pending.clear();
+      return enriched;
+    });
   }, [treeEq]);
 
   const relationAnalysis = useMemo(
     () => treeEq ? analyzeRelation(treeEq) : null,
     [treeEq]
+  );
+  /** Which of the four calculus readiness states this relation is in. */
+  const calculusReadiness = useMemo(
+    () => relationAnalysis ? inferCalculusDefaults(relationAnalysis) : null,
+    [relationAnalysis]
   );
   const analyzedRevisionRef = useRef<string | null>(null);
   useEffect(() => {
@@ -3403,9 +3426,12 @@ const EquationBuilderTool = () => {
     integrationContext,
   ]);
 
-  const applyContextualCalculus = (operation: "differentiate" | "integrate") => {
+  const applyCalculusWith = (
+    operation: "differentiate" | "integrate",
+    context: DifferentiationContext | IntegrationContext,
+    announce = false
+  ) => {
     if (!treeEq) return;
-    const context = operation === "differentiate" ? differentiationContext : integrationContext;
     const validation = validateCalculusContext(treeEq, context);
     if (!validation.ok) {
       flashNotice(validation.message ?? "Complete the calculus context first.");
@@ -3413,18 +3439,97 @@ const EquationBuilderTool = () => {
     }
     const result = runEquationCommand(
       operation === "differentiate"
-        ? { type: "differentiate", context: differentiationContext }
-        : { type: "integrate", context: integrationContext }
+        ? { type: "differentiate", context: context as DifferentiationContext }
+        : { type: "integrate", context: context as IntegrationContext }
     );
     if (!result) return;
     if (result.status !== "applied") {
       flashNotice(result.status === "rejected" ? result.reason : "The equation changed — choose the context again.");
       return;
     }
+    // Queue symbol-book provenance for derivative-born symbols (y′, z_x)
+    // before the commit lands, so reconciliation can attach the meanings.
+    if (operation === "differentiate") {
+      const dContext = context as DifferentiationContext;
+      const style = dContext.notation ?? "leibniz";
+      if (style !== "leibniz") {
+        const mark = dContext.mode === "partial" ? "∂" : "d";
+        for (const dependent of dContext.dependent) {
+          pendingSymbolMeaningsRef.current.set(
+            derivedSymbolName(dependent, dContext.withRespectTo, style),
+            `${mark}${dependent}/${mark}${dContext.withRespectTo} — derivative of ${dependent} with respect to ${dContext.withRespectTo}`
+          );
+        }
+      }
+    }
     commitTreeOutcome(result.outcome, result.event);
+    if (announce) {
+      const receipt = operation === "differentiate"
+        ? `Differentiated with respect to ${context.withRespectTo} — ${context.dependent.join(", ") || "identity"} treated as dependent. ⚙ changes the context.`
+        : `Integrated with respect to ${context.withRespectTo}. ⚙ changes the context.`;
+      flashNotice(receipt);
+    }
     setViewSpec(null);
     setCalculusOpen(null);
     setToolboxOpen(false);
+  };
+
+  const applyContextualCalculus = (operation: "differentiate" | "integrate") =>
+    applyCalculusWith(operation, operation === "differentiate" ? differentiationContext : integrationContext);
+
+  /** Open the context panel, seeded with the best-ranked reading if the
+   *  current context would not validate as-is. */
+  const openCalculusPanel = (operation: "differentiate" | "integrate") => {
+    const inferred = calculusReadiness?.state === "deterministic"
+      ? calculusReadiness.context
+      : calculusReadiness?.state === "needs-context"
+        ? calculusReadiness.suggestion
+        : null;
+    if (operation === "differentiate") {
+      setDifferentiationContext((current) =>
+        treeEq && validateCalculusContext(treeEq, current).ok
+          ? current
+          : inferred
+            ? { ...inferred, dependent: [...inferred.dependent], heldConstant: [...inferred.heldConstant] }
+            : current
+      );
+    } else {
+      setIntegrationContext((current) =>
+        treeEq && validateCalculusContext(treeEq, current).ok
+          ? current
+          : inferred
+            ? integrationDefaultsFrom(inferred)
+            : current
+      );
+    }
+    setCalculusOpen(operation);
+  };
+
+  /**
+   * The d⁄dx and ∫ buttons route by readiness state (docs/design/calculus-ux.md):
+   * a still-valid previous context or a deterministic reading applies in ONE
+   * tap with a receipt; ambiguity opens the panel seeded with the best
+   * suggestion; a solution-set equation gets the teachable refusal first.
+   * Sticky identity confirmations never auto-reapply — that stays deliberate.
+   */
+  const quickCalculus = (operation: "differentiate" | "integrate") => {
+    if (!treeEq || !calculusReadiness) return;
+    const current = operation === "differentiate" ? differentiationContext : integrationContext;
+    if (current.dependent.length > 0 && validateCalculusContext(treeEq, current).ok) {
+      applyCalculusWith(operation, current, true);
+      return;
+    }
+    if (calculusReadiness.state === "deterministic") {
+      const context = operation === "differentiate"
+        ? calculusReadiness.context
+        : integrationDefaultsFrom(calculusReadiness.context);
+      if (operation === "differentiate") setDifferentiationContext(context as DifferentiationContext);
+      else setIntegrationContext(context as IntegrationContext);
+      applyCalculusWith(operation, context, true);
+      return;
+    }
+    if (calculusReadiness.state === "solution-set") flashNotice(calculusReadiness.explanation);
+    openCalculusPanel(operation);
   };
 
   const runSpecialAction = (action: SpecialActionRef, ownerId: string) => {
@@ -5053,10 +5158,19 @@ const EquationBuilderTool = () => {
                             : item.action
                               ? calculusReady
                                 ? {
-                                    ddx: "Choose an explicit differentiation context",
-                                    int: "Choose an explicit integration context",
+                                    ddx:
+                                      calculusReadiness?.state === "deterministic"
+                                        ? `Differentiate — ${calculusReadiness.explanation}`
+                                        : "Differentiate the relation",
+                                    int:
+                                      calculusReadiness?.state === "deterministic"
+                                        ? `Integrate — ${calculusReadiness.explanation}`
+                                        : "Integrate the relation",
+                                    "calculus-custom": "Choose the full calculus context — mode, roles, notation",
                                   }[item.action]
-                                : `${item.glyph} needs a relation containing at least one symbol`
+                                : calculusReadiness?.state === "no-symbols"
+                                  ? calculusReadiness.explanation
+                                  : `${item.glyph} needs a relation containing at least one symbol`
                               : "coming soon"
                         }
                         onClick={() => {
@@ -5064,7 +5178,8 @@ const EquationBuilderTool = () => {
                           if (item.action) {
                             if (!calculusReady) return;
                             setToolboxOpen(false);
-                            setCalculusOpen(item.action === "ddx" ? "differentiate" : "integrate");
+                            if (item.action === "calculus-custom") openCalculusPanel("differentiate");
+                            else quickCalculus(item.action === "ddx" ? "differentiate" : "integrate");
                             return;
                           }
                           if (!item.tool) return;
@@ -5127,6 +5242,7 @@ const EquationBuilderTool = () => {
               validationMessage={calculusValidationMessage}
               onApply={() => applyContextualCalculus(calculusOpen)}
               onClose={() => setCalculusOpen(null)}
+              onOperation={openCalculusPanel}
             />
           )}
         </div>

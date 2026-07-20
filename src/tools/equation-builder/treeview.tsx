@@ -208,7 +208,10 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
     }
     case "named":
       return <TSym ctx={ctx} role={role} className="italic">π</TSym>;
-    case "var":
+    case "var": {
+      // Derivative-born symbols like z_x typeset their subscript chunk small
+      // and low; the underscore is storage notation, not display notation.
+      const subscripted = node.name.match(/^(.+?)_(.+)$/);
       return (
         <span
           data-model-symbol={node.symbolId}
@@ -218,9 +221,19 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
               : ""
           }`}
         >
-          <TSym ctx={ctx} className="italic">{node.name}</TSym>
+          <TSym ctx={ctx} className="italic">
+            {subscripted ? (
+              <>
+                {subscripted[1]}
+                <sub className="text-[0.65em]">{subscripted[2].replace(/_/g, "")}</sub>
+              </>
+            ) : (
+              node.name
+            )}
+          </TSym>
         </span>
       );
+    }
     case "add":
       return (
         <span className="inline-flex items-center">
