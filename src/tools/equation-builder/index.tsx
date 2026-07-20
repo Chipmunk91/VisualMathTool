@@ -121,6 +121,7 @@ import {
   type IntegrationContext,
 } from "./calculus";
 import { CalculusContextPanel, VisualizationSetup } from "./contextpanels";
+import { TOOL_ROWS } from "./registry";
 import { ImplicitRelationPane, ScalarFieldPane } from "./multivariable";
 
 /**
@@ -374,25 +375,27 @@ interface ToolItem {
   title?: string;
 }
 
+// Tool titles come from the operations registry — the glyphs and grouping
+// are presentation, the operation inventory is the registry's.
 const TOOLBOX: { id: string; label: string; items: ToolItem[] }[] = [
   {
     id: "functions",
     label: "Functions",
     items: [
-      { glyph: "ln", tool: "ln", title: "Take ln of both sides" },
-      { glyph: "eˣ", tool: "exp", title: "Exponentiate both sides (e to each side)" },
-      { glyph: "sin", tool: "sin", title: "Take sin of both sides" },
-      { glyph: "cos", tool: "cos", title: "Take cos of both sides" },
-      { glyph: "tan", tool: "tan", title: "Take tan of both sides" },
+      { glyph: "ln", tool: "ln", title: TOOL_ROWS.ln.title },
+      { glyph: "eˣ", tool: "exp", title: TOOL_ROWS.exp.title },
+      { glyph: "sin", tool: "sin", title: TOOL_ROWS.sin.title },
+      { glyph: "cos", tool: "cos", title: TOOL_ROWS.cos.title },
+      { glyph: "tan", tool: "tan", title: TOOL_ROWS.tan.title },
     ],
   },
   {
     id: "powers",
     label: "Powers",
     items: [
-      { glyph: "√", tool: "sqrt", title: "Take the square root of both sides" },
-      { glyph: "( )²", tool: "square", title: "Square both sides" },
-      { glyph: "1⁄( )", tool: "recip", title: "Take the reciprocal of both sides" },
+      { glyph: "√", tool: "sqrt", title: TOOL_ROWS.sqrt.title },
+      { glyph: "( )²", tool: "square", title: TOOL_ROWS.square.title },
+      { glyph: "1⁄( )", tool: "recip", title: TOOL_ROWS.recip.title },
     ],
   },
   {
