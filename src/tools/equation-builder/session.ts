@@ -397,6 +397,12 @@ export class EquationSessionService {
       expectedRevision: document.revision,
       actor: request.actor,
       command,
+      standingAssumptions: Array.from(
+        new Set([
+          ...document.assumptions.map((assumption) => assumption.expression),
+          ...document.symbols.flatMap((symbol) => symbol.assumptions.map((assumption) => assumption.expression)),
+        ])
+      ),
     });
     if (applied.status === "stale") {
       return errorResult("stale_revision", "The equation changed before this preview.", {

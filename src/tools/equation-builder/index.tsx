@@ -1657,19 +1657,44 @@ const EquationBuilderTool = () => {
     setSymbolRecords((records) => {
       let changed = false;
       const next = records.map((record) => {
+        // human-declared facts persist; operation pills re-sync around them
+        const declared = record.assumptions.filter((assumption) => assumption.source === "human");
         const relevant = predicates.filter((predicate) =>
+          !declared.some((existing) => existing.id === predicate.id) &&
           new RegExp(`(^|[^A-Za-z0-9_])${record.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9_]|$)`).test(predicate.expression)
         );
-        const same = relevant.length === record.assumptions.length &&
-          relevant.every((predicate, index) => predicate.id === record.assumptions[index]?.id);
+        const merged = [...declared, ...relevant];
+        const same = merged.length === record.assumptions.length &&
+          merged.every((predicate, index) => predicate.id === record.assumptions[index]?.id);
         if (same) return record;
         changed = true;
-        return { ...record, assumptions: relevant };
+        return { ...record, assumptions: merged };
       });
       return changed ? next : records;
     });
   }, [assumptions]);
   const xNonZeroAssumed = assumptions.includes("x ≠ 0");
+
+  /**
+   * The full standing-fact context: every pill a step declared plus every
+   * fact the human wrote into the symbol book. This is what licenses
+   * conditional simplifications from here on (Phase C of the architecture
+   * review) — assumptions are durable state, not one-shot move parameters.
+   */
+  const standingAssumptions = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...assumptions,
+          ...symbolRecords.flatMap((record) =>
+            record.assumptions
+              .filter((assumption) => assumption.source === "human")
+              .map((assumption) => assumption.expression)
+          ),
+        ])
+      ),
+    [assumptions, symbolRecords]
+  );
 
   const flashNotice = (message: string) => {
     setNotice(message);
@@ -2055,6 +2080,7 @@ const EquationBuilderTool = () => {
       expectedRevision: equationRevision(treeEq),
       actor: { kind: "human" },
       command,
+      standingAssumptions,
     });
   };
 
@@ -2144,9 +2170,9 @@ const EquationBuilderTool = () => {
       inspectNodes: () => inspectEquationNodes(equationAtRevision),
       listApplicableOperations: () => listApplicableEquationOperations(equationAtRevision),
       previewCommand: (request: Parameters<typeof applyEquationCommand>[1]) =>
-        applyEquationCommand(equationAtRevision, request),
+        applyEquationCommand(equationAtRevision, { standingAssumptions, ...request }),
       applyCommand: (request: Parameters<typeof applyEquationCommand>[1]) => {
-        const result = applyEquationCommand(equationAtRevision, request);
+        const result = applyEquationCommand(equationAtRevision, { standingAssumptions, ...request });
         if (result.status === "applied") {
           const outcome =
             request.command.type === "gesture"
@@ -2182,6 +2208,7 @@ const EquationBuilderTool = () => {
     viewSpec,
     differentiationContext,
     integrationContext,
+    standingAssumptions,
   ]);
 
   const applyCalculusWith = (
@@ -3218,6 +3245,45 @@ const EquationBuilderTool = () => {
                         </label>
                       </div>
 
+                      {/* Declared domain facts — durable licenses the simplifier queries
+                          (x/x cancels once x ≠ 0 stands, no re-asking per move). */}
+                      <div className="mt-2 flex items-center gap-1.5 text-[10px]">
+                        <span className="text-muted-foreground">known:</span>
+                        {[`${record.name} > 0`, `${record.name} ≠ 0`].map((expression) => {
+                          const active = record.assumptions.some(
+                            (assumption) => assumption.source === "human" && assumption.expression === expression
+                          );
+                          return (
+                            <button
+                              key={expression}
+                              type="button"
+                              aria-pressed={active}
+                              title={active ? `Stop assuming ${expression}` : `Assume ${expression} from here on`}
+                              onClick={() => {
+                                setSymbolRecords((records) => records.map((item) => {
+                                  if (item.id !== record.id) return item;
+                                  const rest = item.assumptions.filter(
+                                    (assumption) => !(assumption.source === "human" && assumption.expression === expression)
+                                  );
+                                  return {
+                                    ...item,
+                                    assumptions: active ? rest : [predicateFromText(expression, "human"), ...rest],
+                                    provenance: { ...item.provenance, confirmedByHuman: true },
+                                  };
+                                }));
+                              }}
+                              className={`rounded-full border px-2 py-0.5 font-serif transition-colors ${
+                                active
+                                  ? "border-amber-400 bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                                  : "border-border text-muted-foreground hover:border-amber-300 hover:text-amber-700"
+                              }`}
+                            >
+                              {expression.slice(record.name.length + 1)}
+                            </button>
+                          );
+                        })}
+                      </div>
+
                       {record.assumptions.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
                           {record.assumptions.map((assumption) => (
@@ -3472,12 +3538,12 @@ const EquationBuilderTool = () => {
         ) : treeStatus === "contradiction" ? (
           <span className="font-medium text-rose-500">No solution — the two sides can never be equal</span>
         ) : null}
-        {assumptions.map((assumption) => (
+        {standingAssumptions.map((assumption) => (
             <span
               key={assumption}
               className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
             >
-              {/^[A-Za-z_][A-Za-z0-9_]* ≠ 0$/.test(assumption) ? `assuming ${assumption}` : assumption}
+              {/^[A-Za-z_][A-Za-z0-9_′″]* [≠>] 0$/.test(assumption) ? `assuming ${assumption}` : assumption}
             </span>
           ))}
       </div>

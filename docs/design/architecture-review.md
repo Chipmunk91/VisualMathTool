@@ -143,6 +143,13 @@ The edge-case *factory* is three structural facts around that core:
 
 ## Recommendation (phased)
 
+All three phases have shipped: Phase A is `registry.ts` + the derivation
+invariant (test-registry), Phase B deleted the flat runtime (legacy `?eq=`
+links convert inside `decodeHistory`; `treeEq` is non-null by construction),
+and Phase C is `facts.ts` + the engine's standing-facts pass (test-facts):
+history pills and human-declared symbol-book facts parse back into
+simplifier licenses applied to every command result.
+
 - **Phase A — operations registry** (highest leverage). One table enumerating
   every legal operation: `{pattern, rewrite, license/pill, gesture binding,
   anchor spec, label}`. The engine executes rows; `listApplicableOperations`
