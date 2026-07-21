@@ -1,26 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { BookOpen, ChevronDown, History, Play, Search, Square, TriangleAlert, X } from "lucide-react";
-import {
-  Power,
-  LeafTerm,
-  FuncTerm,
-  FuncName,
-  EqTerm,
-  Side,
-  EquationState,
-  opposite,
-  leaf,
-  group,
-  func,
-  scaleNum,
-  scaleDen,
-  cloneState,
-  combine,
-  varOf,
-  gcd,
-  reTerm,
-  type Variable,
-} from "./model";
+import { Side } from "./model";
 import { parseEquation, renderMathPreview, type ParseResult } from "./parse";
 import { CATALOG, searchCatalog, type CatalogEntry } from "./catalog";
 import { GraphView } from "./graph";
@@ -28,7 +8,6 @@ import { MappingPane } from "./mapping";
 import {
   TNode,
   TreeEq,
-  addendsOf,
   cloneTreeEq,
   constValue,
   ensureTreeEqIds,
@@ -36,13 +15,9 @@ import {
   printNode,
   printTreeEq,
   simplify as simplifyTree,
-  flatToTree,
-  keyOf,
   tadd,
   tc,
   tmul,
-  tpow,
-  treeSideToFlat,
   tv,
   varsIn,
 } from "./tree";
@@ -146,8 +121,10 @@ import { ImplicitRelationPane, ScalarFieldPane } from "./multivariable";
  * SAME term ids, or move stories (which reference live ids) can never find
  * their actors when the history replays.
  */
-const BOOT: EquationState = { left: [leaf(2, 1), leaf(-3)], right: [leaf(-7)] };
-const BOOT_TREE: TreeEq = ensureTreeEqIds({ left: flatToTree(BOOT.left), right: flatToTree(BOOT.right) });
+const BOOT_TREE: TreeEq = ensureTreeEqIds({
+  left: tadd(tmul(tc(2), tv("x")), tc(-3)),
+  right: tc(-7),
+});
 const freshDocumentId = () =>
   `eq_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 
@@ -183,10 +160,6 @@ const decideStatus = (L: TNode, R: TNode): "identity" | "contradiction" | null =
   return Math.abs(d0) < 1e-9 ? "identity" : "contradiction";
 };
 
-/** Display sign of a term (terminal values carry theirs in `neg`) */
-const negOf = (t: EqTerm): boolean =>
-  t.kind === "leaf" && (t.pm || t.radical || t.fnVal) ? !!t.neg : t.num < 0;
-
 /**
  * Is old→new an honest in-place morph (a value swap), or an alias? Only equal
  * text, a number→number change (5→3, coefficient/sink swaps), or a sign flip
@@ -200,64 +173,6 @@ const isValueSwap = (a: string, b: string): boolean => {
   const isSign = (s: string) => s === "+" || s === "−" || s === "-";
   return isSign(a) && isSign(b);
 };
-
-/** e^1 is just e: an exp func whose exponent is exactly the constant 1.
- *  Arises when a divide cancels exponents (e³/e² = e^1) — display it as e,
- *  matching the tree side (printNode / treeview both fold e^1 → e). */
-const isBareExpE = (t: EqTerm): boolean =>
-  t.kind === "func" &&
-  t.fn === "exp" &&
-  t.inner.length === 1 &&
-  t.inner[0].kind === "leaf" &&
-  t.inner[0].num === 1 &&
-  t.inner[0].den === 1 &&
-  t.inner[0].power === 0 &&
-  !t.inner[0].neg;
-
-/** Plain-text rendering of a term, for history rows and labels */
-function termText(t: EqTerm, leading: boolean): string {
-  const negative = t.kind === "leaf" && (t.pm || t.radical || t.fnVal) ? !!t.neg : t.num < 0;
-  const sign = negative ? "−" : "+";
-  const prefix = leading ? (negative ? "−" : "") : ` ${sign} `;
-  const mag = Math.abs(t.num);
-  const coefStr = mag === 1 && t.den === 1 ? "" : t.den === 1 ? String(mag) : `(${mag}/${t.den})`;
-  if (t.kind === "leaf" && (t.pm || t.radical || t.fnVal)) {
-    const arg = t.den === 1 ? String(t.num) : `${t.num}/${t.den}`;
-    const core = t.fnVal
-      ? t.fnVal === "e^"
-        ? `e^${arg}`
-        : t.fnVal === "ln"
-          ? `ln ${arg}`
-          : `${t.fnVal}(${arg})`
-      : t.radical
-        ? `√${t.den === 1 ? t.num : `(${t.num}/${t.den})`}`
-        : arg;
-    return prefix + `${t.pm ? "±" : ""}${core}`;
-  }
-  let body: string;
-  if (t.kind === "group") {
-    body = `${coefStr}(${innerText(t.inner)})`;
-  } else if (t.kind === "func") {
-    body = isBareExpE(t)
-      ? `${coefStr}e`
-      : t.fn === "exp"
-        ? `${coefStr}e^(${innerText(t.inner)})`
-        : `${coefStr}${t.fn}(${innerText(t.inner)})`;
-  } else if (t.power >= 1) {
-    body = `${coefStr}${varOf(t)}${t.power > 1 ? supText(t.power) : ""}`;
-  } else if (t.power === 0) {
-    body = t.den === 1 ? String(mag) : `${mag}/${t.den}`;
-  } else {
-    const denVar = `${varOf(t)}${t.power < -1 ? supText(-t.power) : ""}`;
-    body = `${mag}/${t.den === 1 ? denVar : `${t.den}${denVar}`}`;
-  }
-  return prefix + body;
-}
-
-const innerText = (terms: EqTerm[]) => terms.map((t, i) => termText(t, i === 0)).join("");
-const sideTextOf = (terms: EqTerm[]) => terms.map((t, i) => termText(t, i === 0)).join("");
-const equationText = (state: EquationState) => `${sideTextOf(state.left)} = ${sideTextOf(state.right)}`;
-
 interface Step {
   id: number;
   label: string;
@@ -265,9 +180,8 @@ interface Step {
   dangerous?: boolean;
   /** A standing assumption this step introduced (e.g. "x ≠ 0", "principal value") */
   pill?: string;
-  state: EquationState;
-  /** Present when this step lives in the expression tree (frontier mode) */
-  tree?: TreeEq;
+  /** The canonical equation state at this step. */
+  tree: TreeEq;
   /** Literal operation result before simplification; replay's paper state. */
   intermediateTree?: TreeEq;
   /** how this step's move happened — drives the replay choreography */
@@ -320,8 +234,6 @@ interface TraceStep {
 
 let stepCounter = 0;
 let commandCounter = 0;
-/** A harmless flat placeholder while the equation lives in the tree */
-const TREE_DUMMY = (): EquationState => ({ left: [leaf(0)], right: [leaf(0)] });
 
 const makeTreeStep = (
   label: string,
@@ -340,7 +252,6 @@ const makeTreeStep = (
   pill,
   story,
   event,
-  state: TREE_DUMMY(),
   tree: cloneTreeEq(tree),
   intermediateTree: intermediateTree ? cloneTreeEq(intermediateTree) : undefined,
   text: printTreeEq(tree),
@@ -396,11 +307,9 @@ interface SymbolHandlers {
 }
 
 const EquationBuilderTool = () => {
-  // The tree is the runtime model. `equation` remains only as a compatibility
-  // workspace for old flat-only helpers while they are retired module by
-  // module; no parser, history or symbol operation re-enters flat mode.
-  const [equation, setEquation] = useState<EquationState>(() => TREE_DUMMY());
-  const [treeEq, setTreeEq] = useState<TreeEq | null>(() => cloneTreeEq(BOOT_TREE));
+  // The tree is THE runtime model — non-null by construction. Legacy flat
+  // share links convert at the decode boundary (share.ts) and never enter.
+  const [treeEq, setTreeEq] = useState<TreeEq>(() => cloneTreeEq(BOOT_TREE));
   const [history, setHistory] = useState<Step[]>(() => [makeTreeStep("start", BOOT_TREE)]);
   const [documentId, setDocumentId] = useState(freshDocumentId);
   const protocolServiceRef = useRef<EquationSessionService | null>(null);
@@ -475,7 +384,6 @@ const EquationBuilderTool = () => {
   /** Meanings queued for symbols a calculus step is about to birth (y′, z_x). */
   const pendingSymbolMeaningsRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
-    if (!treeEq) return;
     setSymbolRecords((current) => {
       const reconciled = reconcileSymbols(treeEq, current);
       const pending = pendingSymbolMeaningsRef.current;
@@ -491,7 +399,7 @@ const EquationBuilderTool = () => {
   }, [treeEq]);
 
   const relationAnalysis = useMemo(
-    () => treeEq ? analyzeRelation(treeEq) : null,
+    () => analyzeRelation(treeEq),
     [treeEq]
   );
   /** Which of the four calculus readiness states this relation is in. */
@@ -501,7 +409,7 @@ const EquationBuilderTool = () => {
   );
   const analyzedRevisionRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!treeEq || !relationAnalysis) return;
+    if (!relationAnalysis) return;
     const revision = equationRevision(treeEq);
     if (analyzedRevisionRef.current === revision) return;
     analyzedRevisionRef.current = revision;
@@ -572,9 +480,7 @@ const EquationBuilderTool = () => {
 
   const factorizationCandidates = useMemo(
     () =>
-      factorizationDetection && treeEq
-        ? detectFactorizationsEq(treeEq)
-        : [],
+      factorizationDetection ? detectFactorizationsEq(treeEq) : [],
     [factorizationDetection, treeEq]
   );
 
@@ -612,8 +518,7 @@ const EquationBuilderTool = () => {
     if (capturingRef.current) downloadTrace();
     setHistory((h) => {
       const last = h[h.length - 1];
-      setEquation(TREE_DUMMY());
-      setTreeEq(last.tree ? cloneTreeEq(last.tree) : cloneTreeEq(BOOT_TREE));
+      setTreeEq(cloneTreeEq(last.tree));
       return h;
     });
   };
@@ -1581,14 +1486,13 @@ const EquationBuilderTool = () => {
       const showStep = () => {
         const step = h[i];
         if (i === 0) {
-          setEquation(TREE_DUMMY());
-          setTreeEq(step.tree ? cloneTreeEq(step.tree) : cloneTreeEq(BOOT_TREE));
+          setTreeEq(cloneTreeEq(step.tree));
           setPlayIndex(0);
           i++;
           playTimer.current = setTimeout(showStep, 450);
           return;
         }
-        const finalTree = step.tree ? cloneTreeEq(step.tree) : cloneTreeEq(BOOT_TREE);
+        const finalTree = cloneTreeEq(step.tree);
         const stages = treeAnimationStages(finalTree, step.intermediateTree, step.story);
         let stageIndex = 0;
         const showStage = () => {
@@ -1608,7 +1512,6 @@ const EquationBuilderTool = () => {
           // the overlay carry it into the next state. A simplification stage
           // starts only after the literal moved form has been readable.
           const retarget = beginGlyphTransition(stage.story);
-          setEquation(TREE_DUMMY());
           setTreeEq(cloneTreeEq(stage.tree));
           setPlayIndex(i);
           retarget();
@@ -1634,8 +1537,7 @@ const EquationBuilderTool = () => {
   // --- Share: the whole derivation in a link ----
   const [copied, setCopied] = useState(false);
   const currentShareUrl = () => {
-    const currentTree = treeEq ?? ensureTreeEqIds({ left: flatToTree(equation.left), right: flatToTree(equation.right) });
-    const document = makeEquationDocument(currentTree, {
+    const document = makeEquationDocument(treeEq, {
       documentId,
       symbols: symbolRecords,
       assumptions: Array.from(new Set(history.map((step) => step.pill).filter((pill): pill is string => !!pill)))
@@ -1665,7 +1567,7 @@ const EquationBuilderTool = () => {
         note: s.note,
         dangerous: s.dangerous,
         pill: s.pill,
-        tree: s.tree ?? ensureTreeEqIds({ left: flatToTree(s.state.left), right: flatToTree(s.state.right) }),
+        tree: s.tree,
         intermediateTree: s.intermediateTree,
         story: s.story,
         event: s.event,
@@ -1695,7 +1597,6 @@ const EquationBuilderTool = () => {
         pill: s.pill,
         story: s.story,
         event: s.event,
-        state: TREE_DUMMY(),
         tree,
         intermediateTree: s.intermediateTree ? cloneTreeEq(s.intermediateTree) : undefined,
         text: printTreeEq(tree),
@@ -1703,11 +1604,10 @@ const EquationBuilderTool = () => {
     });
     const last = steps[steps.length - 1];
     setHistory(steps);
-    setEquation(TREE_DUMMY());
-    setTreeEq(cloneTreeEq(last.tree!));
+    setTreeEq(cloneTreeEq(last.tree));
     if (shared.document) {
       setDocumentId(shared.document.documentId);
-      setSymbolRecords(reconcileSymbols(last.tree!, shared.document.symbols));
+      setSymbolRecords(reconcileSymbols(last.tree, shared.document.symbols));
       const presentation = shared.document.presentation;
       if (presentation?.functionView) setFnView(presentation.functionView);
       if (presentation?.integrationBounds) {
@@ -1747,8 +1647,6 @@ const EquationBuilderTool = () => {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const { left, right } = equation;
-
   // The "dangerous switches": standing assumptions introduced by past steps
   const assumptions = useMemo(
     () => Array.from(new Set(history.map((s) => s.pill).filter((p): p is string => !!p))),
@@ -1772,7 +1670,6 @@ const EquationBuilderTool = () => {
     });
   }, [assumptions]);
   const xNonZeroAssumed = assumptions.includes("x ≠ 0");
-  const nonZeroAssumed = (v: Variable) => assumptions.includes(`${v} ≠ 0`);
 
   const flashNotice = (message: string) => {
     setNotice(message);
@@ -1783,7 +1680,6 @@ const EquationBuilderTool = () => {
 
   // --- Tree (frontier) mode: solved detection + which pane the equation earns
   const treeSolved = useMemo(() => {
-    if (!treeEq) return null;
     const detect = (a: TNode, b: TNode) =>
       a.kind === "var" && varsIn(b).size === 0 ? { v: a.name, value: b } : null;
     const hit = detect(treeEq.left, treeEq.right) ?? detect(treeEq.right, treeEq.left);
@@ -1799,14 +1695,14 @@ const EquationBuilderTool = () => {
 
   /** Tree equations get the same verdicts: identical sides, or two constants */
   const treeStatus = useMemo(() => {
-    if (!treeEq || treeSolved) return null;
+    if (treeSolved) return null;
     return decideStatus(treeEq.left, treeEq.right);
   }, [treeEq, treeSolved]);
 
   /** Calculus is available for any canonical relation with at least one symbol. */
-  const calculusReady = !!treeEq && !!relationAnalysis && relationAnalysis.symbols.length > 0;
+  const calculusReady = !!relationAnalysis && relationAnalysis.symbols.length > 0;
   const calculusValidationMessage = useMemo(() => {
-    if (!treeEq || !calculusOpen) return undefined;
+    if (!calculusOpen) return undefined;
     const validation = validateCalculusContext(
       treeEq,
       calculusOpen === "differentiate" ? differentiationContext : integrationContext
@@ -1851,7 +1747,6 @@ const EquationBuilderTool = () => {
     // normalizations record their assumptions on step zero.
     const norm = normalizeOnLoad(result.tree);
     setTreeEq(norm.te);
-    setEquation(TREE_DUMMY());
     setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
     setDocumentId(freshDocumentId());
     setSelection(null);
@@ -1896,8 +1791,7 @@ const EquationBuilderTool = () => {
   const restoreStep = (index: number) => {
     if (playingRef.current) stopPlayback();
     const step = history[index];
-    setTreeEq(step.tree ? cloneTreeEq(step.tree) : cloneTreeEq(BOOT_TREE));
-    setEquation(TREE_DUMMY());
+    setTreeEq(cloneTreeEq(step.tree));
     setHistory((h) => h.slice(0, index + 1));
     setSelection(null);
     setSpecialBubble(null);
@@ -2026,10 +1920,10 @@ const EquationBuilderTool = () => {
         const side = span.dataset.side as Side;
         const termId = span.dataset.termId;
         if (!side || !termId) return;
-        if (treeEq && isAtomicTreeFactorId(termId)) {
+        if (isAtomicTreeFactorId(termId)) {
           factorHits[side].add(termId);
         } else {
-          additiveHits[side].add(treeEq ? ownerOfTreeHandleId(termId) : termId);
+          additiveHits[side].add(ownerOfTreeHandleId(termId));
         }
       });
 
@@ -2066,10 +1960,9 @@ const EquationBuilderTool = () => {
     const selectedFactor = treeEq
       ? (el.closest<HTMLElement>("[data-factor-handle]")?.dataset.factorHandle ?? null)
       : null;
-    const ownerId = treeEq ? ownerOfTreeHandleId(termId) : termId;
+    const ownerId = ownerOfTreeHandleId(termId);
     if (selection && selection.side === side) {
       if (
-        treeEq &&
         selectedFactor &&
         selection.termIds.includes(selectedFactor) &&
         selection.termIds.every(isAtomicTreeFactorId)
@@ -2128,25 +2021,24 @@ const EquationBuilderTool = () => {
   // --- Canonical tree operations (pure dispatcher lives in operations.ts) --
 
   const treeAddend = (id: string): TNode | null =>
-    treeEq ? treeAddendExpression(treeEq, id) : null;
+    treeAddendExpression(treeEq, id);
 
   const coefExprOf = (id: string): TNode | null =>
-    treeEq ? treeCoefficientExpression(treeEq, id) : null;
+    treeCoefficientExpression(treeEq, id);
 
   /** Resolve through the same factor layout used by TreeSideView. */
   const treeFactorOf = (id: string): { expr: TNode; zone: "n" | "d" } | null => {
-    return treeEq ? resolveTreeFactor(treeEq, id) : null;
+    return resolveTreeFactor(treeEq, id);
   };
 
   const computeTreeDrop = (payload: DragPayload, target: DropTarget): TreeMoveResult =>
-    treeEq ? computeTreeOperation(treeEq, payload, target) : null;
+    computeTreeOperation(treeEq, payload, target);
 
   const withTreeStory = (o: TreeOutcome, payload: DragPayload, target: DropTarget): TreeOutcome =>
-    o.story || !treeEq ? o : { ...o, story: treeMoveStory(treeEq, payload, target) };
+    o.story ? o : { ...o, story: treeMoveStory(treeEq, payload, target) };
 
   const commitTreeOutcome = (o: TreeOutcome, event?: EquationEvent) => {
     setTreeEq(o.treeNext);
-    setEquation(TREE_DUMMY());
     setHistory((h) => [
       ...h,
       makeTreeStep(o.label, o.treeNext, o.dangerous, o.note, o.pill, o.story, o.treeIntermediate, event),
@@ -2158,7 +2050,6 @@ const EquationBuilderTool = () => {
 
   /** One semantic command path for pointer gestures, bubbles, rewrites, and AI adapters. */
   const runEquationCommand = (command: EquationCommand) => {
-    if (!treeEq) return null;
     return applyEquationCommand(treeEq, {
       requestId: `human_${Date.now().toString(36)}_${(commandCounter++).toString(36)}`,
       expectedRevision: equationRevision(treeEq),
@@ -2168,7 +2059,6 @@ const EquationBuilderTool = () => {
   };
 
   useEffect(() => {
-    if (!treeEq) return;
     const equationAtRevision = treeEq;
     const documentAssumptions = Array.from(
       new Set(history.map((step) => step.pill).filter((pill): pill is string => !!pill))
@@ -2299,7 +2189,6 @@ const EquationBuilderTool = () => {
     context: DifferentiationContext | IntegrationContext,
     announce = false
   ) => {
-    if (!treeEq) return;
     const validation = validateCalculusContext(treeEq, context);
     if (!validation.ok) {
       flashNotice(validation.message ?? "Complete the calculus context first.");
@@ -2355,7 +2244,7 @@ const EquationBuilderTool = () => {
         : null;
     if (operation === "differentiate") {
       setDifferentiationContext((current) =>
-        treeEq && validateCalculusContext(treeEq, current).ok
+        validateCalculusContext(treeEq, current).ok
           ? current
           : inferred
             ? { ...inferred, dependent: [...inferred.dependent], heldConstant: [...inferred.heldConstant] }
@@ -2363,7 +2252,7 @@ const EquationBuilderTool = () => {
       );
     } else {
       setIntegrationContext((current) =>
-        treeEq && validateCalculusContext(treeEq, current).ok
+        validateCalculusContext(treeEq, current).ok
           ? current
           : inferred
             ? integrationDefaultsFrom(inferred)
@@ -2381,7 +2270,7 @@ const EquationBuilderTool = () => {
    * Sticky identity confirmations never auto-reapply — that stays deliberate.
    */
   const quickCalculus = (operation: "differentiate" | "integrate") => {
-    if (!treeEq || !calculusReadiness) return;
+    if (!calculusReadiness) return;
     const current = operation === "differentiate" ? differentiationContext : integrationContext;
     if (current.dependent.length > 0 && validateCalculusContext(treeEq, current).ok) {
       applyCalculusWith(operation, current, true);
@@ -2401,7 +2290,6 @@ const EquationBuilderTool = () => {
   };
 
   const runSpecialAction = (action: SpecialActionRef, ownerId: string) => {
-    if (!treeEq) return;
     const result = runEquationCommand({ type: "special-action", action });
     setSpecialBubble(null);
     if (!result) return;
@@ -2424,7 +2312,6 @@ const EquationBuilderTool = () => {
   };
 
   const runRewrite = (side: Side, rewrite: Rewrite, ownerId: string) => {
-    if (!treeEq) return;
     const result = runEquationCommand({ type: "rewrite", side, targetId: rewrite.before.id, kind: rewrite.kind });
     if (!result || result.status !== "applied") {
       if (result?.status === "rejected") flashNotice(result.reason);
@@ -2559,9 +2446,9 @@ const EquationBuilderTool = () => {
     const data = {
       format: "vmt-layout-capture",
       version: 1,
-      equationText: treeEq ? printTreeEq(treeEq) : equationText(equation),
-      mode: treeEq ? "tree" : "flat",
-      model: treeEq ?? equation,
+      equationText: printTreeEq(treeEq),
+      mode: "tree",
+      model: treeEq,
       grabRadius: GRAB_RADIUS,
       viewport: { w: window.innerWidth, h: window.innerHeight },
       equationRect: rectOf(eq),
@@ -2612,7 +2499,7 @@ const EquationBuilderTool = () => {
     // matching denominator factor (or the reverse) cancels the pair — the
     // gesture that carries the "expr ≠ 0" pill the simplifier refuses to
     // assume silently
-    if (treeEq && (payload.kind === "numer" || payload.kind === "den" || payload.kind === "coef")) {
+    if (payload.kind === "numer" || payload.kind === "den" || payload.kind === "coef") {
       const zoneOfRole = (role: string | undefined) => (role === "den" ? "d" : "n");
       const myZone = payload.kind === "den" ? "d" : "n";
       for (const el of Array.from(
@@ -2783,7 +2670,7 @@ const EquationBuilderTool = () => {
           y: st.tapIntent.y,
         });
         setSelection(null);
-      } else if (st?.tapFactorId && st.tapSide && treeEq) {
+      } else if (st?.tapFactorId && st.tapSide) {
         setSelection((current) =>
           toggleTreeFactorSelection(treeEq, current, st.tapSide!, st.tapFactorId!, st.tapAdditive)
         );
@@ -3493,13 +3380,11 @@ const EquationBuilderTool = () => {
               : ""
         }`}
       >
-        {treeEq ? (
-          <>
-            {(["left", "right"] as const).map((side, i) => (
+        {(["left", "right"] as const).map((side, i) => (
               <Fragment key={side}>
                 {i === 1 && <span className="mx-5 select-none" data-equals>=</span>}
-                {/* the same drop shell the flat sides get: the target ring,
-                    both-sides spread previews, and the landing ghost */}
+                {/* drop shell: the target ring, both-sides spread previews,
+                    and the landing ghost */}
                 <span
                   className={`inline-flex items-center rounded-xl px-2 py-1 transition-shadow ${
                     dragOver === side ? "ring-2 ring-amber-300" : ""
@@ -3536,14 +3421,12 @@ const EquationBuilderTool = () => {
                   )}
                   {dragActive && dragOver === side && !underHover && !spread && sideGhost(side)}
                 </span>
-              </Fragment>
-            ))}
-          </>
-        ) : null}
+          </Fragment>
+        ))}
       </div>
 
       {/* Contextual math actions are taps, never competing drag hitboxes. */}
-      {specialBubble && treeEq && (
+      {specialBubble && (
         <div
           data-ui
           data-context-bubble
@@ -3599,7 +3482,7 @@ const EquationBuilderTool = () => {
           ))}
       </div>
 
-      {treeEq && relationAnalysis && (
+      {relationAnalysis && (
         <VisualizationSetup
           analysis={relationAnalysis}
           value={viewSpec}
@@ -3609,7 +3492,7 @@ const EquationBuilderTool = () => {
 
       {/* A view is an explicit interpretation of the symmetric relation. */}
       {(() => {
-        if (treeEq && relationAnalysis && viewSpec && isViewSpecValid(viewSpec, relationAnalysis)) {
+        if (relationAnalysis && viewSpec && isViewSpecValid(viewSpec, relationAnalysis)) {
           const key = `${printTreeEq(treeEq)}:${viewSpecKey(viewSpec)}`;
           if (viewSpec.kind === "function-1d") {
             const isolation = isolationForView(relationAnalysis, viewSpec);
