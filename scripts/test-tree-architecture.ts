@@ -1,5 +1,5 @@
 /** Architectural invariants for the canonical equation tree. */
-import { leaf } from "../src/tools/equation-builder/model";
+import { group, leaf } from "../src/tools/equation-builder/model";
 import { computeTreeOperation, previewTreeOperation } from "../src/tools/equation-builder/operations";
 import {
   equationRevision,
@@ -129,7 +129,35 @@ console.log("\n== canonical runtime ==");
   check("A5 id-less shared trees are rehydrated at the boundary", hydratedIds.length > 0 && hydratedIds.length === new Set(hydratedIds).size);
 
   const oldLink = encodeHistory({ steps: [{ label: "old", state: { left: [leaf(2, 1)], right: [leaf(4)] } }] });
-  check("A6 legacy flat share payloads remain readable", decodeHistory(oldLink)?.steps[0].state?.left[0].num === 2);
+  const oldDecoded = decodeHistory(oldLink);
+  check(
+    "A6 legacy flat share payloads decode straight to canonical trees",
+    !!oldDecoded && printTreeEq(oldDecoded.steps[0].tree) === "2x = 4",
+    oldDecoded ? printTreeEq(oldDecoded.steps[0].tree) : "decode failed"
+  );
+
+  // The Phase B regression lock: a MULTI-STEP legacy link (group term, pill)
+  // must decode with every step carrying a tree — the flat model exists only
+  // on the wire, never past the decode boundary.
+  const legacyFlatLink = encodeHistory({
+    steps: [
+      { label: "start", state: { left: [group(2, [leaf(1, 1), leaf(3)])], right: [leaf(10)] } },
+      { label: "divided by 2", pill: "2 ≠ 0", state: { left: [leaf(1, 1), leaf(3)], right: [leaf(5)] } },
+      { label: "moved 3 across", state: { left: [leaf(1, 1)], right: [leaf(2)] } },
+    ],
+  });
+  const legacyDecoded = decodeHistory(legacyFlatLink);
+  check("A6b multi-step legacy flat link decodes every step to a tree",
+    !!legacyDecoded && legacyDecoded.steps.every((s) => !!s.tree && !!s.tree.left && !!s.tree.right));
+  check(
+    "A6c converted steps print the same mathematics",
+    !!legacyDecoded &&
+      printTreeEq(legacyDecoded.steps[0].tree) === "2(x + 3) = 10" &&
+      printTreeEq(legacyDecoded.steps[1].tree) === "x + 3 = 5" &&
+      printTreeEq(legacyDecoded.steps[2].tree) === "x = 2",
+    legacyDecoded ? legacyDecoded.steps.map((s) => printTreeEq(s.tree)).join(" | ") : "decode failed"
+  );
+  check("A6d pills survive the conversion", legacyDecoded?.steps[1].pill === "2 ≠ 0");
 }
 
 console.log("\n== stable factor identity ==");
