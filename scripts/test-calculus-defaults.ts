@@ -167,5 +167,41 @@ check("subscript repeats: z_x → z_xx", derivedSymbolName("z_x", "x", "subscrip
   check("integration mirrors the classification", context.withRespectTo === "x" && context.dependent.join() === "y" && context.mode === "ordinary");
 }
 
+// --- Suggestion seeds follow variable conventions, not the alphabet ----------
+{
+  const linear = readiness("y = m*x + b");
+  check(
+    "y = mx + b seeds d/dx with m, b held",
+    linear.state === "needs-context" &&
+      linear.suggestion.withRespectTo === "x" &&
+      linear.suggestion.dependent.join() === "y" &&
+      [...linear.suggestion.heldConstant].sort().join() === "b,m",
+    JSON.stringify(linear)
+  );
+  const kinematic = readiness("q = a*t^2");
+  check(
+    "q = at² seeds d/dt with a held",
+    kinematic.state === "needs-context" &&
+      kinematic.suggestion.withRespectTo === "t" &&
+      kinematic.suggestion.heldConstant.join() === "a",
+    JSON.stringify(kinematic)
+  );
+  const twoWay = readiness("y = x");
+  check(
+    "y = x seeds y as the function of x",
+    twoWay.state === "needs-context" &&
+      twoWay.suggestion.withRespectTo === "x" &&
+      twoWay.suggestion.dependent.join() === "y",
+    JSON.stringify(twoWay)
+  );
+  check(
+    "two-isolation explanation names both readings",
+    twoWay.state === "needs-context" &&
+      twoWay.explanation.includes("y as a function of x") &&
+      twoWay.explanation.includes("x as a function of y"),
+    twoWay.state === "needs-context" ? twoWay.explanation : twoWay.state
+  );
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
