@@ -408,6 +408,19 @@ interface AnalysisShape {
   isolations: { output: string; inputs: string[] }[];
 }
 
+/**
+ * Conventional-role ranking for SEEDING suggestions only — the panel still
+ * requires explicit confirmation, so this never decides, it just makes the
+ * default match what a textbook reader expects: y = mx + b seeds d/dx with
+ * m, b held, not d/db. x and t outrank everything; early-alphabet single
+ * letters (a…n) read as parameters.
+ */
+const INDEPENDENT_RANK: Record<string, number> = { x: 6, t: 5, u: 4, v: 4, w: 4, s: 3, r: 3, "θ": 3 };
+const independentScore = (name: string): number =>
+  INDEPENDENT_RANK[name] ?? (/^[a-n]$/.test(name) ? 0 : 1);
+const rankInputs = (inputs: string[]): string[] =>
+  [...inputs].sort((a, b) => independentScore(b) - independentScore(a) || a.localeCompare(b));
+
 export function inferCalculusDefaults(analysis: AnalysisShape): CalculusReadiness {
   const { symbols, isolations } = analysis;
   if (symbols.length === 0) {
@@ -434,30 +447,41 @@ export function inferCalculusDefaults(analysis: AnalysisShape): CalculusReadines
         explanation: `This pins ${isolation.output} to a single value — a point, not a function, so there is no rate of change.`,
       };
     }
+    const ranked = rankInputs(isolation.inputs);
     return {
       state: "needs-context",
       suggestion: {
         mode: "partial",
-        withRespectTo: isolation.inputs[0],
+        withRespectTo: ranked[0],
         dependent: [isolation.output],
-        heldConstant: isolation.inputs.slice(1),
+        heldConstant: ranked.slice(1),
         notation: "subscript",
       },
       explanation: `${isolation.output} depends on several symbols — choose which one varies; the others are held constant.`,
     };
   }
   if (isolations.length >= 2) {
-    const [isolation] = isolations;
+    // Both sides are bare symbols, so the relation reads either way. Seed
+    // the reading whose input is the more conventional independent variable
+    // (y = x suggests y′ = dy/dx, not x′ = dx/dy) and say both out loud.
+    const best = [...isolations].sort(
+      (a, b) =>
+        independentScore(rankInputs(b.inputs)[0] ?? "") - independentScore(rankInputs(a.inputs)[0] ?? "")
+    )[0];
+    const other = isolations.find((isolation) => isolation !== best)!;
+    const ranked = rankInputs(best.inputs);
     return {
       state: "needs-context",
       suggestion: {
         mode: "ordinary",
-        withRespectTo: isolation.inputs[0] ?? "",
-        dependent: [isolation.output],
-        heldConstant: isolation.inputs.slice(1),
+        withRespectTo: ranked[0] ?? "",
+        dependent: [best.output],
+        heldConstant: ranked.slice(1),
         notation: "lagrange",
       },
-      explanation: "Either symbol could be the dependent one — confirm which side is the function.",
+      explanation:
+        `This reads two ways: ${best.output} as a function of ${ranked[0] ?? other.output} (suggested), ` +
+        `or ${other.output} as a function of ${rankInputs(other.inputs)[0] ?? best.output} — confirm which side is the function.`,
     };
   }
   if (symbols.length === 1) {
