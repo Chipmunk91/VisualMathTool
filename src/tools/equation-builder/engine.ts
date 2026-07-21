@@ -16,7 +16,8 @@ import { computeTreeOperation, type DragPayload, type DropTarget } from "./opera
 import { applyRewrite, detectRewritesEq } from "./rewrites";
 import { applySpecialActionT, type SpecialActionRef } from "./specialactions";
 import { listSpecialOperations, TOOL_ROWS, TOOL_ROW_ORDER } from "./registry";
-import { addendsOf, cloneTreeEq, printNode, type TreeEq } from "./tree";
+import { addendsOf, cloneTreeEq, ensureTreeEqIds, keyOf, printNode, simplify, type TreeEq } from "./tree";
+import { assumeKeysOf, factsFromAssumptions } from "./facts";
 import { finalize, type TreeMoveResult, type TreeOutcome } from "./treemoves";
 import { treeFactorLayout } from "./treeunits";
 import {
@@ -41,6 +42,12 @@ export interface EquationCommandRequest {
   expectedRevision: string;
   actor: { kind: "human" | "ai"; name?: string };
   command: EquationCommand;
+  /**
+   * Standing assumption texts (history pills, symbol-book predicates). Facts
+   * parsed from them license conditional simplifications on the command's
+   * result — a step that assumed x ≠ 0 keeps licensing x-cancels later.
+   */
+  standingAssumptions?: string[];
 }
 
 export type EquationCommandResult =
@@ -163,6 +170,30 @@ export function executeEquationCommand(equation: TreeEq, command: EquationComman
   );
 }
 
+/**
+ * Re-simplify a command's result under the standing domain facts. A move's
+ * own `assume` license is pointwise (the expression it just divided by);
+ * this pass makes PAST declarations keep working — once a step assumed
+ * x ≠ 0, a later x/x folds without asking again.
+ */
+const applyStandingFacts = (outcome: TreeOutcome, standing?: string[]): TreeOutcome => {
+  if (!standing || standing.length === 0) return outcome;
+  const keys = assumeKeysOf(factsFromAssumptions(standing));
+  if (keys.size === 0) return outcome;
+  const left = simplify(outcome.treeNext.left, keys);
+  const right = simplify(outcome.treeNext.right, keys);
+  if (keyOf(left) === keyOf(outcome.treeNext.left) && keyOf(right) === keyOf(outcome.treeNext.right)) {
+    return outcome;
+  }
+  return {
+    ...outcome,
+    // the un-licensed result becomes the readable paper state when the move
+    // didn't already stage one of its own
+    treeIntermediate: outcome.treeIntermediate ?? outcome.treeNext,
+    treeNext: ensureTreeEqIds({ left, right }),
+  };
+};
+
 export function applyEquationCommand(
   equation: TreeEq,
   request: EquationCommandRequest
@@ -173,9 +204,10 @@ export function applyEquationCommand(
   if (!result || typeof result === "string") {
     return { status: "rejected", reason: result ?? "the command has no effect here" };
   }
-  const outcome = request.command.type === "gesture" && !result.story
-    ? { ...result, story: treeMoveStory(equation, request.command.payload, request.command.target) }
-    : result;
+  const licensed = applyStandingFacts(result, request.standingAssumptions);
+  const outcome = request.command.type === "gesture" && !licensed.story
+    ? { ...licensed, story: treeMoveStory(equation, request.command.payload, request.command.target) }
+    : licensed;
   const afterRevision = equationRevision(outcome.treeNext);
   const trace = traceFor(request.command);
   const event: EquationEvent = {
