@@ -18,8 +18,6 @@ import {
   group,
   func,
   leaf,
-  scaleDen,
-  scaleNum,
   varOf,
   type Variable,
 } from "./model";
@@ -1174,46 +1172,6 @@ export function introducesLnOf(n: TNode, v: Variable): boolean {
     default:
       return false;
   }
-}
-
-/* --- the escape hatch: tree → flat model when representable --------------- */
-
-const FLAT_FN: TFnName[] = ["sin", "cos", "tan", "ln", "exp"];
-
-/** A whole side to flat terms, or null when the tree exceeds the flat model */
-export function treeSideToFlat(n: TNode): EqTerm[] | null {
-  const out: EqTerm[] = [];
-  for (const t of addendsOf(n)) {
-    const flat = termToFlat(t);
-    if (!flat) return null;
-    out.push(flat);
-  }
-  return out;
-}
-
-function termToFlat(t: TNode): EqTerm | null {
-  const { num, den, core } = splitCoef(t);
-  if (!Number.isInteger(num) || !Number.isInteger(den)) return null;
-  if (core.length === 0) return leaf(num, 0, den);
-  if (core.length !== 1) return null; // x·y and friends stay in the tree
-  const f = core[0];
-  if (f.kind === "var") return leaf(num, 1, den, f.name);
-  if (f.kind === "pow" && f.base.kind === "var" && f.exp.kind === "const" && f.exp.den === 1) {
-    const p = f.exp.num;
-    if (p !== 0 && Math.abs(p) <= 9) return leaf(num, p, den, f.base.name);
-    return null;
-  }
-  if (f.kind === "fn" && (FLAT_FN as string[]).includes(f.fn)) {
-    const inner = treeSideToFlat(f.arg);
-    if (!inner || inner.length === 0) return null;
-    return scaleDen(scaleNum(func(f.fn as FuncName, 1, inner), num), den);
-  }
-  if (f.kind === "add") {
-    const inner = treeSideToFlat(f);
-    if (!inner || inner.length === 0) return null;
-    return scaleDen(scaleNum(group(1, inner), num), den);
-  }
-  return null;
 }
 
 /** Flat terms → tree (for potential round-trips; kept total) */

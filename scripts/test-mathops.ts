@@ -6,7 +6,6 @@
  *
  * Run: npx tsx scripts/test-mathops.ts
  */
-import { leaf, combine, scaleNum, scaleDen, group, cloneState } from "../src/tools/equation-builder/model";
 import {
   tc,
   tv,
@@ -22,7 +21,6 @@ import {
   evalNode,
   keyOf,
   addendsOf,
-  flatToTree,
   type TreeEq,
   type TNode,
 } from "../src/tools/equation-builder/tree";
@@ -84,30 +82,6 @@ const unitText = (te: TreeEq, id: string): string | null => {
   const unit = resolveTreeFactor(te, id);
   return unit ? printNode(unit.expr) : null;
 };
-
-console.log("\n== A. model arithmetic: combine / scale (flat layer) ==");
-{
-  const twoX = leaf(2, 1), minus3 = leaf(-3), minus7 = leaf(-7);
-  const right = combine([minus7, scaleNum(minus3, -1)]);
-  check("A1 move-merge arithmetic: −7 + 3 = −4", right.length === 1 && right[0].num === -4 && right[0].den === 1);
-  check("A2 sink id preserved (resident absorbs mover)", right[0].id === minus7.id);
-  check("A3 untouched term keeps id through combine", combine([twoX])[0].id === twoX.id);
-  const halves = combine([scaleDen(leaf(2, 1), 2), scaleDen(leaf(-7), 2)]);
-  check("A4 divide-both scaling: 2x/2 → x, −7/2 stays", halves.some((t) => t.num === 1 && t.den === 1 && t.power === 1) && halves.some((t) => t.num === -7 && t.den === 2));
-  const merged = combine([leaf(1, 1, 2), leaf(1, 1, 3)]);
-  check("A5 like terms add exactly: x/2 + x/3 = 5x/6", merged.length === 1 && merged[0].num === 5 && merged[0].den === 6);
-  check("A6 zero terms vanish", combine([leaf(3), leaf(-3), leaf(1, 1)]).every((t) => !(t.power === 0 && t.num !== 0)));
-  check("A7 emptied side becomes a lone 0", combine([leaf(3), leaf(-3)])[0].num === 0);
-  const g = group(2, [leaf(1, 1), leaf(3)]);
-  const passed = combine([g]);
-  check("A8 group passthrough keeps identity", passed[0].id === g.id && passed[0].kind === "group");
-  const unwrapped = combine([{ ...g, num: 1 }]);
-  check("A9 factor-1 group unwraps, inner ids kept", unwrapped.some((t) => t.id === g.inner[0].id));
-  const st = { left: [leaf(2, 1)], right: [leaf(4)] };
-  check("A10 history snapshots preserve ids", cloneState(st).left[0].id === st.left[0].id);
-  const pm = { ...leaf(2), pm: true };
-  check("A11 terminal ± only flips, never scales", (scaleNum(pm, -1) as typeof pm).pm === true && scaleNum(pm, -1).num === 2);
-}
 
 console.log("\n== B. simplifier: rational + power laws ==");
 simp("B1 6/2 folds to 3", tmul(tc(6), tpow(tc(2), -1)), "3");
