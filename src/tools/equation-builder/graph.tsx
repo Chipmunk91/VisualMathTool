@@ -5,54 +5,6 @@
  * literally the intersections, and every committed move re-shapes the curves.
  */
 import { useEffect, useMemo, useState } from "react";
-import type { EqTerm, EquationState, LeafTerm } from "./model";
-
-const FN: Record<string, (v: number) => number> = {
-  sin: Math.sin,
-  cos: Math.cos,
-  tan: Math.tan,
-  ln: Math.log,
-  exp: Math.exp,
-};
-
-const evalLeaf = (l: LeafTerm, x: number): number => {
-  let v = l.num / l.den;
-  if (l.radical) v = Math.sqrt(v);
-  else if (l.fnVal) {
-    const a = l.num / l.den;
-    v =
-      l.fnVal === "arcsin"
-        ? Math.asin(a)
-        : l.fnVal === "arccos"
-          ? Math.acos(a)
-          : l.fnVal === "arctan"
-            ? Math.atan(a)
-            : l.fnVal === "e^"
-              ? Math.exp(a)
-              : Math.log(a);
-  }
-  if (l.neg) v = -v; // a chosen negative branch
-  // ± values plot their principal (+) branch
-  return v * Math.pow(x, l.power);
-};
-
-const evalTerm = (t: EqTerm, x: number): number => {
-  if (t.kind === "leaf") return evalLeaf(t, x);
-  const inner = t.inner.reduce((acc, l) => acc + evalTerm(l, x), 0);
-  const coef = t.num / t.den;
-  return t.kind === "group" ? coef * inner : coef * FN[t.fn](inner);
-};
-
-export const evalSide = (terms: EqTerm[], x: number): number =>
-  terms.reduce((acc, t) => acc + evalTerm(t, x), 0);
-
-/** Does this equation deserve a graph? Anything beyond constant/linear terms. */
-export const isFunctionEquation = ({ left, right }: EquationState): boolean => {
-  const nonlinear = (t: EqTerm): boolean =>
-    t.kind === "func" ||
-    (t.kind === "leaf" ? t.power !== 0 && t.power !== 1 : t.inner.some(nonlinear));
-  return [...left, ...right].some(nonlinear);
-};
 
 const W = 680;
 const H = 260;
@@ -71,17 +23,6 @@ const fmt = (v: number): string => {
   return text.replace("-", "−");
 };
 
-/** Flat-model wrapper: plot both sides of an EquationState */
-export function GraphPane({ left, right }: EquationState) {
-  return (
-    <GraphView
-      fl={(x) => evalSide(left, x)}
-      fr={(x) => evalSide(right, x)}
-      depKey={JSON.stringify([left, right])}
-      inputVar="x"
-    />
-  );
-}
 
 /** The pane itself, over two plain evaluators — tree equations plot here too */
 export function GraphView({
