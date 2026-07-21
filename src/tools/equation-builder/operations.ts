@@ -44,17 +44,11 @@ export type DragPayload =
   | { kind: "factorGroup"; ids: string[]; from: Side }
   | { kind: "coef"; termId: string; from: Side }
   | { kind: "den"; termId: string; from: Side }
-  | { kind: "neg"; termId: string; from: Side }
   | { kind: "xdiv"; termId: string; from: Side }
-  | { kind: "xmul"; termId: string; from: Side }
-  | { kind: "factor"; termId: string; from: Side }
-  | { kind: "exp"; termId: string; from: Side }
-  | { kind: "fn"; termId: string; from: Side }
   | { kind: "numer"; termId: string; from: Side }
   | { kind: "lnbase"; termId: string; from: Side }
   | { kind: "root"; termId: string; n: number; from: Side }
   | { kind: "raise"; termId: string; n: number; from: Side }
-  | { kind: "group"; termId: string; from: Side }
   | { kind: "tool"; tool: ToolKind };
 
 export type DropTarget =
