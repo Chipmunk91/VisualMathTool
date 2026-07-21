@@ -1831,11 +1831,9 @@ const EquationBuilderTool = () => {
     const shared = sharedFromUrl();
     if (!shared) return;
     const steps: Step[] = shared.steps.map((s) => {
-      // Flat snapshots exist only in old links. Convert once at the boundary;
-      // all restored history from this point forward is canonical tree state.
-      const tree = s.tree
-        ? cloneTreeEq(s.tree)
-        : ensureTreeEqIds({ left: flatToTree(s.state!.left), right: flatToTree(s.state!.right) });
+      // decodeHistory already converted any legacy flat snapshot — every
+      // decoded step carries canonical tree state.
+      const tree = cloneTreeEq(s.tree);
       return {
         id: stepCounter++,
         label: s.label,

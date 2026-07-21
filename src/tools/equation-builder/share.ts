@@ -5,7 +5,7 @@
  * it, replay it, or keep working from the latest step.
  */
 import type { EquationState } from "./model";
-import type { TreeEq } from "./tree";
+import { ensureTreeEqIds, flatToTree, type TreeEq } from "./tree";
 import type {
   EquationEvent,
   EquationPresentation,
@@ -46,7 +46,11 @@ export interface SharedStep {
   note?: string;
   dangerous?: boolean;
   pill?: string;
-  /** Legacy flat snapshots remain readable; new shares store only `tree`. */
+  /**
+   * Legacy WIRE INPUT only: old links carry flat snapshots. decodeHistory
+   * converts them to `tree` at this boundary — nothing past decode ever
+   * sees a flat state. New shares store only `tree`.
+   */
   state?: EquationState;
   tree?: TreeEq;
   /** Optional unreduced paper state rendered between the move and result. */
@@ -77,7 +81,14 @@ export function encodeHistory(history: SharedHistory): string {
     .replace(/=+$/, "");
 }
 
-export function decodeHistory(param: string): SharedHistory | null {
+/** A decoded step is guaranteed canonical: flat wire input is already converted. */
+export type DecodedStep = SharedStep & { tree: TreeEq };
+
+export interface DecodedHistory extends Omit<SharedHistory, "steps"> {
+  steps: DecodedStep[];
+}
+
+export function decodeHistory(param: string): DecodedHistory | null {
   try {
     const b64 = param.replace(/-/g, "+").replace(/_/g, "/");
     const json = decodeURIComponent(escape(atob(b64)));
@@ -95,7 +106,15 @@ export function decodeHistory(param: string): SharedHistory | null {
       if (typeof h.document.documentId !== "string" || typeof h.document.revision !== "string") return null;
       if (!Array.isArray(h.document.symbols) || !Array.isArray(h.document.assumptions)) return null;
     }
-    return h;
+    // Legacy flat snapshots convert HERE, once — the flat model exists only
+    // on the wire. Everything past decode is canonical tree state.
+    const steps: DecodedStep[] = h.steps.map((s) => ({
+      ...s,
+      tree:
+        s.tree ??
+        ensureTreeEqIds({ left: flatToTree(s.state!.left), right: flatToTree(s.state!.right) }),
+    }));
+    return { ...h, steps };
   } catch {
     return null;
   }
@@ -107,7 +126,7 @@ export function shareUrl(history: SharedHistory): string {
   return `${origin}${pathname}?eq=${encodeHistory(history)}${route}`;
 }
 
-export function sharedFromUrl(): SharedHistory | null {
+export function sharedFromUrl(): DecodedHistory | null {
   const param = new URLSearchParams(window.location.search).get("eq");
   return param ? decodeHistory(param) : null;
 }
