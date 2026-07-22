@@ -504,9 +504,19 @@ const EquationBuilderTool = () => {
   const [bookFocusName, setBookFocusName] = useState<string | null>(null);
   /** A tapped alternative "along" choice for the reading strip. */
   const [alongChoice, setAlongChoice] = useState<string | null>(null);
+  /**
+   * The strip is an ANSWER UI, not furniture: it renders only while a
+   * differentiation question is pending (the toolbox d/dx hit ambiguity and
+   * summoned the book). Browsing the book never shows calculus chrome.
+   */
+  const [calculusQuestion, setCalculusQuestion] = useState(false);
   useEffect(() => {
     setAlongChoice(null);
+    setCalculusQuestion(false);
   }, [treeEq]);
+  useEffect(() => {
+    if (!symbolBookOpen) setCalculusQuestion(false);
+  }, [symbolBookOpen]);
 
   /**
    * The reading strip under the canvas: pure status, chips not sentences.
@@ -531,9 +541,14 @@ const EquationBuilderTool = () => {
     return { candidates, context };
   }, [calculusReadiness, relationAnalysis, declaredDependencies, alongChoice]);
 
-  /** The card the book shows: the tapped node, else the first record. */
+  /**
+   * The card the book shows: only a tapped node opens one (tap again to
+   * close). A single-symbol equation has no canvas to tap, so its lone
+   * record stays visible.
+   */
   const focusedSymbolRecord =
-    symbolRecords.find((record) => record.name === bookFocusName) ?? symbolRecords[0] ?? null;
+    symbolRecords.find((record) => record.name === bookFocusName) ??
+    (symbolRecords.length === 1 ? symbolRecords[0] : null);
 
   const declareDependency = (from: string, to: string) => {
     setSymbolRecords((records) => records.map((record) =>
@@ -2658,6 +2673,7 @@ const EquationBuilderTool = () => {
     // Ambiguity is a question about the SYMBOLS — the graph answers it. The
     // full panel stays reachable behind ⚙ for bounds and exotic contexts.
     if (operation === "differentiate" && calculusReadiness.state === "needs-context") {
+      setCalculusQuestion(true);
       setSymbolBookOpen(true);
       return;
     }
@@ -3539,12 +3555,12 @@ const EquationBuilderTool = () => {
                       onDeclare={declareDependency}
                       onCut={cutDependency}
                       selected={focusedSymbolRecord?.name ?? null}
-                      onSelect={setBookFocusName}
+                      onSelect={(name) => setBookFocusName((current) => (current === name ? null : name))}
                       onHoverSymbol={(name) =>
                         setHoveredSymbolId(name ? symbolRecords.find((record) => record.name === name)?.id ?? null : null)
                       }
                     />
-                    {readingStrip && (
+                    {calculusQuestion && readingStrip && (
                       <div className="mt-2 flex flex-wrap items-center gap-1">
                         {readingStrip.context.dependent.map((name) => (
                           <span
