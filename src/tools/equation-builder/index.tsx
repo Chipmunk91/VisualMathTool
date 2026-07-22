@@ -3489,22 +3489,34 @@ const EquationBuilderTool = () => {
               </header>
 
               <div className="overflow-y-auto p-2">
-                {symbolRecords.length >= 2 && (
+                {symbolRecords.length >= 1 && (
                   <div className="mb-2 rounded-xl bg-muted/35 p-2.5">
                     <div className="mb-1.5 flex items-baseline justify-between gap-2">
                       <span className="text-[11px] font-medium">How symbols relate</span>
-                      <span className="text-[10px] text-muted-foreground">drag: “drives” · tap dashed: confirm · tap solid: cut</span>
+                      {symbolRecords.length >= 2 && (
+                        <span className="text-[10px] text-muted-foreground">drag: “drives” · tap dashed: confirm · tap solid: cut</span>
+                      )}
                     </div>
-                    <SymbolDependencyGraph
-                      names={symbolRecords.map((record) => record.name)}
-                      edges={dependencyGraphEdges}
-                      onDeclare={declareDependency}
-                      onCut={cutDependency}
-                    />
-                    <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
-                      Arrows flow down: independents above, what responds below. The graph decides how
-                      d/dx reads this relation — dashed arrows are the app's guess from the equation's shape.
-                    </p>
+                    {symbolRecords.length >= 2 ? (
+                      <>
+                        <SymbolDependencyGraph
+                          names={symbolRecords.map((record) => record.name)}
+                          edges={dependencyGraphEdges}
+                          onDeclare={declareDependency}
+                          onCut={cutDependency}
+                        />
+                        <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+                          Arrows flow down: independents above, what responds below. The graph decides how
+                          d/dx reads this relation — dashed arrows are the app's guess from the equation's shape.
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        One symbol has nothing to relate to. With two or more — try{" "}
+                        <span className="font-serif italic">y = m·x + b</span> — the dependency graph
+                        appears here, and its arrows decide how d/dx reads the equation.
+                      </p>
+                    )}
                   </div>
                 )}
                 {symbolRecords.length === 0 ? (
