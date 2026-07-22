@@ -159,8 +159,31 @@ function mathToTree(node: Node): TNode {
 }
 
 export type ParseResult =
-  | { ok: true; tree: TreeEq }
+  | { ok: true; tree: TreeEq; dependencies?: Record<string, string[]> }
   | { ok: false; stage: "parse" | "convert"; message: string };
+
+/**
+ * Textbook function notation as a dependency DECLARATION: a side that is
+ * exactly `y(x)` or `z(x, y)` — an unknown function name applied to plain
+ * symbols — declares "y depends on x" and enters the equation as the bare
+ * symbol y. Known functions (sin, ln, …) are untouched.
+ */
+const declarationOf = (node: MathNode): { output: string; inputs: string[] } | null => {
+  const ast = node as Node;
+  if (ast.type !== "FunctionNode") return null;
+  const name = ast.fn?.name;
+  if (!name || name in TREE_FN) return null;
+  if (name === "e" || name === "pi" || name === "π") return null;
+  const inputs: string[] = [];
+  for (const argument of ast.args) {
+    if (argument.type !== "SymbolNode") return null;
+    const input = argument.name;
+    if (input === "e" || input === "pi" || input === "π" || input === name) return null;
+    if (inputs.includes(input)) return null;
+    inputs.push(input);
+  }
+  return inputs.length > 0 ? { output: name, inputs } : null;
+};
 
 export function parseEquation(text: string): ParseResult {
   const sides = text.split("=");
@@ -175,10 +198,23 @@ export function parseEquation(text: string): ParseResult {
   } catch {
     return { ok: false, stage: "parse", message: "couldn't read that — check the syntax" };
   }
+  const dependencies: Record<string, string[]> = {};
+  const declare = (ast: MathNode): { ast: MathNode; symbol: string } | null => {
+    const declaration = declarationOf(ast);
+    if (!declaration) return null;
+    dependencies[declaration.output] = declaration.inputs;
+    return { ast, symbol: declaration.output };
+  };
+  const leftDeclaration = declare(leftAst);
+  const rightDeclaration = declare(rightAst);
   try {
-    const left = simplify(mathToTree(leftAst));
-    const right = simplify(mathToTree(rightAst));
-    return { ok: true, tree: ensureTreeEqIds({ left, right }) };
+    const left = leftDeclaration ? tv(leftDeclaration.symbol) : simplify(mathToTree(leftAst));
+    const right = rightDeclaration ? tv(rightDeclaration.symbol) : simplify(mathToTree(rightAst));
+    return {
+      ok: true,
+      tree: ensureTreeEqIds({ left, right }),
+      dependencies: Object.keys(dependencies).length > 0 ? dependencies : undefined,
+    };
   } catch (error) {
     return {
       ok: false,

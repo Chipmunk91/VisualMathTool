@@ -203,5 +203,62 @@ check("subscript repeats: z_x → z_xx", derivedSymbolName("z_x", "x", "subscrip
   );
 }
 
+// --- Declared dependency graphs decide the reading ---------------------------
+{
+  const declared = parseEquation("y(x) = m*x + b");
+  check("y(x) = … parses as a declaration", declared.ok && JSON.stringify(declared.dependencies) === '{"y":["x"]}',
+    JSON.stringify(declared));
+  if (declared.ok) {
+    const r = inferCalculusDefaults({ ...analyzeRelation(declared.tree), dependencies: declared.dependencies });
+    check(
+      "declared y(x) makes y = mx + b deterministic with m, b held",
+      r.state === "deterministic" &&
+        r.context.withRespectTo === "x" &&
+        r.context.dependent.join() === "y" &&
+        [...r.context.heldConstant].sort().join() === "b,m",
+      JSON.stringify(r)
+    );
+  }
+
+  const multi = parseEquation("z(x,y) = x^2 + y^2");
+  check("z(x,y) declares both edges", multi.ok && JSON.stringify(multi.dependencies) === '{"z":["x","y"]}');
+  if (multi.ok) {
+    const two = inferCalculusDefaults({ ...analyzeRelation(multi.tree), dependencies: multi.dependencies });
+    check(
+      "two free drivers still ask, seeded d/dx with y held",
+      two.state === "needs-context" && two.suggestion.withRespectTo === "x" && two.suggestion.heldConstant.join() === "y",
+      JSON.stringify(two)
+    );
+    const chained = inferCalculusDefaults({
+      ...analyzeRelation(multi.tree),
+      dependencies: { z: ["x", "y"], y: ["x"] },
+    });
+    check(
+      "adding the y→x edge flips the same equation to a deterministic total derivative",
+      chained.state === "deterministic" &&
+        chained.context.mode === "total" &&
+        chained.context.dependent.join() === "y,z" &&
+        chained.context.heldConstant.length === 0,
+      JSON.stringify(chained)
+    );
+  }
+
+  const circle = parseEquation("x^2 + y^2 = 1");
+  if (circle.ok) {
+    const implicitly = inferCalculusDefaults({
+      ...analyzeRelation(circle.tree),
+      dependencies: { y: ["x"] },
+    });
+    check(
+      "a declared y(x) makes the implicit circle one-tap",
+      implicitly.state === "deterministic" && implicitly.context.withRespectTo === "x" && implicitly.context.dependent.join() === "y",
+      JSON.stringify(implicitly)
+    );
+  }
+
+  const known = parseEquation("sin(x) = y");
+  check("known functions are never hijacked as declarations", known.ok && known.dependencies === undefined);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

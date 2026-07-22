@@ -406,7 +406,69 @@ export type CalculusReadiness =
 interface AnalysisShape {
   symbols: string[];
   isolations: { output: string; inputs: string[] }[];
+  /** Declared dependency edges (symbol book): name → the names it is a function of. */
+  dependencies?: Record<string, string[]>;
 }
+
+/**
+ * Readiness read straight off a DECLARED dependency graph. The graph answers
+ * every question the context panel would ask: dependent = everything that can
+ * reach the operation variable through the edges, held = everything that
+ * can't, and the mode is a derived label, not a choice. Only the operation
+ * variable can remain open — and only when several free symbols drive things.
+ */
+const readinessFromGraph = (
+  symbols: string[],
+  edges: Map<string, string[]>
+): CalculusReadiness | null => {
+  const dependentsOf = (root: string): string[] => {
+    const reached = new Set<string>();
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [output, inputs] of Array.from(edges)) {
+        if (reached.has(output)) continue;
+        if (inputs.some((input) => input === root || reached.has(input))) {
+          reached.add(output);
+          grew = true;
+        }
+      }
+    }
+    return Array.from(reached).sort();
+  };
+  const free = symbols.filter((name) => (edges.get(name) ?? []).length === 0);
+  const drivers = rankInputs(free.filter((name) => dependentsOf(name).length > 0));
+  if (drivers.length === 0) return null; // degenerate declaration — fall back to structure
+  const contextFor = (withRespectTo: string): DifferentiationContext => {
+    const dependent = dependentsOf(withRespectTo);
+    const dependentSet = new Set(dependent);
+    const heldConstant = symbols.filter((name) => name !== withRespectTo && !dependentSet.has(name));
+    const mode: DifferentiationMode =
+      heldConstant.length > 0 ? "partial" : dependent.length > 1 ? "total" : "ordinary";
+    return {
+      mode,
+      withRespectTo,
+      dependent,
+      heldConstant,
+      notation: mode === "ordinary" ? "lagrange" : "subscript",
+    };
+  };
+  const context = contextFor(drivers[0]);
+  const readingText = `${context.dependent.join(", ")} respond${context.dependent.length === 1 ? "s" : ""} to ${drivers[0]}` +
+    (context.heldConstant.length > 0 ? `; ${context.heldConstant.join(", ")} unconnected, held constant` : "");
+  if (drivers.length === 1) {
+    return {
+      state: "deterministic",
+      context,
+      explanation: `The declared dependencies leave one reading: ${readingText}.`,
+    };
+  }
+  return {
+    state: "needs-context",
+    suggestion: context,
+    explanation: `The declared graph can be read along ${drivers.join(" or ")} — d/d${drivers[0]} suggested: ${readingText}.`,
+  };
+};
 
 /**
  * Conventional-role ranking for SEEDING suggestions only — the panel still
@@ -425,6 +487,19 @@ export function inferCalculusDefaults(analysis: AnalysisShape): CalculusReadines
   const { symbols, isolations } = analysis;
   if (symbols.length === 0) {
     return { state: "no-symbols", explanation: "Both sides are constant — nothing varies, so there is no rate of change to take." };
+  }
+  // Declared knowledge outranks structural guessing: a dependency graph in
+  // the symbol book decides the reading before any isolation heuristics run.
+  const present = new Set(symbols);
+  const edges = new Map(
+    Object.entries(analysis.dependencies ?? {})
+      .filter(([output]) => present.has(output))
+      .map(([output, inputs]) => [output, inputs.filter((input) => present.has(input))] as const)
+      .filter(([, inputs]) => inputs.length > 0)
+  );
+  if (edges.size > 0) {
+    const fromGraph = readinessFromGraph(symbols, edges);
+    if (fromGraph) return fromGraph;
   }
   if (isolations.length === 1) {
     const [isolation] = isolations;
