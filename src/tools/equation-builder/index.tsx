@@ -383,12 +383,27 @@ const EquationBuilderTool = () => {
 
   /** Meanings queued for symbols a calculus step is about to birth (y′, z_x). */
   const pendingSymbolMeaningsRef = useRef<Map<string, string>>(new Map());
+  /** Dependency edges declared by typed function notation (y(x) = …), applied on reconcile. */
+  const pendingDependenciesRef = useRef<Record<string, string[]> | null>(null);
   useEffect(() => {
     setSymbolRecords((current) => {
       const reconciled = reconcileSymbols(treeEq, current);
       const pending = pendingSymbolMeaningsRef.current;
-      if (pending.size === 0) return reconciled;
-      const enriched = reconciled.map((record) =>
+      const declaredEdges = pendingDependenciesRef.current;
+      pendingDependenciesRef.current = null;
+      const withEdges = declaredEdges
+        ? reconciled.map((record) =>
+            declaredEdges[record.name]
+              ? {
+                  ...record,
+                  dependsOn: declaredEdges[record.name],
+                  provenance: { ...record.provenance, confirmedByHuman: true },
+                }
+              : record
+          )
+        : reconciled;
+      if (pending.size === 0) return withEdges;
+      const enriched = withEdges.map((record) =>
         pending.has(record.name) && !record.meaning
           ? { ...record, meaning: pending.get(record.name)! }
           : record
@@ -402,10 +417,22 @@ const EquationBuilderTool = () => {
     () => analyzeRelation(treeEq),
     [treeEq]
   );
+  /** Declared dependency edges from the symbol book, keyed by symbol name. */
+  const declaredDependencies = useMemo(
+    () =>
+      Object.fromEntries(
+        symbolRecords
+          .filter((record) => (record.dependsOn ?? []).length > 0)
+          .map((record) => [record.name, record.dependsOn!])
+      ),
+    [symbolRecords]
+  );
   /** Which of the four calculus readiness states this relation is in. */
   const calculusReadiness = useMemo(
-    () => relationAnalysis ? inferCalculusDefaults(relationAnalysis) : null,
-    [relationAnalysis]
+    () => relationAnalysis
+      ? inferCalculusDefaults({ ...relationAnalysis, dependencies: declaredDependencies })
+      : null,
+    [relationAnalysis, declaredDependencies]
   );
   const analyzedRevisionRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1769,7 +1796,9 @@ const EquationBuilderTool = () => {
 
   const applyParse = (result: ParseResult & { ok: true }) => {
     // Parse directly into the canonical tree. Load-only conditional
-    // normalizations record their assumptions on step zero.
+    // normalizations record their assumptions on step zero. Typed function
+    // notation (y(x) = …) lands as dependency edges when records reconcile.
+    if (result.dependencies) pendingDependenciesRef.current = result.dependencies;
     const norm = normalizeOnLoad(result.tree);
     setTreeEq(norm.te);
     setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
@@ -3201,11 +3230,20 @@ const EquationBuilderTool = () => {
                       className="mb-2 rounded-xl border border-transparent bg-muted/35 p-3 last:mb-0 hover:border-sky-300/70 hover:bg-sky-50/60 dark:hover:bg-sky-950/20"
                     >
                       <div className="flex items-center gap-2">
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background font-serif text-xl italic">
+                        <span className="flex h-9 min-w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background px-1.5 font-serif text-xl italic">
                           {record.name}
+                          {(record.dependsOn ?? []).length > 0 && (
+                            <span className="text-sm not-italic text-muted-foreground">
+                              ({record.dependsOn!.join(", ")})
+                            </span>
+                          )}
                         </span>
                         <div className="min-w-0">
-                          <div className="text-xs font-medium">Model symbol</div>
+                          <div className="text-xs font-medium">
+                            {(record.dependsOn ?? []).length > 0
+                              ? `Function of ${record.dependsOn!.join(", ")}`
+                              : "Model symbol"}
+                          </div>
                           <div className="truncate font-mono text-[10px] text-muted-foreground">{record.id}</div>
                         </div>
                       </div>

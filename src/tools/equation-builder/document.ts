@@ -22,6 +22,13 @@ export interface SymbolRecord {
   name: string;
   meaning?: string;
   unit?: string;
+  /**
+   * Declared dependency edges: the NAMES this symbol is a function of
+   * (y(x) → ["x"]). Durable knowledge like assumptions — calculus readiness
+   * derives dependent/held classification from graph reachability instead
+   * of asking per operation.
+   */
+  dependsOn?: string[];
   assumptions: Predicate[];
   provenance: {
     createdBy: "parser" | "human" | "ai";
@@ -158,16 +165,24 @@ export function symbolsInEquation(equation: TreeEq): SymbolRecord[] {
 /** Preserve authored metadata while adding/removing records as the equation changes. */
 export function reconcileSymbols(equation: TreeEq, current: SymbolRecord[]): SymbolRecord[] {
   const existing = new Map(current.map((record) => [record.id, record]));
+  const presentNames = new Set(symbolsInEquation(equation).map((record) => record.name));
   return symbolsInEquation(equation).map((discovered) => {
     const authored = existing.get(discovered.id);
     if (!authored) return discovered;
-    // Explicit reconstruction is also the v1 migration: stale role/domain/
-    // dependsOn properties from older share links are intentionally dropped.
+    // Explicit reconstruction is also the v1 migration: stale role/domain
+    // properties from older share links are intentionally dropped. Declared
+    // dependency edges survive, pruned to symbols still in the equation.
+    // v1 stored dependsOn as symbol IDS — those never match present names,
+    // so the same prune that drops stale edges also migrates old records.
+    const dependsOn = (Array.isArray(authored.dependsOn) ? authored.dependsOn : []).filter(
+      (name) => presentNames.has(name) && name !== discovered.name
+    );
     return {
       id: discovered.id,
       name: discovered.name,
       meaning: authored.meaning,
       unit: authored.unit,
+      ...(dependsOn.length > 0 ? { dependsOn } : {}),
       assumptions: Array.isArray(authored.assumptions) ? authored.assumptions : [],
       provenance: authored.provenance ?? discovered.provenance,
     };
