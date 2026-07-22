@@ -1,6 +1,6 @@
 # Equation Playground API
 
-## Versioned protocol (phases 1–3)
+## Versioned protocol
 
 `window.visualMathEquation.protocol` is the public, transport-neutral contract for model-driven
 equation work. Its version is `visualmath.equation.v1`. The browser adapter and MCP server both
@@ -79,9 +79,24 @@ The same data is readable as MCP resources under `visualmath://equations/{docume
 `/analysis`, `/symbols`, `/history`, and `/actions` views. See
 [`server/mcp/README.md`](../../../server/mcp/README.md) for client configuration.
 
-Phase 3 is intentionally local and process-scoped. An MCP process does not yet attach itself to an
-already-open browser tab or persist a session to the hosted share URL; that durable synchronization
-boundary is the next phase rather than hidden filesystem or DOM automation.
+## Durable shared-session protocol (phases 4–6)
+
+`visualmath.shared-equation.v1` wraps the same `EquationSessionService` in a durable collaboration
+boundary. It adds no algebra rules. One session owns:
+
+- the canonical `EquationDocument` and standing domain facts;
+- preview tokens and idempotency receipts, including across Worker eviction;
+- a monotonic collaboration sequence distinct from the mathematical tree revision;
+- the latest semantic change, including the exact animation-bearing `EquationEvent`.
+
+Browser document updates use compare-and-swap against the collaboration sequence. Remote MCP
+clients continue to use the revision-bound discover → preview → apply protocol. A successfully
+applied AI event is persisted, broadcast over WebSocket, and animated by the browser from its
+recorded before/intermediate/after trees; the transport never diffs or manipulates the DOM.
+
+Live share links carry an unguessable `vms1_…` edit capability. Without a configured equation
+service, the same Share button retains the version-3 self-contained snapshot format. See
+[`server/cloudflare/README.md`](../../../server/cloudflare/README.md) for deployment and endpoints.
 
 ## Compatibility API
 

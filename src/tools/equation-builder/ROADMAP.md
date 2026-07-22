@@ -127,8 +127,27 @@ squaring resolves √ with its check-roots pill).
 - The browser exposes the contract at `window.visualMathEquation.protocol`.
   A local stdio MCP adapter exposes equivalent create/read/analyze/discover/
   preview/apply/symbol/view tools plus document resources.
-- Protocol and in-memory MCP contract tests run in CI. Persistent sessions and
-  live browser/MCP synchronization remain a later transport phase.
+- Protocol and in-memory MCP contract tests run in CI.
+
+### Durable browser/AI sessions (phases 4–6) ✅ deploy-ready
+
+- `visualmath.shared-equation.v1` separates mathematical tree revisions from a
+  monotonic collaboration sequence, so domain facts, symbol metadata, and
+  visualization changes participate in conflict detection.
+- The full session service—including documents, single-use previews and
+  idempotency receipts—is serializable across process eviction.
+- One SQLite-backed Durable Object owns each random `vms1_…` capability. It
+  serializes competing edits and persists without a separately operated database.
+- The browser creates/attaches live share URLs, compare-and-swap syncs human
+  changes, reconnects from authority snapshots, and receives semantic AI events
+  over a hibernatable WebSocket.
+- AI events reuse the exact `before → intermediate → after` animation story in
+  the open Playground; they do not manipulate or diff the DOM.
+- A stateless Streamable HTTP MCP endpoint lets cloud clients use the capability
+  embedded in a share URL. Production activation is optional, so the static site
+  and version-3 snapshot links retain their zero-backend behavior.
+- Provider-neutral session, real Worker REST/WebSocket, and remote MCP tests run
+  in CI. Cloudflare deployment is automated after one-time account configuration.
 
 ## Still honestly gated
 
@@ -147,9 +166,6 @@ squaring resolves √ with its check-roots pill).
   sum) — the next move-grammar chapter.
 - **Systems of relations** — a document currently owns one relation; coupled
   equations need a relation-set document and shared symbol table.
-- **Durable AI session transport** — the local MCP server owns an in-memory
-  session. It does not yet reconnect to a hosted share link or an existing
-  browser tab after the process exits.
 - **Complex evaluation and richer spaces** — assumptions can describe symbols,
   but evaluators and graphs are still real-valued. Vectors, matrices,
   functions and complex values need typed mathematical spaces rather than a

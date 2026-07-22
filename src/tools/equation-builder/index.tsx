@@ -30,7 +30,9 @@ import {
   predicateFromText,
   reconcileSymbols,
   symbolsInEquation,
+  type EquationDocument,
   type EquationEvent,
+  type Predicate,
   type SymbolRecord,
 } from "./document";
 import {
@@ -42,6 +44,14 @@ import {
 } from "./engine";
 import { EquationSessionService } from "./session";
 import { EQUATION_PROTOCOL_VERSION, type EquationProtocolApi } from "./protocol";
+import {
+  EquationRemoteSessionClient,
+  equationSessionServiceUrl,
+  liveShareUrl,
+  sharedSessionKeyFromUrl,
+  type RemoteConnectionState,
+} from "./remote-session";
+import type { SharedSessionSnapshot } from "./shared-session";
 import { isEmbed } from "../../lib/embed";
 import {
   applyToolT,
@@ -188,8 +198,23 @@ interface Step {
   story?: MoveStory;
   /** Machine-replayable semantic operation. Step zero and old links omit it. */
   event?: EquationEvent;
+  /** Document-level predicates not necessarily born from a semantic event (legacy/import boundary). */
+  assumptions?: Predicate[];
   text: string;
 }
+
+const predicatesForSteps = (steps: Step[]): Predicate[] => {
+  const predicates = new Map<string, Predicate>();
+  for (const step of steps) {
+    for (const predicate of step.assumptions ?? []) predicates.set(predicate.id, predicate);
+    for (const predicate of step.event?.assumptionsAdded ?? []) predicates.set(predicate.id, predicate);
+    if (step.pill) {
+      const predicate = predicateFromText(step.pill);
+      if (!predicates.has(predicate.id)) predicates.set(predicate.id, predicate);
+    }
+  }
+  return Array.from(predicates.values());
+};
 
 /**
  * A lossless recording of ONE replay transition (dev capture mode). Screen
@@ -312,6 +337,15 @@ const EquationBuilderTool = () => {
   const [treeEq, setTreeEq] = useState<TreeEq>(() => cloneTreeEq(BOOT_TREE));
   const [history, setHistory] = useState<Step[]>(() => [makeTreeStep("start", BOOT_TREE)]);
   const [documentId, setDocumentId] = useState(freshDocumentId);
+  const [remoteSessionKey, setRemoteSessionKey] = useState<string | null>(() => sharedSessionKeyFromUrl());
+  const [remoteConnection, setRemoteConnection] = useState<RemoteConnectionState>(() =>
+    sharedSessionKeyFromUrl() ? "connecting" : equationSessionServiceUrl() ? "offline" : "disabled"
+  );
+  const remoteClientRef = useRef<EquationRemoteSessionClient | null>(null);
+  const remoteSequenceRef = useRef(-1);
+  const remoteDocumentJsonRef = useRef<string | null>(null);
+  const remoteSnapshotHandlerRef = useRef<(snapshot: SharedSessionSnapshot) => void>(() => undefined);
+  const remoteSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const protocolServiceRef = useRef<EquationSessionService | null>(null);
   if (!protocolServiceRef.current) protocolServiceRef.current = new EquationSessionService();
   const [symbolRecords, setSymbolRecords] = useState<SymbolRecord[]>(() => symbolsInEquation(BOOT_TREE));
@@ -1536,12 +1570,12 @@ const EquationBuilderTool = () => {
 
   // --- Share: the whole derivation in a link ----
   const [copied, setCopied] = useState(false);
-  const currentShareUrl = () => {
-    const document = makeEquationDocument(treeEq, {
+  const [sharing, setSharing] = useState(false);
+  const buildCurrentDocument = (): EquationDocument =>
+    makeEquationDocument(treeEq, {
       documentId,
       symbols: symbolRecords,
-      assumptions: Array.from(new Set(history.map((step) => step.pill).filter((pill): pill is string => !!pill)))
-        .map((pill) => predicateFromText(pill)),
+      assumptions: predicatesForSteps(history),
       history: history.map((step) => step.event).filter((event): event is EquationEvent => !!event),
       presentation: {
         functionView: fnView,
@@ -1553,6 +1587,8 @@ const EquationBuilderTool = () => {
         lastIntegrationContext: integrationContext,
       },
     });
+  const currentShareUrl = () => {
+    const document = buildCurrentDocument();
     return shareUrl({
       schemaVersion: 3,
       document: {
@@ -1574,11 +1610,36 @@ const EquationBuilderTool = () => {
       })),
     });
   };
-  const copyShare = () => {
-    navigator.clipboard?.writeText(currentShareUrl()).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+  const markCopied = () => {
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  const copyShare = async () => {
+    if (sharing) return;
+    setSharing(true);
+    try {
+      let url: string;
+      if (remoteSessionKey) {
+        url = liveShareUrl(remoteSessionKey);
+      } else if (equationSessionServiceUrl()) {
+        const created = await EquationRemoteSessionClient.create(buildCurrentDocument());
+        setRemoteSessionKey(created.sessionKey);
+        remoteSequenceRef.current = created.sequence;
+        remoteDocumentJsonRef.current = JSON.stringify(created.document);
+        url = liveShareUrl(created.sessionKey);
+        window.history.replaceState(window.history.state, "", url);
+      } else {
+        url = currentShareUrl();
+      }
+      await navigator.clipboard?.writeText(url);
+      markCopied();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "The live share could not be created.");
+      if (noticeTimer.current) clearTimeout(noticeTimer.current);
+      noticeTimer.current = setTimeout(() => setNotice(null), 4000);
+    } finally {
+      setSharing(false);
+    }
   };
 
   // Restore a shared derivation from the URL, once, on mount
@@ -1603,6 +1664,9 @@ const EquationBuilderTool = () => {
       };
     });
     const last = steps[steps.length - 1];
+    if (shared.document && steps[0]) {
+      steps[0].assumptions = shared.document.assumptions.map((predicate) => ({ ...predicate }));
+    }
     setHistory(steps);
     setTreeEq(cloneTreeEq(last.tree));
     if (shared.document) {
@@ -1649,7 +1713,11 @@ const EquationBuilderTool = () => {
 
   // The "dangerous switches": standing assumptions introduced by past steps
   const assumptions = useMemo(
-    () => Array.from(new Set(history.map((s) => s.pill).filter((p): p is string => !!p))),
+    () => Array.from(new Set(history.flatMap((step) => [
+      step.pill,
+      ...(step.assumptions?.map((predicate) => predicate.expression) ?? []),
+      ...(step.event?.assumptionsAdded.map((predicate) => predicate.expression) ?? []),
+    ]).filter((predicate): predicate is string => !!predicate))),
     [history]
   );
   useEffect(() => {
@@ -2084,26 +2152,39 @@ const EquationBuilderTool = () => {
     });
   };
 
+  const documentSnapshot = useMemo<EquationDocument>(() =>
+    makeEquationDocument(treeEq, {
+      documentId,
+      symbols: symbolRecords,
+      assumptions: predicatesForSteps(history),
+      history: history.map((step) => step.event).filter((event): event is EquationEvent => !!event),
+      presentation: {
+        functionView: fnView,
+        integrationBounds: [bounds.lo, bounds.hi],
+        probeValue,
+        planeProbe: [planeProbe.x, planeProbe.y],
+        viewSpec: viewSpec ?? undefined,
+        lastDifferentiationContext: differentiationContext,
+        lastIntegrationContext: integrationContext,
+      },
+    }), [
+      treeEq,
+      documentId,
+      symbolRecords,
+      history,
+      fnView,
+      bounds.lo,
+      bounds.hi,
+      probeValue,
+      planeProbe.x,
+      planeProbe.y,
+      viewSpec,
+      differentiationContext,
+      integrationContext,
+    ]);
+
   useEffect(() => {
     const equationAtRevision = treeEq;
-    const documentAssumptions = Array.from(
-      new Set(history.map((step) => step.pill).filter((pill): pill is string => !!pill))
-    ).map((pill) => predicateFromText(pill));
-    const documentSnapshot = makeEquationDocument(equationAtRevision, {
-        documentId,
-        symbols: symbolRecords,
-        assumptions: documentAssumptions,
-        history: history.map((step) => step.event).filter((event): event is EquationEvent => !!event),
-        presentation: {
-          functionView: fnView,
-          integrationBounds: [bounds.lo, bounds.hi],
-          probeValue,
-          planeProbe: [planeProbe.x, planeProbe.y],
-          viewSpec: viewSpec ?? undefined,
-          lastDifferentiationContext: differentiationContext,
-          lastIntegrationContext: integrationContext,
-        },
-      });
     const protocolService = protocolServiceRef.current!;
     protocolService.loadDocument(documentSnapshot);
     const protocol: EquationProtocolApi = {
@@ -2196,6 +2277,7 @@ const EquationBuilderTool = () => {
     };
   }, [
     treeEq,
+    documentSnapshot,
     symbolRecords,
     history,
     documentId,
@@ -2210,6 +2292,147 @@ const EquationBuilderTool = () => {
     integrationContext,
     standingAssumptions,
   ]);
+
+  const applyRemotePresentation = (document: EquationDocument) => {
+    setDocumentId(document.documentId);
+    setSymbolRecords(reconcileSymbols(document.equation, document.symbols));
+    const presentation = document.presentation;
+    setFnView(presentation?.functionView ?? "slope");
+    if (presentation?.integrationBounds) {
+      setBounds({ lo: presentation.integrationBounds[0], hi: presentation.integrationBounds[1] });
+    }
+    if (typeof presentation?.probeValue === "number") setProbeValue(presentation.probeValue);
+    if (presentation?.planeProbe) {
+      setPlaneProbe({ x: presentation.planeProbe[0], y: presentation.planeProbe[1] });
+    }
+    setViewSpec(presentation?.viewSpec ?? unambiguousView(analyzeRelation(document.equation)));
+    setDifferentiationContext(
+      presentation?.lastDifferentiationContext ?? emptyDifferentiationContext()
+    );
+    setIntegrationContext(presentation?.lastIntegrationContext ?? emptyIntegrationContext());
+  };
+
+  const replaceFromRemoteDocument = (document: EquationDocument) => {
+    const events = document.history;
+    const startStep = makeTreeStep("start", events[0]?.before ?? document.equation);
+    startStep.assumptions = document.assumptions.map((predicate) => ({ ...predicate }));
+    const steps: Step[] = events.length === 0
+      ? [startStep]
+      : [
+          startStep,
+          ...events.map((event) => makeTreeStep(
+            event.explanation,
+            event.after,
+            event.assumptionsAdded.length > 0,
+            event.explanation,
+            event.assumptionsAdded[0]?.expression,
+            event.animation,
+            event.intermediate,
+            event
+          )),
+        ];
+    setTreeEq(cloneTreeEq(document.equation));
+    setHistory(steps);
+    setSelection(null);
+    setSpecialBubble(null);
+    applyRemotePresentation(document);
+  };
+
+  remoteSnapshotHandlerRef.current = (snapshot) => {
+    if (snapshot.sessionKey !== remoteSessionKey || snapshot.sequence <= remoteSequenceRef.current) return;
+    const incomingJson = JSON.stringify(snapshot.document);
+    remoteSequenceRef.current = snapshot.sequence;
+    remoteDocumentJsonRef.current = incomingJson;
+
+    // Browser echoes advance the durable cursor without replaying local work.
+    if (JSON.stringify(documentSnapshot) === incomingJson) return;
+
+    const event = snapshot.change.event;
+    const canAnimate = !!event &&
+      snapshot.change.kind === "applied" &&
+      documentId === snapshot.document.documentId &&
+      equationRevision(treeEq) === event.beforeRevision;
+    if (canAnimate && event) {
+      applyRemotePresentation(snapshot.document);
+      commitTreeOutcome({
+        treeNext: cloneTreeEq(event.after),
+        treeIntermediate: event.intermediate ? cloneTreeEq(event.intermediate) : undefined,
+        label: event.explanation,
+        note: event.explanation,
+        dangerous: event.assumptionsAdded.length > 0,
+        pill: event.assumptionsAdded[0]?.expression,
+        story: event.animation,
+      }, event);
+      return;
+    }
+    replaceFromRemoteDocument(snapshot.document);
+  };
+
+  useEffect(() => {
+    const serviceUrl = equationSessionServiceUrl();
+    if (!remoteSessionKey || !serviceUrl) {
+      remoteClientRef.current = null;
+      setRemoteConnection(serviceUrl ? "offline" : "disabled");
+      return;
+    }
+    const client = new EquationRemoteSessionClient(serviceUrl, remoteSessionKey);
+    remoteClientRef.current = client;
+    let active = true;
+    client.snapshot().then((snapshot) => {
+      if (!active) return;
+      if ("status" in snapshot) {
+        setRemoteConnection("offline");
+        setNotice(snapshot.message);
+        return;
+      }
+      remoteSnapshotHandlerRef.current(snapshot);
+    }).catch(() => {
+      if (active) setRemoteConnection("offline");
+    });
+    const disconnect = client.connect(
+      (snapshot) => remoteSnapshotHandlerRef.current(snapshot),
+      (state) => { if (active) setRemoteConnection(state); }
+    );
+    return () => {
+      active = false;
+      disconnect();
+      if (remoteClientRef.current === client) remoteClientRef.current = null;
+    };
+  }, [remoteSessionKey]);
+
+  useEffect(() => {
+    if (!remoteSessionKey || remoteSequenceRef.current < 0) return;
+    const client = remoteClientRef.current;
+    if (!client) return;
+    const documentJson = JSON.stringify(documentSnapshot);
+    if (documentJson === remoteDocumentJsonRef.current) return;
+    if (remoteSyncTimerRef.current) clearTimeout(remoteSyncTimerRef.current);
+    remoteSyncTimerRef.current = setTimeout(() => {
+      const expectedSequence = remoteSequenceRef.current;
+      client.synchronize({
+        expectedSequence,
+        requestId: `browser_${Date.now().toString(36)}_${(commandCounter++).toString(36)}`,
+        document: documentSnapshot,
+        actor: { kind: "human" },
+      }).then((result) => {
+        if ("status" in result) {
+          if (result.code === "stale_sequence") {
+            client.snapshot().then((latest) => {
+              if (!("status" in latest)) remoteSnapshotHandlerRef.current(latest);
+            }).catch(() => setRemoteConnection("offline"));
+          } else {
+            setNotice(result.message);
+          }
+          return;
+        }
+        remoteSnapshotHandlerRef.current(result);
+      }).catch(() => setRemoteConnection("offline"));
+    }, 180);
+    return () => {
+      if (remoteSyncTimerRef.current) clearTimeout(remoteSyncTimerRef.current);
+      remoteSyncTimerRef.current = null;
+    };
+  }, [documentSnapshot, remoteSessionKey]);
 
   const applyCalculusWith = (
     operation: "differentiate" | "integrate",
@@ -3369,12 +3592,36 @@ const EquationBuilderTool = () => {
 
       {/* History menu button, with replay and share beside it */}
       <div className="absolute right-4 top-4 flex items-center gap-2" data-ui data-history>
+        {remoteSessionKey && (
+          <span
+            className={`flex items-center gap-1 rounded-full px-2 py-1 text-[11px] ${
+              remoteConnection === "live"
+                ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+                : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+            }`}
+            title={remoteConnection === "live"
+              ? "Browser and AI share one durable equation"
+              : remoteConnection === "connecting" || remoteConnection === "reconnecting"
+                ? "Reconnecting to the shared equation"
+                : "The shared equation service is offline or not configured"}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${remoteConnection === "live" ? "bg-emerald-500" : "bg-amber-500"}`} />
+            {remoteConnection === "live"
+              ? "live"
+              : remoteConnection === "connecting" || remoteConnection === "reconnecting"
+                ? "syncing"
+                : "offline"}
+          </span>
+        )}
         <button
           onClick={copyShare}
-          className="rounded-full border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
-          title="Copy a link to this equation and its whole step history"
+          disabled={sharing}
+          className="rounded-full border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+          title={equationSessionServiceUrl()
+            ? "Copy a live link that a browser or AI client can continue editing"
+            : "Copy a snapshot link to this equation and its whole step history"}
         >
-          {copied ? "copied ✓" : "⧉ share"}
+          {copied ? "copied ✓" : sharing ? "sharing…" : remoteSessionKey ? "⧉ live share" : "⧉ share"}
         </button>
         <button
           onClick={() => setHistoryOpen((open) => !open)}

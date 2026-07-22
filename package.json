@@ -3,6 +3,9 @@
   "version": "2.0.0",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -18,7 +21,12 @@
     "test:tree-animation": "tsx scripts/test-tree-animation.ts",
     "test:protocol": "node --import tsx scripts/test-equation-protocol.ts",
     "test:mcp": "node --import tsx scripts/test-equation-mcp.ts",
+    "test:shared": "node --import tsx scripts/test-equation-shared.ts",
+    "test:worker": "node --import tsx scripts/test-equation-worker.ts",
     "mcp:equation": "node --import tsx server/mcp/equation-server.ts",
+    "worker:dev": "wrangler dev",
+    "worker:check": "wrangler deploy --dry-run --outdir tmp/equation-worker",
+    "worker:deploy": "wrangler deploy",
     "fuzz": "tsx scripts/fuzz-algebra.ts",
     "test:rewrites": "tsx scripts/test-rewrites.ts",
     "test:anim": "node scripts/test-anim-phases.cjs",
@@ -48,16 +56,19 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260719.1",
     "@types/node": "20.16.11",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.4.20",
+    "miniflare": "^4.20260714.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
     "tailwindcss-animate": "^1.0.7",
     "tsx": "4.23.1",
     "typescript": "5.6.3",
-    "vite": "^5.4.14"
+    "vite": "^5.4.14",
+    "wrangler": "^4.112.0"
   }
 }

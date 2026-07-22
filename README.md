@@ -2,7 +2,8 @@
 
 A collection of interactive math visualization tools that turn abstract concepts into engaging visual experiences, inspired by the educational philosophy of 3Blue1Brown.
 
-**100% serverless** — a pure static site built with Vite + React. No backend, no database, nothing to deploy but static files.
+**Static-first** — every tool runs as a Vite + React site. Equation snapshot links need no backend;
+an optional Cloudflare Worker adds durable browser/AI sessions without changing the other tools.
 
 ## 🧰 Tools
 
@@ -28,7 +29,7 @@ One large equation whose symbols are live objects — solve it by physically mov
 - **Touchable Symbols**: Every term is an interactive object that highlights on hover
 - **Drag Across the Equals Sign**: Move a term to the other side and its sign flips; like terms combine automatically
 - **Divide to Finish**: When the equation reaches a·x = b, the coefficient becomes clickable — divide both sides to solve
-- **Traceable AI Interface**: A versioned browser API and local MCP server let an AI discover legal actions, preview exact transformations, and apply them with revision and actor history
+- **Traceable AI Interface**: Browser, local MCP, and optional remote MCP clients discover legal actions, preview exact transformations, and apply actor-attributed steps to the same live session
 - **Minimal by Design**: Just the equation on a clean page, with preset equations to practice on
 
 More tools (calculus, probability, complex numbers, ...) coming soon.
@@ -43,7 +44,7 @@ More tools (calculus, probability, complex numbers, ...) coming soon.
 
 ### Local development (optional)
 
-Requires Node.js v18+.
+Requires Node.js v22+.
 
 ```bash
 npm install
@@ -52,12 +53,15 @@ npm run build      # production build to dist/
 npm run preview    # serve the production build locally
 npm run check      # type-check with tsc
 npm run mcp:equation # expose the equation protocol to a local MCP client
+npm run test:shared  # durable session contract
+npm run worker:check # bundle the optional equation session Worker
 ```
 
 Equation API and MCP setup details live in
 [`src/tools/equation-builder/API.md`](src/tools/equation-builder/API.md).
 
-The production build in `dist/` is fully static and relocatable (relative base + hash routing), so it can be dropped onto any static host — GitHub Pages, Netlify, Vercel, S3, or a plain file server.
+The production build in `dist/` remains fully static and relocatable. When
+`VITE_EQUATION_SESSION_URL` is absent, Share continues to produce a complete self-contained link.
 
 ## 🏗️ Project Structure
 
