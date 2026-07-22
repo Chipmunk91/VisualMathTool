@@ -100,6 +100,8 @@ import {
   derivedSymbolName,
   emptyDifferentiationContext,
   emptyIntegrationContext,
+  graphContextFor,
+  graphDrivers,
   inferCalculusDefaults,
   integrationDefaultsFrom,
   validateCalculusContext,
@@ -497,6 +499,41 @@ const EquationBuilderTool = () => {
     }
     return edges;
   }, [symbolRecords, relationAnalysis]);
+
+  /** Which symbol's semantic card the book shows — tapping a graph node changes it. */
+  const [bookFocusName, setBookFocusName] = useState<string | null>(null);
+  /** A tapped alternative "along" choice for the reading strip. */
+  const [alongChoice, setAlongChoice] = useState<string | null>(null);
+  useEffect(() => {
+    setAlongChoice(null);
+  }, [treeEq]);
+
+  /**
+   * The reading strip under the canvas: pure status, chips not sentences.
+   * The graph (or the structural guess) implies one differentiation context;
+   * tapping another legal driver re-derives it; the operator chip applies it.
+   */
+  const readingStrip = useMemo(() => {
+    if (!calculusReadiness || !relationAnalysis) return null;
+    if (calculusReadiness.state !== "deterministic" && calculusReadiness.state !== "needs-context") return null;
+    const seeded = calculusReadiness.state === "deterministic" ? calculusReadiness.context : calculusReadiness.suggestion;
+    const symbols = relationAnalysis.symbols;
+    const declaredDrivers = graphDrivers(symbols, declaredDependencies);
+    const candidates = declaredDrivers.length > 0
+      ? declaredDrivers
+      : Array.from(new Set([seeded.withRespectTo, ...seeded.heldConstant]));
+    const withRespectTo = alongChoice && candidates.includes(alongChoice) ? alongChoice : seeded.withRespectTo;
+    const context: DifferentiationContext = withRespectTo === seeded.withRespectTo
+      ? seeded
+      : declaredDrivers.includes(withRespectTo)
+        ? graphContextFor(symbols, declaredDependencies, withRespectTo)
+        : { ...seeded, withRespectTo, heldConstant: candidates.filter((name) => name !== withRespectTo) };
+    return { candidates, context };
+  }, [calculusReadiness, relationAnalysis, declaredDependencies, alongChoice]);
+
+  /** The card the book shows: the tapped node, else the first record. */
+  const focusedSymbolRecord =
+    symbolRecords.find((record) => record.name === bookFocusName) ?? symbolRecords[0] ?? null;
 
   const declareDependency = (from: string, to: string) => {
     setSymbolRecords((records) => records.map((record) =>
@@ -2613,7 +2650,17 @@ const EquationBuilderTool = () => {
       applyCalculusWith(operation, context, true);
       return;
     }
-    if (calculusReadiness.state === "solution-set") flashNotice(calculusReadiness.explanation);
+    if (calculusReadiness.state === "solution-set") {
+      flashNotice(calculusReadiness.explanation);
+      openCalculusPanel(operation);
+      return;
+    }
+    // Ambiguity is a question about the SYMBOLS — the graph answers it. The
+    // full panel stays reachable behind ⚙ for bounds and exotic contexts.
+    if (operation === "differentiate" && calculusReadiness.state === "needs-context") {
+      setSymbolBookOpen(true);
+      return;
+    }
     openCalculusPanel(operation);
   };
 
@@ -3472,12 +3519,7 @@ const EquationBuilderTool = () => {
               className="absolute left-0 top-[calc(100%+6px)] z-50 flex max-h-[min(70vh,34rem)] w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-xl sm:w-[22rem]"
             >
               <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
-                <div>
-                  <h2 className="text-sm font-semibold">Model symbols</h2>
-                  <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
-                    Definitions travel with the equation and are available to AI tools.
-                  </p>
-                </div>
+                <h2 className="text-sm font-semibold">Model symbols</h2>
                 <button
                   type="button"
                   aria-label="Close model symbols"
@@ -3489,33 +3531,65 @@ const EquationBuilderTool = () => {
               </header>
 
               <div className="overflow-y-auto p-2">
-                {symbolRecords.length >= 1 && (
+                {symbolRecords.length >= 2 && (
                   <div className="mb-2 rounded-xl bg-muted/35 p-2.5">
-                    <div className="mb-1.5 flex items-baseline justify-between gap-2">
-                      <span className="text-[11px] font-medium">How symbols relate</span>
-                      {symbolRecords.length >= 2 && (
-                        <span className="text-[10px] text-muted-foreground">drag: “drives” · tap dashed: confirm · tap solid: cut</span>
-                      )}
-                    </div>
-                    {symbolRecords.length >= 2 ? (
-                      <>
-                        <SymbolDependencyGraph
-                          names={symbolRecords.map((record) => record.name)}
-                          edges={dependencyGraphEdges}
-                          onDeclare={declareDependency}
-                          onCut={cutDependency}
-                        />
-                        <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
-                          Arrows flow down: independents above, what responds below. The graph decides how
-                          d/dx reads this relation — dashed arrows are the app's guess from the equation's shape.
-                        </p>
-                      </>
-                    ) : (
-                      <p className="text-[11px] leading-snug text-muted-foreground">
-                        One symbol has nothing to relate to. With two or more — try{" "}
-                        <span className="font-serif italic">y = m·x + b</span> — the dependency graph
-                        appears here, and its arrows decide how d/dx reads the equation.
-                      </p>
+                    <SymbolDependencyGraph
+                      names={symbolRecords.map((record) => record.name)}
+                      edges={dependencyGraphEdges}
+                      onDeclare={declareDependency}
+                      onCut={cutDependency}
+                      selected={focusedSymbolRecord?.name ?? null}
+                      onSelect={setBookFocusName}
+                      onHoverSymbol={(name) =>
+                        setHoveredSymbolId(name ? symbolRecords.find((record) => record.name === name)?.id ?? null : null)
+                      }
+                    />
+                    {readingStrip && (
+                      <div className="mt-2 flex flex-wrap items-center gap-1">
+                        {readingStrip.context.dependent.map((name) => (
+                          <span
+                            key={name}
+                            title={`${name} moves with ${readingStrip.context.withRespectTo} — this symbol will be born`}
+                            className="rounded-full border border-amber-300 px-2 py-0.5 font-serif text-xs italic text-amber-700 dark:text-amber-400"
+                          >
+                            {derivedSymbolName(name, readingStrip.context.withRespectTo, "subscript")}
+                          </span>
+                        ))}
+                        {readingStrip.context.heldConstant.map((name) =>
+                          readingStrip.candidates.includes(name) ? (
+                            <button
+                              key={name}
+                              type="button"
+                              onClick={() => setAlongChoice(name)}
+                              title={`Held constant — tap to differentiate along ${name} instead`}
+                              className="rounded-full border border-dashed border-border px-2 py-0.5 font-serif text-xs italic text-muted-foreground/70 transition-colors hover:border-amber-300 hover:text-amber-700"
+                            >
+                              {name}
+                            </button>
+                          ) : (
+                            <span
+                              key={name}
+                              title={`${name} is unconnected — held constant`}
+                              className="rounded-full border border-border px-2 py-0.5 font-serif text-xs italic text-muted-foreground/70"
+                            >
+                              {name}
+                            </span>
+                          )
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDifferentiationContext(readingStrip.context);
+                            applyCalculusWith("differentiate", readingStrip.context, true);
+                            setSymbolBookOpen(false);
+                          }}
+                          title="Differentiate both sides — the graph already answered every question"
+                          className="ml-auto rounded-full border border-amber-400 bg-amber-50 px-2.5 py-0.5 font-serif text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-950/60"
+                        >
+                          {readingStrip.context.mode === "partial" ? "∂/∂" : "d/d"}
+                          <span className="italic">{readingStrip.context.withRespectTo}</span> →
+                        </button>
+                      </div>
                     )}
                   </div>
                 )}
@@ -3524,7 +3598,7 @@ const EquationBuilderTool = () => {
                     Type an equation with a variable to create its first record.
                   </p>
                 ) : (
-                  symbolRecords.map((record) => (
+                  (focusedSymbolRecord ? [focusedSymbolRecord] : []).map((record) => (
                     <article
                       key={record.id}
                       onPointerEnter={() => setHoveredSymbolId(record.id)}

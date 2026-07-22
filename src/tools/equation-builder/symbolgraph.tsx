@@ -23,6 +23,10 @@ interface Props {
   edges: GraphEdge[];
   onDeclare: (from: string, to: string) => void;
   onCut: (from: string, to: string) => void;
+  /** the symbol whose semantic card is open below the canvas */
+  selected?: string | null;
+  onSelect?: (name: string) => void;
+  onHoverSymbol?: (name: string | null) => void;
 }
 
 const NODE_HALF_W = 26;
@@ -64,8 +68,9 @@ export const wouldCycle = (edges: GraphEdge[], from: string, to: string): boolea
   return downstream.has(from);
 };
 
-export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut }: Props) => {
+export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut, selected, onSelect, onHoverSymbol }: Props) => {
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const [drag, setDrag] = useState<{ from: string; x: number; y: number } | null>(null);
   const [shakeName, setShakeName] = useState<string | null>(null);
   const shakeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -108,6 +113,7 @@ export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut }: Props)
   const onNodeDown = (name: string) => (event: ReactPointerEvent) => {
     event.preventDefault();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    dragStartRef.current = { x: event.clientX, y: event.clientY };
     setDrag({ from: name, ...localPoint(event) });
   };
   const onNodeMove = (event: ReactPointerEvent) => {
@@ -116,12 +122,19 @@ export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut }: Props)
   const onNodeUp = (event: ReactPointerEvent) => {
     if (!drag) return;
     const from = drag.from;
+    const start = dragStartRef.current;
+    dragStartRef.current = null;
     setDrag(null);
     const target = document
       .elementFromPoint(event.clientX, event.clientY)
       ?.closest<HTMLElement>("[data-graph-node]");
     const to = target?.dataset.graphNode;
-    if (!to || to === from) return;
+    const moved = !start || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 6;
+    if (!moved || to === from) {
+      onSelect?.(from); // a tap opens the symbol's card
+      return;
+    }
+    if (!to) return;
     if (wouldCycle(edges, from, to)) {
       shake(to);
       return;
@@ -208,18 +221,20 @@ export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut }: Props)
             key={name}
             data-graph-node={name}
             onPointerDown={onNodeDown(name)}
+            onPointerEnter={() => onHoverSymbol?.(name)}
+            onPointerLeave={() => onHoverSymbol?.(null)}
             className={`absolute flex min-h-9 min-w-11 -translate-x-1/2 -translate-y-1/2 cursor-grab items-center justify-center rounded-lg border bg-card px-2 font-serif text-lg italic shadow-sm transition-colors active:cursor-grabbing ${
               shakeName === name
                 ? "border-rose-400 ring-2 ring-rose-300"
                 : signature
                   ? "border-amber-300"
                   : "border-border"
-            }`}
+            } ${selected === name ? "ring-2 ring-sky-300" : ""}`}
             style={{
               left: `${(p.x / width) * 100}%`,
               top: `${(p.y / height) * 100}%`,
             }}
-            title={`Drag onto another symbol: “${name} drives it”`}
+            title={`Tap: open ${name} · drag onto another symbol: “${name} drives it”`}
           >
             {name}
             {signature && (
