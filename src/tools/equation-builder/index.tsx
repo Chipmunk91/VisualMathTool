@@ -4,6 +4,7 @@ import { Side } from "./model";
 import { parseEquation, renderMathPreview, type ParseResult } from "./parse";
 import { CATALOG, searchCatalog, type CatalogEntry } from "./catalog";
 import { GraphView } from "./graph";
+import { SymbolDependencyGraph, type GraphEdge } from "./symbolgraph";
 import { MappingPane } from "./mapping";
 import {
   TNode,
@@ -468,6 +469,54 @@ const EquationBuilderTool = () => {
       : null,
     [relationAnalysis, declaredDependencies]
   );
+
+  /**
+   * Canvas edges: declared knowledge as solid arrows, plus the structural
+   * guess (an isolated symbol responds to the expression side's inputs) as
+   * dashed arrows — but only for symbols with no declaration; declaring
+   * anything about a symbol supersedes the app's guess for it.
+   */
+  const dependencyGraphEdges = useMemo<GraphEdge[]>(() => {
+    const names = new Set(symbolRecords.map((record) => record.name));
+    const edges: GraphEdge[] = [];
+    for (const record of symbolRecords) {
+      for (const from of record.dependsOn ?? []) {
+        if (names.has(from)) edges.push({ from, to: record.name, declared: true });
+      }
+    }
+    for (const isolation of relationAnalysis?.isolations ?? []) {
+      const hasDeclaration = symbolRecords.some(
+        (record) => record.name === isolation.output && (record.dependsOn ?? []).length > 0
+      );
+      if (hasDeclaration) continue;
+      for (const input of isolation.inputs) {
+        if (!names.has(input) || !names.has(isolation.output)) continue;
+        if (edges.some((edge) => edge.from === input && edge.to === isolation.output)) continue;
+        edges.push({ from: input, to: isolation.output, declared: false });
+      }
+    }
+    return edges;
+  }, [symbolRecords, relationAnalysis]);
+
+  const declareDependency = (from: string, to: string) => {
+    setSymbolRecords((records) => records.map((record) =>
+      record.name === to
+        ? {
+            ...record,
+            dependsOn: Array.from(new Set([...(record.dependsOn ?? []), from])).sort(),
+            provenance: { ...record.provenance, confirmedByHuman: true },
+          }
+        : record
+    ));
+  };
+  const cutDependency = (from: string, to: string) => {
+    setSymbolRecords((records) => records.map((record) => {
+      if (record.name !== to) return record;
+      const rest = (record.dependsOn ?? []).filter((name) => name !== from);
+      const { dependsOn: _dropped, ...bare } = record;
+      return rest.length > 0 ? { ...bare, dependsOn: rest } : bare;
+    }));
+  };
   const analyzedRevisionRef = useRef<string | null>(null);
   useEffect(() => {
     if (!relationAnalysis) return;
@@ -3440,6 +3489,24 @@ const EquationBuilderTool = () => {
               </header>
 
               <div className="overflow-y-auto p-2">
+                {symbolRecords.length >= 2 && (
+                  <div className="mb-2 rounded-xl bg-muted/35 p-2.5">
+                    <div className="mb-1.5 flex items-baseline justify-between gap-2">
+                      <span className="text-[11px] font-medium">How symbols relate</span>
+                      <span className="text-[10px] text-muted-foreground">drag: “drives” · tap dashed: confirm · tap solid: cut</span>
+                    </div>
+                    <SymbolDependencyGraph
+                      names={symbolRecords.map((record) => record.name)}
+                      edges={dependencyGraphEdges}
+                      onDeclare={declareDependency}
+                      onCut={cutDependency}
+                    />
+                    <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+                      Arrows flow down: independents above, what responds below. The graph decides how
+                      d/dx reads this relation — dashed arrows are the app's guess from the equation's shape.
+                    </p>
+                  </div>
+                )}
                 {symbolRecords.length === 0 ? (
                   <p className="px-3 py-6 text-center text-xs text-muted-foreground">
                     Type an equation with a variable to create its first record.
