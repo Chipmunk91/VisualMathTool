@@ -417,43 +417,67 @@ interface AnalysisShape {
  * can't, and the mode is a derived label, not a choice. Only the operation
  * variable can remain open — and only when several free symbols drive things.
  */
-const readinessFromGraph = (
-  symbols: string[],
-  edges: Map<string, string[]>
-): CalculusReadiness | null => {
-  const dependentsOf = (root: string): string[] => {
-    const reached = new Set<string>();
-    let grew = true;
-    while (grew) {
-      grew = false;
-      for (const [output, inputs] of Array.from(edges)) {
-        if (reached.has(output)) continue;
-        if (inputs.some((input) => input === root || reached.has(input))) {
-          reached.add(output);
-          grew = true;
-        }
+const edgesAmong = (symbols: string[], dependencies: Record<string, string[]>): Map<string, string[]> => {
+  const present = new Set(symbols);
+  return new Map(
+    Object.entries(dependencies)
+      .filter(([output]) => present.has(output))
+      .map(([output, inputs]) => [output, inputs.filter((input) => present.has(input))] as const)
+      .filter(([, inputs]) => inputs.length > 0)
+  );
+};
+
+const dependentsIn = (edges: Map<string, string[]>, root: string): string[] => {
+  const reached = new Set<string>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [output, inputs] of Array.from(edges)) {
+      if (reached.has(output)) continue;
+      if (inputs.some((input) => input === root || reached.has(input))) {
+        reached.add(output);
+        grew = true;
       }
     }
-    return Array.from(reached).sort();
-  };
+  }
+  return Array.from(reached).sort();
+};
+
+/** The ranked free symbols that drive something — the legal "along" choices. */
+export function graphDrivers(symbols: string[], dependencies: Record<string, string[]>): string[] {
+  const edges = edgesAmong(symbols, dependencies);
   const free = symbols.filter((name) => (edges.get(name) ?? []).length === 0);
-  const drivers = rankInputs(free.filter((name) => dependentsOf(name).length > 0));
-  if (drivers.length === 0) return null; // degenerate declaration — fall back to structure
-  const contextFor = (withRespectTo: string): DifferentiationContext => {
-    const dependent = dependentsOf(withRespectTo);
-    const dependentSet = new Set(dependent);
-    const heldConstant = symbols.filter((name) => name !== withRespectTo && !dependentSet.has(name));
-    const mode: DifferentiationMode =
-      heldConstant.length > 0 ? "partial" : dependent.length > 1 ? "total" : "ordinary";
-    return {
-      mode,
-      withRespectTo,
-      dependent,
-      heldConstant,
-      notation: mode === "ordinary" ? "lagrange" : "subscript",
-    };
+  return rankInputs(free.filter((name) => dependentsIn(edges, name).length > 0));
+}
+
+/** The full context the graph implies for one along-choice: reachability decides every role. */
+export function graphContextFor(
+  symbols: string[],
+  dependencies: Record<string, string[]>,
+  withRespectTo: string
+): DifferentiationContext {
+  const edges = edgesAmong(symbols, dependencies);
+  const dependent = dependentsIn(edges, withRespectTo);
+  const dependentSet = new Set(dependent);
+  const heldConstant = symbols.filter((name) => name !== withRespectTo && !dependentSet.has(name));
+  const mode: DifferentiationMode =
+    heldConstant.length > 0 ? "partial" : dependent.length > 1 ? "total" : "ordinary";
+  return {
+    mode,
+    withRespectTo,
+    dependent,
+    heldConstant,
+    notation: mode === "ordinary" ? "lagrange" : "subscript",
   };
-  const context = contextFor(drivers[0]);
+}
+
+const readinessFromGraph = (
+  symbols: string[],
+  dependencies: Record<string, string[]>
+): CalculusReadiness | null => {
+  const drivers = graphDrivers(symbols, dependencies);
+  if (drivers.length === 0) return null; // degenerate declaration — fall back to structure
+  const context = graphContextFor(symbols, dependencies, drivers[0]);
   const readingText = `${context.dependent.join(", ")} respond${context.dependent.length === 1 ? "s" : ""} to ${drivers[0]}` +
     (context.heldConstant.length > 0 ? `; ${context.heldConstant.join(", ")} unconnected, held constant` : "");
   if (drivers.length === 1) {
@@ -490,15 +514,8 @@ export function inferCalculusDefaults(analysis: AnalysisShape): CalculusReadines
   }
   // Declared knowledge outranks structural guessing: a dependency graph in
   // the symbol book decides the reading before any isolation heuristics run.
-  const present = new Set(symbols);
-  const edges = new Map(
-    Object.entries(analysis.dependencies ?? {})
-      .filter(([output]) => present.has(output))
-      .map(([output, inputs]) => [output, inputs.filter((input) => present.has(input))] as const)
-      .filter(([, inputs]) => inputs.length > 0)
-  );
-  if (edges.size > 0) {
-    const fromGraph = readinessFromGraph(symbols, edges);
+  if (edgesAmong(symbols, analysis.dependencies ?? {}).size > 0) {
+    const fromGraph = readinessFromGraph(symbols, analysis.dependencies ?? {});
     if (fromGraph) return fromGraph;
   }
   if (isolations.length === 1) {
