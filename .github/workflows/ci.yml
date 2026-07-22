@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
       - name: Type check
@@ -37,6 +37,12 @@ jobs:
         run: npm run test:protocol
       - name: Equation MCP contract
         run: npm run test:mcp
+      - name: Shared equation session contract
+        run: npm run test:shared
+      - name: Bundle durable equation Worker
+        run: npm run worker:check
+      - name: Durable Worker REST, live sync, and remote MCP contract
+        run: npm run test:worker
       - name: Rewrite-engine tests
         run: npx tsx scripts/test-rewrites.ts
       - name: Build

@@ -57,10 +57,19 @@ interface StoredPreview {
   consumed: boolean;
 }
 
+export interface EquationSessionState {
+  schemaVersion: 1;
+  documents: EquationDocument[];
+  previews: Array<StoredPreview & { token: string }>;
+  appliedRequests: Array<{ key: string; result: EquationApplyResult }>;
+}
+
 export interface EquationSessionServiceOptions {
   idFactory?: () => string;
   now?: () => Date;
   maxPreviews?: number;
+  maxAppliedRequests?: number;
+  state?: EquationSessionState;
 }
 
 const cloneJson = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -170,11 +179,51 @@ export class EquationSessionService {
   private readonly idFactory: () => string;
   private readonly now: () => Date;
   private readonly maxPreviews: number;
+  private readonly maxAppliedRequests: number;
 
   constructor(options: EquationSessionServiceOptions = {}) {
     this.idFactory = options.idFactory ?? defaultIdFactory;
     this.now = options.now ?? (() => new Date());
     this.maxPreviews = options.maxPreviews ?? 500;
+    this.maxAppliedRequests = options.maxAppliedRequests ?? 500;
+    if (options.state) {
+      for (const document of options.state.documents) {
+        const normalized = normalizedDocument(document);
+        this.documents.set(normalized.documentId, normalized);
+      }
+      for (const { token, ...preview } of options.state.previews) {
+        this.previews.set(token, cloneJson(preview));
+      }
+      for (const { key, result } of options.state.appliedRequests) {
+        this.appliedRequests.set(key, cloneJson(result));
+      }
+      while (this.previews.size > this.maxPreviews) {
+        const oldest = this.previews.keys().next().value as string | undefined;
+        if (!oldest) break;
+        this.previews.delete(oldest);
+      }
+      while (this.appliedRequests.size > this.maxAppliedRequests) {
+        const oldest = this.appliedRequests.keys().next().value as string | undefined;
+        if (!oldest) break;
+        this.appliedRequests.delete(oldest);
+      }
+    }
+  }
+
+  /** Serializable process state for durable transports. */
+  exportState(): EquationSessionState {
+    return {
+      schemaVersion: 1,
+      documents: Array.from(this.documents.values()).map((document) => cloneJson(document)),
+      previews: Array.from(this.previews.entries()).map(([token, preview]) => ({
+        token,
+        ...cloneJson(preview),
+      })),
+      appliedRequests: Array.from(this.appliedRequests.entries()).map(([key, result]) => ({
+        key,
+        result: cloneJson(result),
+      })),
+    };
   }
 
   createEquation(input: unknown): EquationCreateResult {
@@ -496,6 +545,11 @@ export class EquationSessionService {
       event: cloneJson(event),
     };
     this.appliedRequests.set(idempotencyKey, result);
+    while (this.appliedRequests.size > this.maxAppliedRequests) {
+      const oldest = this.appliedRequests.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.appliedRequests.delete(oldest);
+    }
     return cloneJson(result);
   }
 

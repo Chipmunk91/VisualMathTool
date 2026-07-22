@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "visual-math-equation-service",
+  "main": "server/cloudflare/equation-worker.ts",
+  "compatibility_date": "2026-07-19",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EQUATION_SESSIONS",
+        "class_name": "EquationSessionObject"
+      }
+    ]
+  },
+  "exports": {
+    "EquationSessionObject": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "vars": {
+    "PLAYGROUND_URL": "https://chipmunk91.github.io/VisualMathTool/",
+    "ALLOWED_ORIGINS": "https://chipmunk91.github.io,http://localhost:5173"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

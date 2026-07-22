@@ -1,7 +1,11 @@
 # Visual Math Equation MCP
 
-This local stdio server lets an MCP client operate the same semantic equation engine as the
-Equation Playground. It does not click rendered symbols or send pointer coordinates.
+The project exposes the semantic equation engine over two MCP transports. Neither clicks rendered
+symbols or sends pointer coordinates.
+
+- **Local stdio** owns process-scoped documents and is convenient for local Claude/Codex clients.
+- **Remote Streamable HTTP** operates durable `vms1_…` sessions that an open Playground shares
+  with browsers and cloud AI clients.
 
 ## Start directly
 
@@ -51,9 +55,20 @@ Differentiation and integration require an operation-variable symbol ID and a ro
 symbol. The server applies the operation to the relation as a whole; it does not infer calculus
 semantics from the left/right position of a symbol.
 
-## Session boundary
+## Local session boundary
 
-Documents live for the lifetime of this MCP process. The browser and MCP adapters share the same
-protocol implementation but not yet a persistent transport. Import/export of hosted share links
-and attachment to an already-open browser session are intentionally deferred to the durable-session
-phase.
+Documents created through stdio live for the lifetime of that MCP process.
+
+## Remote live sessions
+
+After deploying the optional equation service, configure a remote MCP client once with:
+
+```text
+https://<equation-service-origin>/mcp
+```
+
+Give the client a live Equation Playground URL. The `session=vms1_…` query value is an unguessable
+edit capability: the model passes it to `equation_get`, discovers and previews a legal action, then
+applies it. Every connected browser receives the exact semantic event and replays its recorded
+movement/simplification animation. Deployment and REST endpoint details are in
+[`server/cloudflare/README.md`](../cloudflare/README.md).
