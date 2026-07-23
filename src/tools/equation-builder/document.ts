@@ -29,6 +29,13 @@ export interface SymbolRecord {
    * of asking per operation.
    */
   dependsOn?: string[];
+  /**
+   * A human-added symbol with NO occurrence in the equation — the hidden t
+   * of related rates. It exists purely as graph knowledge (something for
+   * other symbols to depend on) and may be deleted freely; equation symbols
+   * leave only through algebra.
+   */
+  parameter?: true;
   assumptions: Predicate[];
   provenance: {
     createdBy: "parser" | "human" | "ai";
@@ -165,28 +172,43 @@ export function symbolsInEquation(equation: TreeEq): SymbolRecord[] {
 /** Preserve authored metadata while adding/removing records as the equation changes. */
 export function reconcileSymbols(equation: TreeEq, current: SymbolRecord[]): SymbolRecord[] {
   const existing = new Map(current.map((record) => [record.id, record]));
-  const presentNames = new Set(symbolsInEquation(equation).map((record) => record.name));
-  return symbolsInEquation(equation).map((discovered) => {
-    const authored = existing.get(discovered.id);
-    if (!authored) return discovered;
+  const discoveredRecords = symbolsInEquation(equation);
+  const discoveredNames = new Set(discoveredRecords.map((record) => record.name));
+  // Parameters (hidden drivers like the t of related rates) survive on their
+  // own — they have no equation occurrence to be discovered from. A parameter
+  // whose name the equation now uses stops being one and merges normally.
+  const parameters = current.filter(
+    (record) => record.parameter && !discoveredNames.has(record.name)
+  );
+  const presentNames = new Set([
+    ...Array.from(discoveredNames),
+    ...parameters.map((record) => record.name),
+  ]);
+  const rebuild = (base: SymbolRecord, authored: SymbolRecord | undefined): SymbolRecord => {
+    if (!authored) return base;
     // Explicit reconstruction is also the v1 migration: stale role/domain
     // properties from older share links are intentionally dropped. Declared
-    // dependency edges survive, pruned to symbols still in the equation.
+    // dependency edges survive, pruned to symbols still present.
     // v1 stored dependsOn as symbol IDS — those never match present names,
     // so the same prune that drops stale edges also migrates old records.
     const dependsOn = (Array.isArray(authored.dependsOn) ? authored.dependsOn : []).filter(
-      (name) => presentNames.has(name) && name !== discovered.name
+      (name) => presentNames.has(name) && name !== base.name
     );
     return {
-      id: discovered.id,
-      name: discovered.name,
+      id: base.id,
+      name: base.name,
       meaning: authored.meaning,
       unit: authored.unit,
       ...(dependsOn.length > 0 ? { dependsOn } : {}),
+      ...(authored.parameter && !discoveredNames.has(base.name) ? { parameter: true as const } : {}),
       assumptions: Array.isArray(authored.assumptions) ? authored.assumptions : [],
-      provenance: authored.provenance ?? discovered.provenance,
+      provenance: authored.provenance ?? base.provenance,
     };
-  });
+  };
+  return [
+    ...discoveredRecords.map((discovered) => rebuild(discovered, existing.get(discovered.id))),
+    ...parameters.map((parameter) => rebuild(parameter, parameter)),
+  ];
 }
 
 export function renameSymbol(equation: TreeEq, symbolId: string, nextName: string): TreeEq {

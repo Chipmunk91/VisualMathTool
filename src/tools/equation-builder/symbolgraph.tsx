@@ -4,8 +4,14 @@
  * Solid amber arrows are declared knowledge (SymbolRecord.dependsOn); dashed
  * sky arrows are the app's structural guess, shown only for symbols with no
  * declaration. Dragging one chip onto another declares an arrow; clicking a
- * dashed arrow confirms it; clicking a solid arrow cuts it. The graph shape
- * is what decides how differentiation reads the relation.
+ * dashed arrow confirms it; clicking a solid arrow cuts it.
+ *
+ * ASKING MODE (a differentiation question is pending): the canvas dims and
+ * becomes the answer surface — candidate symbols pulse; tapping one
+ * differentiates ALONG it (every path from it moves), tapping an arrow takes
+ * the slot partial THROUGH that one arrow (its source per that target,
+ * everything else frozen). Hover previews with an energy flow; the parent
+ * renders the would-be result.
  */
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
@@ -17,6 +23,10 @@ export interface GraphEdge {
   declared: boolean;
 }
 
+export type AskTarget =
+  | { kind: "node"; name: string }
+  | { kind: "edge"; from: string; to: string };
+
 interface Props {
   /** symbol names in display order */
   names: string[];
@@ -27,9 +37,18 @@ interface Props {
   selected?: string | null;
   onSelect?: (name: string) => void;
   onHoverSymbol?: (name: string | null) => void;
+  /** parameter symbols (no equation occurrence) render dashed */
+  parameters?: string[];
+  /** a differentiation question is pending — the canvas answers it */
+  asking?: boolean;
+  /** legal along-symbols (pulse while asking) */
+  candidates?: string[];
+  /** active preview lighting: the along symbol and everything that moves */
+  flow?: { wrt: string; deps: ReadonlySet<string> } | null;
+  onAskHover?: (target: AskTarget | null) => void;
+  onAskCommit?: (target: AskTarget) => void;
 }
 
-const NODE_HALF_W = 26;
 const NODE_HALF_H = 22;
 const LAYER_HEIGHT = 86;
 const TOP_PAD = 40;
@@ -68,7 +87,21 @@ export const wouldCycle = (edges: GraphEdge[], from: string, to: string): boolea
   return downstream.has(from);
 };
 
-export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut, selected, onSelect, onHoverSymbol }: Props) => {
+export const SymbolDependencyGraph = ({
+  names,
+  edges,
+  onDeclare,
+  onCut,
+  selected,
+  onSelect,
+  onHoverSymbol,
+  parameters = [],
+  asking = false,
+  candidates = [],
+  flow = null,
+  onAskHover,
+  onAskCommit,
+}: Props) => {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const [drag, setDrag] = useState<{ from: string; x: number; y: number } | null>(null);
@@ -111,6 +144,7 @@ export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut, selected
   };
 
   const onNodeDown = (name: string) => (event: ReactPointerEvent) => {
+    if (asking) return; // asking mode answers with clicks, not drags
     event.preventDefault();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     dragStartRef.current = { x: event.clientX, y: event.clientY };
@@ -145,13 +179,14 @@ export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut, selected
   const arrowPath = (from: string, to: string): string => {
     const a = positions.get(from)!;
     const b = positions.get(to)!;
-    const ax = a.x;
     const ay = a.y + NODE_HALF_H;
-    const bx = b.x;
     const by = b.y - NODE_HALF_H - 6;
-    const bend = (bx - ax) / 3;
-    return `M ${ax} ${ay} C ${ax + bend} ${ay + 26}, ${bx - bend} ${by - 26}, ${bx} ${by}`;
+    const bend = (b.x - a.x) / 3 || 18;
+    return `M ${a.x} ${ay} C ${a.x + bend} ${ay + 26}, ${b.x - bend} ${by - 26}, ${b.x} ${by}`;
   };
+
+  const edgeActive = (edge: GraphEdge): boolean =>
+    !!flow && (edge.from === flow.wrt || flow.deps.has(edge.from)) && flow.deps.has(edge.to);
 
   return (
     <div
@@ -170,38 +205,59 @@ export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut, selected
             <path d="M0 0 L10 5 L0 10 z" className="fill-sky-400" />
           </marker>
         </defs>
-        {edges.map((edge) => (
-          <g key={`${edge.from}->${edge.to}`}>
-            <path
-              d={arrowPath(edge.from, edge.to)}
-              fill="none"
-              strokeWidth={1.8}
-              strokeDasharray={edge.declared ? undefined : "5 4"}
-              className={edge.declared ? "stroke-amber-500" : "stroke-sky-400"}
-              markerEnd={edge.declared ? "url(#dep-arrow-declared)" : "url(#dep-arrow-guess)"}
-            />
-            <path
-              d={arrowPath(edge.from, edge.to)}
-              fill="none"
-              stroke="transparent"
-              strokeWidth={16}
-              className="cursor-pointer"
-              role="button"
-              aria-label={
-                edge.declared
-                  ? `Stop declaring that ${edge.to} depends on ${edge.from}`
-                  : `Confirm that ${edge.to} depends on ${edge.from}`
-              }
-              onClick={() => (edge.declared ? onCut(edge.from, edge.to) : onDeclare(edge.from, edge.to))}
-            >
-              <title>
-                {edge.declared
-                  ? `${edge.to} depends on ${edge.from} — click to cut`
-                  : `the app's guess: ${edge.to} depends on ${edge.from} — click to confirm`}
-              </title>
-            </path>
-          </g>
-        ))}
+        {edges.map((edge) => {
+          const active = edgeActive(edge);
+          const d = arrowPath(edge.from, edge.to);
+          return (
+            <g key={`${edge.from}->${edge.to}`}>
+              <path
+                d={d}
+                fill="none"
+                strokeWidth={active ? 2.6 : 1.8}
+                strokeDasharray={edge.declared ? undefined : "5 4"}
+                opacity={flow && !active ? 0.3 : 1}
+                className={edge.declared ? "stroke-amber-500" : "stroke-sky-400"}
+                markerEnd={edge.declared ? "url(#dep-arrow-declared)" : "url(#dep-arrow-guess)"}
+              />
+              {active &&
+                [0, 1, 2].map((wave) => (
+                  <circle key={wave} r={3 - wave * 0.6} className="fill-amber-500 motion-reduce:hidden" opacity={0.9 - wave * 0.25}>
+                    <animateMotion dur="1.3s" begin={`${wave * 0.18}s`} repeatCount="indefinite" path={d} />
+                  </circle>
+                ))}
+              <path
+                d={d}
+                fill="none"
+                stroke="transparent"
+                strokeWidth={16}
+                className="cursor-pointer"
+                role="button"
+                aria-label={
+                  asking
+                    ? `Slot partial through ${edge.from} → ${edge.to}`
+                    : edge.declared
+                      ? `Stop declaring that ${edge.to} depends on ${edge.from}`
+                      : `Confirm that ${edge.to} depends on ${edge.from}`
+                }
+                onClick={() => {
+                  if (asking) onAskCommit?.({ kind: "edge", from: edge.from, to: edge.to });
+                  else if (edge.declared) onCut(edge.from, edge.to);
+                  else onDeclare(edge.from, edge.to);
+                }}
+                onPointerEnter={asking ? () => onAskHover?.({ kind: "edge", from: edge.from, to: edge.to }) : undefined}
+                onPointerLeave={asking ? () => onAskHover?.(null) : undefined}
+              >
+                <title>
+                  {asking
+                    ? `∂ through this arrow only — everything else frozen`
+                    : edge.declared
+                      ? `${edge.to} depends on ${edge.from} — click to cut`
+                      : `the app's guess: ${edge.to} depends on ${edge.from} — click to confirm`}
+                </title>
+              </path>
+            </g>
+          );
+        })}
         {drag && (
           <path
             d={`M ${positions.get(drag.from)!.x} ${positions.get(drag.from)!.y} L ${drag.x} ${drag.y}`}
@@ -213,28 +269,51 @@ export const SymbolDependencyGraph = ({ names, edges, onDeclare, onCut, selected
           />
         )}
       </svg>
+      {asking && <div className="pointer-events-none absolute inset-0 bg-background/50" />}
       {names.map((name) => {
         const p = positions.get(name)!;
         const signature = signatureOf(name);
+        const isCandidate = asking && candidates.includes(name);
+        const isSource = flow?.wrt === name;
+        const isLit = !!flow && flow.deps.has(name);
         return (
           <div
             key={name}
             data-graph-node={name}
             onPointerDown={onNodeDown(name)}
-            onPointerEnter={() => onHoverSymbol?.(name)}
-            onPointerLeave={() => onHoverSymbol?.(null)}
-            className={`absolute flex min-h-9 min-w-11 -translate-x-1/2 -translate-y-1/2 cursor-grab items-center justify-center rounded-lg border bg-card px-2 font-serif text-lg italic shadow-sm transition-colors active:cursor-grabbing ${
+            onPointerEnter={() => {
+              onHoverSymbol?.(name);
+              if (isCandidate) onAskHover?.({ kind: "node", name });
+            }}
+            onPointerLeave={() => {
+              onHoverSymbol?.(null);
+              if (isCandidate) onAskHover?.(null);
+            }}
+            onClick={isCandidate ? () => onAskCommit?.({ kind: "node", name }) : undefined}
+            className={`absolute flex min-h-9 min-w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-lg border bg-card px-2 font-serif text-lg italic shadow-sm transition-all ${
+              asking ? (isCandidate ? "z-10 cursor-pointer animate-pulse border-amber-400" : "opacity-60") : "cursor-grab active:cursor-grabbing"
+            } ${
               shakeName === name
                 ? "border-rose-400 ring-2 ring-rose-300"
-                : signature
-                  ? "border-amber-300"
-                  : "border-border"
-            } ${selected === name ? "ring-2 ring-sky-300" : ""}`}
+                : isSource
+                  ? "z-10 border-amber-400 ring-4 ring-amber-200 dark:ring-amber-900"
+                  : isLit
+                    ? "z-10 border-amber-400 bg-amber-50 dark:bg-amber-950/40"
+                    : signature
+                      ? "border-amber-300"
+                      : "border-border"
+            } ${parameters.includes(name) ? "border-dashed" : ""} ${selected === name && !asking ? "ring-2 ring-sky-300" : ""}`}
             style={{
               left: `${(p.x / width) * 100}%`,
               top: `${(p.y / height) * 100}%`,
             }}
-            title={`Tap: open ${name} · drag onto another symbol: “${name} drives it”`}
+            title={
+              asking
+                ? isCandidate
+                  ? `Differentiate along ${name} — every path from it moves`
+                  : undefined
+                : `Tap: open ${name} · drag onto another symbol: “${name} drives it”`
+            }
           >
             {name}
             {signature && (

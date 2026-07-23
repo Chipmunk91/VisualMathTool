@@ -86,8 +86,14 @@ export function validateCalculusContext(
   }
   const symbols = equationSymbols(equation);
   if (!context.withRespectTo) return { ok: false, message: "Choose the variable of operation." };
-  if (!symbols.includes(context.withRespectTo)) {
-    return { ok: false, message: `${context.withRespectTo} is not present in this relation.` };
+  // A PARAMETER may drive the relation without appearing in it (related
+  // rates: z = x² + y² along t with x(t), y(t)) — legal as long as the
+  // symbols that respond are in the equation.
+  if (!symbols.includes(context.withRespectTo) && context.dependent.length === 0) {
+    return {
+      ok: false,
+      message: `${context.withRespectTo} is not in this relation — mark which symbols depend on it.`,
+    };
   }
   const dependent = new Set(context.dependent);
   const held = new Set(context.heldConstant);

@@ -4,7 +4,7 @@ import { Side } from "./model";
 import { parseEquation, renderMathPreview, type ParseResult } from "./parse";
 import { CATALOG, searchCatalog, type CatalogEntry } from "./catalog";
 import { GraphView } from "./graph";
-import { SymbolDependencyGraph, type GraphEdge } from "./symbolgraph";
+import { SymbolDependencyGraph, type AskTarget, type GraphEdge } from "./symbolgraph";
 import { MappingPane } from "./mapping";
 import {
   TNode,
@@ -16,6 +16,7 @@ import {
   printNode,
   printTreeEq,
   simplify as simplifyTree,
+  symbolIdForName,
   tadd,
   tc,
   tmul,
@@ -100,6 +101,7 @@ import {
   derivedSymbolName,
   emptyDifferentiationContext,
   emptyIntegrationContext,
+  differentiateRelation,
   graphContextFor,
   graphDrivers,
   inferCalculusDefaults,
@@ -464,12 +466,41 @@ const EquationBuilderTool = () => {
       ),
     [symbolRecords]
   );
+  /**
+   * The graph the READINGS use — exactly what the canvas draws: declared
+   * edges plus the structural guesses (dashed arrows) for symbols with no
+   * declaration. A reading may never disagree with the picture.
+   */
+  const effectiveDependencies = useMemo(() => {
+    const merged: Record<string, string[]> = { ...declaredDependencies };
+    for (const isolation of relationAnalysis?.isolations ?? []) {
+      if (!merged[isolation.output] && isolation.inputs.length > 0) {
+        merged[isolation.output] = isolation.inputs;
+      }
+    }
+    return merged;
+  }, [declaredDependencies, relationAnalysis]);
+  /** Equation symbols plus hidden parameters — the graph's full node set. */
+  const graphSymbols = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...(relationAnalysis?.symbols ?? []),
+          ...symbolRecords.filter((record) => record.parameter).map((record) => record.name),
+        ])
+      ),
+    [relationAnalysis, symbolRecords]
+  );
   /** Which of the four calculus readiness states this relation is in. */
   const calculusReadiness = useMemo(
     () => relationAnalysis
-      ? inferCalculusDefaults({ ...relationAnalysis, dependencies: declaredDependencies })
+      ? inferCalculusDefaults({
+          symbols: graphSymbols,
+          isolations: relationAnalysis.isolations,
+          dependencies: effectiveDependencies,
+        })
       : null,
-    [relationAnalysis, declaredDependencies]
+    [relationAnalysis, graphSymbols, effectiveDependencies]
   );
 
   /**
@@ -502,44 +533,128 @@ const EquationBuilderTool = () => {
 
   /** Which symbol's semantic card the book shows — tapping a graph node changes it. */
   const [bookFocusName, setBookFocusName] = useState<string | null>(null);
-  /** A tapped alternative "along" choice for the reading strip. */
-  const [alongChoice, setAlongChoice] = useState<string | null>(null);
   /**
-   * The strip is an ANSWER UI, not furniture: it renders only while a
+   * Question mode is an ANSWER UI, not furniture: it exists only while a
    * differentiation question is pending (the toolbox d/dx hit ambiguity and
    * summoned the book). Browsing the book never shows calculus chrome.
    */
   const [calculusQuestion, setCalculusQuestion] = useState(false);
+  /** The graph target being hovered while asking — drives the preview. */
+  const [askTarget, setAskTarget] = useState<AskTarget | null>(null);
   useEffect(() => {
-    setAlongChoice(null);
     setCalculusQuestion(false);
+    setAskTarget(null);
   }, [treeEq]);
   useEffect(() => {
-    if (!symbolBookOpen) setCalculusQuestion(false);
+    if (!symbolBookOpen) {
+      setCalculusQuestion(false);
+      setAskTarget(null);
+    }
   }, [symbolBookOpen]);
 
+  /** Legal along-symbols: graph drivers, else the structural candidates. */
+  const askCandidates = useMemo(() => {
+    const graphDriverNames = graphDrivers(graphSymbols, effectiveDependencies);
+    if (graphDriverNames.length > 0) return graphDriverNames;
+    if (calculusReadiness?.state === "needs-context") {
+      const seeded = calculusReadiness.suggestion;
+      return Array.from(new Set([seeded.withRespectTo, ...seeded.heldConstant]));
+    }
+    if (calculusReadiness?.state === "deterministic") return [calculusReadiness.context.withRespectTo];
+    return [];
+  }, [calculusReadiness, graphSymbols, effectiveDependencies]);
+
   /**
-   * The reading strip under the canvas: pure status, chips not sentences.
-   * The graph (or the structural guess) implies one differentiation context;
-   * tapping another legal driver re-derives it; the operator chip applies it.
+   * One graph target → one complete differentiation context. Node = along
+   * the symbol, every path from it moves. Edge = the slot partial through
+   * that single arrow — its target responds, everything else is frozen,
+   * even symbols that are connected.
    */
-  const readingStrip = useMemo(() => {
-    if (!calculusReadiness || !relationAnalysis) return null;
-    if (calculusReadiness.state !== "deterministic" && calculusReadiness.state !== "needs-context") return null;
-    const seeded = calculusReadiness.state === "deterministic" ? calculusReadiness.context : calculusReadiness.suggestion;
-    const symbols = relationAnalysis.symbols;
-    const declaredDrivers = graphDrivers(symbols, declaredDependencies);
-    const candidates = declaredDrivers.length > 0
-      ? declaredDrivers
-      : Array.from(new Set([seeded.withRespectTo, ...seeded.heldConstant]));
-    const withRespectTo = alongChoice && candidates.includes(alongChoice) ? alongChoice : seeded.withRespectTo;
-    const context: DifferentiationContext = withRespectTo === seeded.withRespectTo
-      ? seeded
-      : declaredDrivers.includes(withRespectTo)
-        ? graphContextFor(symbols, declaredDependencies, withRespectTo)
-        : { ...seeded, withRespectTo, heldConstant: candidates.filter((name) => name !== withRespectTo) };
-    return { candidates, context };
-  }, [calculusReadiness, relationAnalysis, declaredDependencies, alongChoice]);
+  const contextForAsk = (target: AskTarget): DifferentiationContext | null => {
+    const equationSet = new Set(relationAnalysis?.symbols ?? []);
+    const onEquation = (names: string[]) => names.filter((name) => equationSet.has(name));
+    if (target.kind === "edge") {
+      const dependent = onEquation([target.to]);
+      if (dependent.length === 0) return null;
+      const heldConstant = (relationAnalysis?.symbols ?? []).filter(
+        (name) => name !== target.from && name !== target.to
+      );
+      return {
+        mode: heldConstant.length > 0 ? "partial" : "ordinary",
+        withRespectTo: target.from,
+        dependent,
+        heldConstant,
+        notation: "subscript",
+      };
+    }
+    const graphDriverNames = graphDrivers(graphSymbols, effectiveDependencies);
+    if (graphDriverNames.includes(target.name)) {
+      const derived = graphContextFor(graphSymbols, effectiveDependencies, target.name);
+      const dependent = onEquation(derived.dependent);
+      if (dependent.length === 0) return null;
+      return { ...derived, dependent, heldConstant: onEquation(derived.heldConstant), notation: "subscript" };
+    }
+    if (calculusReadiness?.state === "deterministic" && target.name === calculusReadiness.context.withRespectTo) {
+      return calculusReadiness.context;
+    }
+    if (!calculusReadiness || calculusReadiness.state !== "needs-context") return null;
+    const seeded = calculusReadiness.suggestion;
+    return {
+      ...seeded,
+      withRespectTo: target.name,
+      heldConstant: askCandidates.filter((name) => name !== target.name && equationSet.has(name)),
+      notation: "subscript",
+    };
+  };
+
+  /**
+   * How many genuinely different derivatives the graph offers (node totals
+   * and edge slot-partials, deduped by context). One → d/dx just does it;
+   * more → the question mode asks, because a chained graph legitimately
+   * supports both the all-paths total and the frozen-slot partial.
+   */
+  const askDistinctCount = useMemo(() => {
+    const signatures = new Set<string>();
+    const signatureOf = (context: DifferentiationContext) =>
+      `${context.withRespectTo}|${[...context.dependent].sort().join(",")}|${[...context.heldConstant].sort().join(",")}`;
+    for (const name of askCandidates) {
+      const context = contextForAsk({ kind: "node", name });
+      if (context) signatures.add(signatureOf(context));
+    }
+    for (const edge of dependencyGraphEdges) {
+      const context = contextForAsk({ kind: "edge", from: edge.from, to: edge.to });
+      if (context) signatures.add(signatureOf(context));
+    }
+    return signatures.size;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askCandidates, dependencyGraphEdges, calculusReadiness, effectiveDependencies, relationAnalysis]);
+
+  /** The would-be result for the hovered target — pure preview, no commit. */
+  const askPreview = useMemo(() => {
+    if (!calculusQuestion || !askTarget) return null;
+    const context = contextForAsk(askTarget);
+    if (!context || !validateCalculusContext(treeEq, context).ok) return null;
+    const result = differentiateRelation(treeEq, context);
+    if (typeof result === "string") return null;
+    const kind = context.heldConstant.length > 0 ? "partial" : context.dependent.length > 1 ? "total" : "ordinary";
+    return {
+      context,
+      text: printTreeEq(result.equation),
+      kind: askTarget.kind === "edge" ? `${kind} · this arrow only` : kind,
+      deps: new Set(context.dependent),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calculusQuestion, askTarget, treeEq, effectiveDependencies, calculusReadiness]);
+
+  const commitAsk = (target: AskTarget) => {
+    const context = contextForAsk(target);
+    if (!context) return;
+    setDifferentiationContext(context);
+    setCalculusQuestion(false);
+    setAskTarget(null);
+    setSymbolBookOpen(false);
+    applyCalculusWith("differentiate", context, true);
+  };
 
   /**
    * The card the book shows: only a tapped node opens one (tap again to
@@ -2656,6 +2771,14 @@ const EquationBuilderTool = () => {
       applyCalculusWith(operation, current, true);
       return;
     }
+    // A chained graph offers BOTH the all-paths total and the frozen-slot
+    // partial — genuinely different derivatives. When more than one distinct
+    // reading exists, even a "deterministic" driver set must ask.
+    if (operation === "differentiate" && askDistinctCount > 1) {
+      setCalculusQuestion(true);
+      setSymbolBookOpen(true);
+      return;
+    }
     if (calculusReadiness.state === "deterministic") {
       const context = operation === "differentiate"
         ? calculusReadiness.context
@@ -3559,53 +3682,69 @@ const EquationBuilderTool = () => {
                       onHoverSymbol={(name) =>
                         setHoveredSymbolId(name ? symbolRecords.find((record) => record.name === name)?.id ?? null : null)
                       }
+                      parameters={symbolRecords.filter((record) => record.parameter).map((record) => record.name)}
+                      asking={calculusQuestion}
+                      candidates={askCandidates}
+                      flow={askPreview ? { wrt: askPreview.context.withRespectTo, deps: askPreview.deps } : null}
+                      onAskHover={setAskTarget}
+                      onAskCommit={commitAsk}
                     />
-                    {calculusQuestion && readingStrip && (
-                      <div className="mt-2 flex flex-wrap items-center gap-1">
-                        {readingStrip.context.dependent.map((name) => (
-                          <span
-                            key={name}
-                            title={`${name} moves with ${readingStrip.context.withRespectTo} — this symbol will be born`}
-                            className="rounded-full border border-amber-300 px-2 py-0.5 font-serif text-xs italic text-amber-700 dark:text-amber-400"
-                          >
-                            {derivedSymbolName(name, readingStrip.context.withRespectTo, "subscript")}
-                          </span>
-                        ))}
-                        {readingStrip.context.heldConstant.map((name) =>
-                          readingStrip.candidates.includes(name) ? (
-                            <button
-                              key={name}
-                              type="button"
-                              onClick={() => setAlongChoice(name)}
-                              title={`Held constant — tap to differentiate along ${name} instead`}
-                              className="rounded-full border border-dashed border-border px-2 py-0.5 font-serif text-xs italic text-muted-foreground/70 transition-colors hover:border-amber-300 hover:text-amber-700"
-                            >
-                              {name}
-                            </button>
-                          ) : (
-                            <span
-                              key={name}
-                              title={`${name} is unconnected — held constant`}
-                              className="rounded-full border border-border px-2 py-0.5 font-serif text-xs italic text-muted-foreground/70"
-                            >
-                              {name}
-                            </span>
-                          )
+                    {calculusQuestion && (
+                      <div className="mt-2 min-h-[3.2rem] rounded-lg border border-border bg-card px-3 py-2">
+                        {askPreview ? (
+                          <>
+                            <div className="font-serif text-lg italic">{askPreview.text}</div>
+                            <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
+                              <span className="rounded-full border border-amber-300 px-1.5 py-px text-amber-700 dark:text-amber-400">
+                                {askPreview.context.heldConstant.length > 0 ? "∂/∂" : "d/d"}
+                                <span className="font-serif italic">{askPreview.context.withRespectTo}</span>
+                                {" · "}{askPreview.kind}
+                              </span>
+                              {askPreview.context.heldConstant.length > 0 && (
+                                <span className="font-serif italic">{askPreview.context.heldConstant.join(", ")} held</span>
+                              )}
+                            </div>
+                          </>
+                        ) : (
+                          <p className="text-[11px] text-muted-foreground">
+                            Tap a pulsing symbol — every path from it moves. Tap an arrow for ∂ through
+                            that arrow only.
+                          </p>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setDifferentiationContext(readingStrip.context);
-                            applyCalculusWith("differentiate", readingStrip.context, true);
-                            setSymbolBookOpen(false);
-                          }}
-                          title="Differentiate both sides — the graph already answered every question"
-                          className="ml-auto rounded-full border border-amber-400 bg-amber-50 px-2.5 py-0.5 font-serif text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-950/60"
-                        >
-                          {readingStrip.context.mode === "partial" ? "∂/∂" : "d/d"}
-                          <span className="italic">{readingStrip.context.withRespectTo}</span> →
-                        </button>
                       </div>
+                    )}
+                    {!calculusQuestion && (
+                      <form
+                        className="mt-1.5 flex items-center gap-1.5"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const input = event.currentTarget.elements.namedItem("parameter-name") as HTMLInputElement;
+                          const name = input.value.trim();
+                          if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) return;
+                          if (symbolRecords.some((record) => record.name === name)) {
+                            input.value = "";
+                            return;
+                          }
+                          setSymbolRecords((records) => [
+                            ...records,
+                            {
+                              id: symbolIdForName(name),
+                              name,
+                              parameter: true,
+                              assumptions: [],
+                              provenance: { createdBy: "human", confirmedByHuman: true },
+                            },
+                          ]);
+                          input.value = "";
+                        }}
+                      >
+                        <input
+                          name="parameter-name"
+                          placeholder="+ hidden symbol, e.g. t"
+                          aria-label="Add a hidden parameter symbol"
+                          className="h-6 w-36 rounded-md border border-border bg-background px-1.5 font-serif text-[11px] italic placeholder:not-italic placeholder:font-sans placeholder:text-muted-foreground/60"
+                        />
+                      </form>
                     )}
                   </div>
                 )}
@@ -3634,10 +3773,34 @@ const EquationBuilderTool = () => {
                           <div className="text-xs font-medium">
                             {(record.dependsOn ?? []).length > 0
                               ? `Function of ${record.dependsOn!.join(", ")}`
-                              : "Model symbol"}
+                              : record.parameter
+                                ? "Hidden parameter — not in the equation"
+                                : "Model symbol"}
                           </div>
                           <div className="truncate font-mono text-[10px] text-muted-foreground">{record.id}</div>
                         </div>
+                        {record.parameter && (
+                          <button
+                            type="button"
+                            aria-label={`Remove parameter ${record.name}`}
+                            title="Remove this parameter and its arrows"
+                            onClick={() => {
+                              setSymbolRecords((records) =>
+                                records
+                                  .filter((item) => item.id !== record.id)
+                                  .map((item) => {
+                                    const rest = (item.dependsOn ?? []).filter((name) => name !== record.name);
+                                    const { dependsOn: _edges, ...bare } = item;
+                                    return rest.length > 0 ? { ...bare, dependsOn: rest } : bare;
+                                  })
+                              );
+                              setBookFocusName(null);
+                            }}
+                            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-rose-500"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
 
                       <div className="mt-2 grid grid-cols-[1fr_5.5rem] gap-2">
