@@ -1175,6 +1175,25 @@ export function introducesLnOf(n: TNode, v: Variable): boolean {
 }
 
 /** Flat terms → tree (for potential round-trips; kept total) */
+/**
+ * The equation REBUILT without a symbol: every addend that mentions it is
+ * dropped from both sides (an emptied side becomes 0). This is a building
+ * move, not algebra — the caller starts a fresh derivation from the result.
+ * Returns null when removal would erase the whole equation.
+ */
+export function withoutSymbol(te: TreeEq, name: string): TreeEq | null {
+  const strip = (side: TNode): TNode => {
+    const rest = addendsOf(side).filter((addend) => !varsIn(addend).has(name));
+    return rest.length === 0 ? tc(0) : rest.length === 1 ? rest[0] : tadd(...rest);
+  };
+  const left = simplify(strip(te.left));
+  const right = simplify(strip(te.right));
+  if (isZeroConst(left) && isZeroConst(right)) return null;
+  return ensureTreeEqIds({ left, right });
+}
+
+const isZeroConst = (node: TNode): boolean => node.kind === "const" && node.num === 0;
+
 export function flatToTree(terms: EqTerm[]): TNode {
   const conv = (t: EqTerm): TNode => {
     if (t.kind === "leaf") {

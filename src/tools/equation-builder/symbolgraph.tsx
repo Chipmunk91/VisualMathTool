@@ -47,6 +47,9 @@ interface Props {
   flow?: { wrt: string; deps: ReadonlySet<string> } | null;
   onAskHover?: (target: AskTarget | null) => void;
   onAskCommit?: (target: AskTarget) => void;
+  /** delete mode is armed — tapping a node removes that symbol */
+  deleteMode?: boolean;
+  onDeleteNode?: (name: string) => void;
 }
 
 const NODE_HALF_H = 22;
@@ -101,6 +104,8 @@ export const SymbolDependencyGraph = ({
   flow = null,
   onAskHover,
   onAskCommit,
+  deleteMode = false,
+  onDeleteNode,
 }: Props) => {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -144,7 +149,7 @@ export const SymbolDependencyGraph = ({
   };
 
   const onNodeDown = (name: string) => (event: ReactPointerEvent) => {
-    if (asking) return; // asking mode answers with clicks, not drags
+    if (asking || deleteMode) return; // those modes answer with clicks, not drags
     event.preventDefault();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     dragStartRef.current = { x: event.clientX, y: event.clientY };
@@ -289,9 +294,21 @@ export const SymbolDependencyGraph = ({
               onHoverSymbol?.(null);
               if (isCandidate) onAskHover?.(null);
             }}
-            onClick={isCandidate ? () => onAskCommit?.({ kind: "node", name }) : undefined}
+            onClick={
+              deleteMode
+                ? () => onDeleteNode?.(name)
+                : isCandidate
+                  ? () => onAskCommit?.({ kind: "node", name })
+                  : undefined
+            }
             className={`absolute flex min-h-9 min-w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-lg border bg-card px-2 font-serif text-lg italic shadow-sm transition-all ${
-              asking ? (isCandidate ? "z-10 cursor-pointer animate-pulse border-amber-400" : "opacity-60") : "cursor-grab active:cursor-grabbing"
+              deleteMode
+                ? "z-10 cursor-pointer hover:border-rose-400 hover:ring-2 hover:ring-rose-300"
+                : asking
+                  ? isCandidate
+                    ? "z-10 cursor-pointer animate-pulse border-amber-400"
+                    : "opacity-60"
+                  : "cursor-grab active:cursor-grabbing"
             } ${
               shakeName === name
                 ? "border-rose-400 ring-2 ring-rose-300"
@@ -308,11 +325,13 @@ export const SymbolDependencyGraph = ({
               top: `${(p.y / height) * 100}%`,
             }}
             title={
-              asking
-                ? isCandidate
-                  ? `Differentiate along ${name} — every path from it moves`
-                  : undefined
-                : `Tap: open ${name} · drag onto another symbol: “${name} drives it”`
+              deleteMode
+                ? `Remove ${name}`
+                : asking
+                  ? isCandidate
+                    ? `Differentiate along ${name} — every path from it moves`
+                    : undefined
+                  : `Tap: open ${name} · drag onto another symbol: “${name} drives it”`
             }
           >
             {name}

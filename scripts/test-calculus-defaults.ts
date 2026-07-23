@@ -14,7 +14,7 @@ import {
 } from "../src/tools/equation-builder/calculus";
 import { analyzeRelation } from "../src/tools/equation-builder/relation";
 import { parseEquation } from "../src/tools/equation-builder/parser";
-import { printNode, type TreeEq } from "../src/tools/equation-builder/tree";
+import { printNode, withoutSymbol, type TreeEq } from "../src/tools/equation-builder/tree";
 
 let passed = 0;
 let failed = 0;
@@ -318,6 +318,45 @@ check("subscript repeats: z_x → z_xx", derivedSymbolName("z_x", "x", "subscrip
       withParameter.context.withRespectTo === "t" &&
       withParameter.context.dependent.join() === "x,y,z",
     JSON.stringify(withParameter)
+  );
+}
+
+// --- Rebuilding without a symbol (the − button's equation-symbol case) -------
+{
+  const linear = parseEquation("y = m*x + b");
+  if (!linear.ok) throw new Error("parse");
+  const withoutX = withoutSymbol(linear.tree, "x");
+  check(
+    "removing x from y = mx + b rebuilds to y = b",
+    !!withoutX && printNode(withoutX.left) === "y" && printNode(withoutX.right) === "b",
+    withoutX ? `${printNode(withoutX.left)} = ${printNode(withoutX.right)}` : "null"
+  );
+  const surface = parseEquation("z = x^2 + y^2");
+  if (!surface.ok) throw new Error("parse");
+  const withoutY = withoutSymbol(surface.tree, "y");
+  check(
+    "removing y from z = x² + y² keeps z = x²",
+    !!withoutY && printNode(withoutY.right) === "x²",
+    withoutY ? printNode(withoutY.right) : "null"
+  );
+  const lone = parseEquation("x^2 = 4");
+  if (!lone.ok) throw new Error("parse");
+  const emptied = withoutSymbol(lone.tree, "x");
+  check(
+    "a side emptied by removal becomes 0 (the relation survives)",
+    !!emptied && printNode(emptied.left) === "0",
+    emptied ? printNode(emptied.left) : "null"
+  );
+  const trivial = parseEquation("x = 2*x");
+  if (!trivial.ok) throw new Error("parse");
+  check("removal that erases the whole equation is refused", withoutSymbol(trivial.tree, "x") === null);
+  const contradiction = parseEquation("x = x + 1");
+  if (!contradiction.ok) throw new Error("parse");
+  const zeroOne = withoutSymbol(contradiction.tree, "x");
+  check(
+    "removal that leaves a constant relation is honest (0 = 1)",
+    !!zeroOne && printNode(zeroOne.left) === "0" && printNode(zeroOne.right) === "1",
+    zeroOne ? `${printNode(zeroOne.left)} = ${printNode(zeroOne.right)}` : "null"
   );
 }
 
