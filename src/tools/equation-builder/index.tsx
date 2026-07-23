@@ -3751,8 +3751,9 @@ const EquationBuilderTool = () => {
               </header>
 
               <div className="overflow-y-auto p-2">
-                {symbolRecords.length >= 2 && (
+                {symbolRecords.length >= 1 && (
                   <div className="mb-2 rounded-xl bg-muted/35 p-2.5">
+                    {symbolRecords.length >= 2 && (
                     <SymbolDependencyGraph
                       names={symbolRecords.map((record) => record.name)}
                       edges={dependencyGraphEdges}
@@ -3772,6 +3773,7 @@ const EquationBuilderTool = () => {
                       deleteMode={deleteArm}
                       onDeleteNode={deleteSymbolNode}
                     />
+                    )}
                     {calculusQuestion && (
                       <div className="mt-2 min-h-[3.2rem] rounded-lg border border-border bg-card px-3 py-2">
                         {askPreview ? (
