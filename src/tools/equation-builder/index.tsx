@@ -17,6 +17,7 @@ import {
   printTreeEq,
   simplify as simplifyTree,
   symbolIdForName,
+  withoutSymbol,
   tadd,
   tc,
   tmul,
@@ -541,9 +542,12 @@ const EquationBuilderTool = () => {
   const [calculusQuestion, setCalculusQuestion] = useState(false);
   /** The graph target being hovered while asking — drives the preview. */
   const [askTarget, setAskTarget] = useState<AskTarget | null>(null);
+  /** Delete mode: armed by the − button, resolved by tapping a node. */
+  const [deleteArm, setDeleteArm] = useState(false);
   useEffect(() => {
     setCalculusQuestion(false);
     setAskTarget(null);
+    setDeleteArm(false);
   }, [treeEq]);
   useEffect(() => {
     if (!symbolBookOpen) {
@@ -683,6 +687,80 @@ const EquationBuilderTool = () => {
       const { dependsOn: _dropped, ...bare } = record;
       return rest.length > 0 ? { ...bare, dependsOn: rest } : bare;
     }));
+  };
+
+  /**
+   * + adds a hidden parameter and, heuristically, wires it as the source of
+   * every current input (the related-rates shape in one tap). Names walk the
+   * parameter convention: t, then s, u, v, w, r.
+   */
+  const addParameterNode = () => {
+    const taken = new Set(symbolRecords.map((record) => record.name));
+    const name = ["t", "s", "u", "v", "w", "r"].find((candidate) => !taken.has(candidate));
+    if (!name) return;
+    const equationNames = new Set(relationAnalysis?.symbols ?? []);
+    const inputs = symbolRecords
+      .map((record) => record.name)
+      .filter((symbol) =>
+        equationNames.has(symbol) &&
+        !dependencyGraphEdges.some((edge) => edge.to === symbol)
+      );
+    setSymbolRecords((records) => [
+      ...records.map((record) =>
+        inputs.includes(record.name)
+          ? {
+              ...record,
+              dependsOn: Array.from(new Set([...(record.dependsOn ?? []), name])).sort(),
+              provenance: { ...record.provenance, confirmedByHuman: true },
+            }
+          : record
+      ),
+      {
+        id: symbolIdForName(name),
+        name,
+        parameter: true,
+        assumptions: [],
+        provenance: { createdBy: "human", confirmedByHuman: true },
+      },
+    ]);
+  };
+
+  /**
+   * Tapping a node in delete mode. A parameter simply vanishes (with its
+   * edges). An equation symbol is a REBUILD: every addend that mentions it
+   * drops from both sides and the result starts a fresh derivation — this
+   * is loading a new equation, not an algebra step.
+   */
+  const deleteSymbolNode = (name: string) => {
+    setDeleteArm(false);
+    const record = symbolRecords.find((item) => item.name === name);
+    if (!record) return;
+    if (record.parameter) {
+      setSymbolRecords((records) =>
+        records
+          .filter((item) => item.id !== record.id)
+          .map((item) => {
+            const rest = (item.dependsOn ?? []).filter((edge) => edge !== name);
+            const { dependsOn: _edges, ...bare } = item;
+            return rest.length > 0 ? { ...bare, dependsOn: rest } : bare;
+          })
+      );
+      if (bookFocusName === name) setBookFocusName(null);
+      return;
+    }
+    const rebuilt = withoutSymbol(treeEq, name);
+    if (!rebuilt) {
+      flashNotice(`Removing ${name} would erase the whole equation.`);
+      return;
+    }
+    setTreeEq(rebuilt);
+    setHistory([makeTreeStep("start", rebuilt, false, `rebuilt without ${name}`)]);
+    setDocumentId(freshDocumentId());
+    setSelection(null);
+    setSpecialBubble(null);
+    setDismissedFactorizationHints(new Set());
+    setNotice(null);
+    setBookFocusName(null);
   };
   const analyzedRevisionRef = useRef<string | null>(null);
   useEffect(() => {
@@ -2083,6 +2161,9 @@ const EquationBuilderTool = () => {
     // normalizations record their assumptions on step zero. Typed function
     // notation (y(x) = …) lands as dependency edges when records reconcile.
     if (result.dependencies) pendingDependenciesRef.current = result.dependencies;
+    // A typed equation is a fresh model: hidden parameters belonged to the
+    // previous one. (Share links restore theirs from the document instead.)
+    setSymbolRecords((records) => records.filter((record) => !record.parameter));
     const norm = normalizeOnLoad(result.tree);
     setTreeEq(norm.te);
     setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
@@ -3688,6 +3769,8 @@ const EquationBuilderTool = () => {
                       flow={askPreview ? { wrt: askPreview.context.withRespectTo, deps: askPreview.deps } : null}
                       onAskHover={setAskTarget}
                       onAskCommit={commitAsk}
+                      deleteMode={deleteArm}
+                      onDeleteNode={deleteSymbolNode}
                     />
                     {calculusQuestion && (
                       <div className="mt-2 min-h-[3.2rem] rounded-lg border border-border bg-card px-3 py-2">
@@ -3714,37 +3797,36 @@ const EquationBuilderTool = () => {
                       </div>
                     )}
                     {!calculusQuestion && (
-                      <form
-                        className="mt-1.5 flex items-center gap-1.5"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          const input = event.currentTarget.elements.namedItem("parameter-name") as HTMLInputElement;
-                          const name = input.value.trim();
-                          if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) return;
-                          if (symbolRecords.some((record) => record.name === name)) {
-                            input.value = "";
-                            return;
-                          }
-                          setSymbolRecords((records) => [
-                            ...records,
-                            {
-                              id: symbolIdForName(name),
-                              name,
-                              parameter: true,
-                              assumptions: [],
-                              provenance: { createdBy: "human", confirmedByHuman: true },
-                            },
-                          ]);
-                          input.value = "";
-                        }}
-                      >
-                        <input
-                          name="parameter-name"
-                          placeholder="+ hidden symbol, e.g. t"
-                          aria-label="Add a hidden parameter symbol"
-                          className="h-6 w-36 rounded-md border border-border bg-background px-1.5 font-serif text-[11px] italic placeholder:not-italic placeholder:font-sans placeholder:text-muted-foreground/60"
-                        />
-                      </form>
+                      <div className="mt-1.5 flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={addParameterNode}
+                          aria-label="Add a hidden driving symbol"
+                          title="Add a hidden symbol, wired as the source of every input (related rates)"
+                          className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-sm text-muted-foreground transition-colors hover:border-amber-300 hover:text-amber-700"
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeleteArm((armed) => !armed)}
+                          aria-pressed={deleteArm}
+                          aria-label="Remove a symbol"
+                          title="Remove a symbol — then tap it on the canvas"
+                          className={`flex h-6 w-6 items-center justify-center rounded-md border text-sm transition-colors ${
+                            deleteArm
+                              ? "border-rose-400 bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400"
+                              : "border-border bg-background text-muted-foreground hover:border-rose-300 hover:text-rose-500"
+                          }`}
+                        >
+                          −
+                        </button>
+                        {deleteArm && (
+                          <span className="text-[10px] text-rose-500">
+                            tap a symbol to remove it — an equation symbol rebuilds the equation without it
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
