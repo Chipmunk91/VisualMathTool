@@ -9,6 +9,7 @@ import {
   differentiateRelation,
   inferCalculusDefaults,
   integrationDefaultsFrom,
+  validateCalculusContext,
   type DifferentiationContext,
 } from "../src/tools/equation-builder/calculus";
 import { analyzeRelation } from "../src/tools/equation-builder/relation";
@@ -258,6 +259,66 @@ check("subscript repeats: z_x → z_xx", derivedSymbolName("z_x", "x", "subscrip
 
   const known = parseEquation("sin(x) = y");
   check("known functions are never hijacked as declarations", known.ok && known.dependencies === undefined);
+}
+
+// --- Hidden parameters and slot partials -------------------------------------
+{
+  // Related rates: t never appears in the equation, yet drives x and y.
+  const surface = parseEquation("z = x^2 + y^2");
+  if (!surface.ok) throw new Error("parse");
+  const parametric = {
+    mode: "total" as const,
+    withRespectTo: "t",
+    dependent: ["x", "y", "z"],
+    heldConstant: [] as string[],
+    notation: "subscript" as const,
+  };
+  check(
+    "a parameter outside the equation validates when dependents are inside",
+    validateCalculusContext(surface.tree, parametric).ok
+  );
+  const related = differentiateRelation(surface.tree, parametric);
+  check(
+    "related rates: z_t = 2x·x_t + 2y·y_t",
+    typeof related !== "string" &&
+      printNode(related.equation.left) === "z_t" &&
+      printNode(related.equation.right).includes("x_t") &&
+      printNode(related.equation.right).includes("y_t"),
+    typeof related === "string" ? related : printNode(related.equation.right)
+  );
+  check(
+    "a parameter with no dependents is refused",
+    !validateCalculusContext(surface.tree, { ...parametric, dependent: [], heldConstant: ["x", "y", "z"] }).ok
+  );
+
+  // Slot partial: y frozen even though the graph chains y(x).
+  const slot = {
+    mode: "partial" as const,
+    withRespectTo: "x",
+    dependent: ["z"],
+    heldConstant: ["y"],
+    notation: "subscript" as const,
+  };
+  const direct = differentiateRelation(surface.tree, slot);
+  check(
+    "slot partial freezes the connected symbol: z_x = 2x",
+    typeof direct !== "string" && printNode(direct.equation.right) === "2x",
+    typeof direct === "string" ? direct : printNode(direct.equation.right)
+  );
+
+  // The graph with a parameter wired to both inputs is deterministic.
+  const withParameter = inferCalculusDefaults({
+    symbols: ["t", "x", "y", "z"],
+    isolations: analyzeRelation(surface.tree).isolations,
+    dependencies: { x: ["t"], y: ["t"], z: ["x", "y"] },
+  });
+  check(
+    "t→x, t→y makes the surface one-tap along t",
+    withParameter.state === "deterministic" &&
+      withParameter.context.withRespectTo === "t" &&
+      withParameter.context.dependent.join() === "x,y,z",
+    JSON.stringify(withParameter)
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
