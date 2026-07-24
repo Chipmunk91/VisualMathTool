@@ -30,7 +30,11 @@ jobs:
       - run: npm run build
         env:
           VITE_EQUATION_SESSION_URL: ${{ vars.EQUATION_SESSION_URL }}
+      # The repository rename (VisualizeVector → VisualMathTool) dropped the
+      # Pages site registration; enablement recreates it when missing.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
