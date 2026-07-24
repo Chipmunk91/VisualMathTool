@@ -73,7 +73,9 @@ export const IntegrationActionArgumentsSchema = CalculusBaseSchema.extend({
   mode: z.enum(["ordinary", "partial"]),
   bounds: z.object({
     lower: z.number().finite(),
-    upper: z.number().finite(),
+    // A string upper bound ACCUMULATES: the integral runs to a newborn
+    // symbol (∫₀ᵘ). Name legality is validated by the calculus context.
+    upper: z.union([z.number().finite(), z.string().trim().min(1).max(8)]),
   }).strict().optional(),
 }).strict();
 

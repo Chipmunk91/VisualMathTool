@@ -313,6 +313,43 @@ export function freeVarsIn(n: TNode): Set<Variable> {
   return out;
 }
 
+/**
+ * Every FREE occurrence of a variable replaced by an expression (the FTC's
+ * F(b) − F(a)). Binder positions are never rewritten: a calculus operator's
+ * own variable stays, and under a d/d{name} or ∫…d{name} the name is theirs,
+ * not ours. The replacement may land in several positions with shared node
+ * ids — callers re-id the result (ensureTreeEqIds).
+ */
+export function substituteVar(n: TNode, name: Variable, replacement: TNode): TNode {
+  const sub = (m: TNode): TNode => {
+    switch (m.kind) {
+      case "const":
+      case "named":
+        return m;
+      case "var":
+        return m.name === name ? replacement : m;
+      case "add":
+        return { ...m, terms: m.terms.map(sub) };
+      case "mul":
+        return { ...m, factors: m.factors.map(sub) };
+      case "pow":
+        return { ...m, base: sub(m.base), exp: sub(m.exp) };
+      case "fn":
+        return { ...m, arg: sub(m.arg) };
+      case "derivative":
+        return m.variable.name === name ? m : { ...m, expression: sub(m.expression) };
+      case "integral": {
+        const bounds = m.bounds
+          ? { lower: sub(m.bounds.lower), upper: sub(m.bounds.upper) }
+          : undefined;
+        if (m.variable.name === name) return { ...m, bounds };
+        return { ...m, integrand: sub(m.integrand), bounds };
+      }
+    }
+  };
+  return sub(n);
+}
+
 /** Canonical structural key for matching — semantic ids are deliberately omitted. */
 export function keyOf(n: TNode): string {
   switch (n.kind) {
@@ -1124,22 +1161,29 @@ function linearIn(n: TNode, v: Variable): { aNum: number; aDen: number } | null 
  * CANNOT be total: some integrands (e^(−x²)) provably have no elementary
  * antiderivative at all — refusal is the mathematics, not a shortcut.
  * Introduced ln's carry a positivity assumption; the MOVE pins the pill.
+ *
+ * `opaque` names may NOT be treated as constants (they secretly depend on v —
+ * the dependent symbols of the relation). A bare opaque occurrence refuses,
+ * but d(opaque)/dv folds exactly: ∫(dy/dx)dx = y is the round trip.
  */
 export function antiderivative(
   n: TNode,
   v: Variable,
-  variableSymbolId = symbolIdForName(v)
+  variableSymbolId = symbolIdForName(v),
+  opaque: ReadonlySet<Variable> = new Set()
 ): TNode | null {
+  const blocked = (m: TNode): boolean =>
+    Array.from(varsIn(m)).some((name) => name !== v && opaque.has(name));
   switch (n.kind) {
     case "const":
     case "named":
       return tmul(n, tv(v, variableSymbolId));
     case "var":
-      return n.name === v
-        ? tmul(tc(1, 2), tpow(tv(v, variableSymbolId), 2))
-        : tmul(n, tv(v, variableSymbolId));
+      if (n.name === v) return tmul(tc(1, 2), tpow(tv(v, variableSymbolId), 2));
+      if (opaque.has(n.name)) return null;
+      return tmul(n, tv(v, variableSymbolId));
     case "add": {
-      const parts = n.terms.map((t) => antiderivative(t, v, variableSymbolId));
+      const parts = n.terms.map((t) => antiderivative(t, v, variableSymbolId, opaque));
       if (parts.some((p) => p === null)) return null;
       return tadd(...(parts as TNode[]));
     }
@@ -1147,14 +1191,16 @@ export function antiderivative(
       // factors free of v ride along as constants; one v-core integrates
       const { num, den, core } = splitCoef(n);
       const constant = core.filter((f) => !varsIn(f).has(v));
+      if (constant.some(blocked)) return null; // a dependent is no constant
       const living = core.filter((f) => varsIn(f).has(v));
       if (living.length === 0) return tmul(n, tv(v, variableSymbolId));
       if (living.length > 1) return null; // no product rule for integrals
-      const inner = antiderivative(living[0], v, variableSymbolId);
+      const inner = antiderivative(living[0], v, variableSymbolId, opaque);
       if (inner === null) return null;
       return tmul(tc(num, den), ...constant, inner);
     }
     case "pow": {
+      if (blocked(n)) return null;
       // u^c for linear u: u^(c+1) / (a·(c+1)); c = −1 gives ln(u)/a
       if (n.exp.kind === "const" && varsIn(n.base).has(v)) {
         const lin = linearIn(n.base, v);
@@ -1175,6 +1221,7 @@ export function antiderivative(
       return null;
     }
     case "fn": {
+      if (blocked(n)) return null;
       if (!varsIn(n.arg).has(v)) return tmul(n, tv(v)); // a constant in disguise
       const lin = linearIn(n.arg, v);
       if (!lin) return null; // chain rule has no reverse gear beyond linear

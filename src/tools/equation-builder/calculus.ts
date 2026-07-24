@@ -4,6 +4,7 @@ import {
   freeVarsIn,
   introducesLnOf,
   simplify,
+  substituteVar,
   symbolIdForName,
   tadd,
   tc,
@@ -54,7 +55,13 @@ export interface IntegrationContext {
   heldConstant: string[];
   /** Explicit confirmation for identities that have no dependent symbol. */
   treatAsIdentity?: boolean;
-  bounds?: [number, number];
+  /**
+   * The span. Two numbers: DEFINITE — the primitive is evaluated at the ends
+   * (fundamental theorem) and the variable is consumed. A string upper end:
+   * ACCUMULATION — the integral runs to a newborn symbol (∫₀ᵘ), the dummy is
+   * consumed and u enters the relation. Absent: indefinite (+C).
+   */
+  bounds?: [number, number | string];
 }
 
 export interface CalculusResult {
@@ -119,7 +126,28 @@ export function validateCalculusContext(
   }
   if ("bounds" in context && context.bounds) {
     const [lower, upper] = context.bounds;
-    if (!Number.isFinite(lower) || !Number.isFinite(upper) || lower === upper) {
+    if (!Number.isFinite(lower)) {
+      return { ok: false, message: "The lower bound must be a finite number." };
+    }
+    if (typeof upper === "string") {
+      // Accumulation: the upper end births a NEW symbol.
+      const name = upper;
+      if (!/^[A-Za-zͰ-Ͽ][A-Za-z0-9Ͱ-Ͽ]{0,2}$/.test(name)) {
+        return { ok: false, message: `"${upper}" is not a usable symbol name for the upper bound.` };
+      }
+      if (name === context.withRespectTo) {
+        return {
+          ok: false,
+          message: `${name} is being integrated away — accumulate to a new symbol instead.`,
+        };
+      }
+      if (symbols.includes(name)) {
+        return {
+          ok: false,
+          message: `${name} is already in this relation — accumulation births a fresh symbol.`,
+        };
+      }
+    } else if (!Number.isFinite(upper) || lower === upper) {
       return { ok: false, message: "Integration bounds must be two different finite numbers." };
     }
   }
@@ -359,15 +387,33 @@ export function integrateRelation(
   if (!validation.ok) return validation.message ?? "The integration context is incomplete.";
   const dependent = new Set(context.dependent);
   const operationVariable = symbolRefInEquation(equation, context.withRespectTo);
+  const upperBound = context.bounds?.[1];
+  const accumulates = typeof upperBound === "string";
   const bounds = context.bounds
-    ? { lower: numberNode(context.bounds[0]), upper: numberNode(context.bounds[1]) }
+    ? {
+        lower: numberNode(context.bounds[0]),
+        upper: typeof upperBound === "string" ? tv(upperBound) : numberNode(upperBound as number),
+      }
     : undefined;
   let introducedLn = false;
   const integrateSide = (node: TNode): TNode => {
-    if (bounds || containsDependent(node, dependent)) {
-      return tint(node, operationVariable, bounds);
+    if (bounds) {
+      // A side holding a dependent symbol has no known primitive — it stays
+      // an honest bounded ∫ (the dummy is consumed either way).
+      if (containsDependent(node, dependent)) return tint(node, operationVariable, bounds);
+      const primitive = antiderivative(node, context.withRespectTo, operationVariable.symbolId);
+      if (!primitive) return tint(node, operationVariable, bounds);
+      introducedLn ||= introducesLnOf(primitive, context.withRespectTo);
+      // The fundamental theorem: the primitive at the ends. A symbolic upper
+      // end (accumulation) lands F(u) − F(a) with u newborn.
+      return simplify(tadd(
+        substituteVar(primitive, context.withRespectTo, bounds.upper),
+        tmul(tc(-1), substituteVar(primitive, context.withRespectTo, bounds.lower))
+      ));
     }
-    const primitive = antiderivative(node, context.withRespectTo, operationVariable.symbolId);
+    // Indefinite: dependents are opaque (they secretly vary with the
+    // operation variable), but ∫(dy/dx)dx = y folds — the round trip.
+    const primitive = antiderivative(node, context.withRespectTo, operationVariable.symbolId, dependent);
     if (!primitive) return tint(node, operationVariable);
     const simplified = simplify(primitive);
     introducedLn ||= introducesLnOf(simplified, context.withRespectTo);
@@ -383,10 +429,16 @@ export function integrateRelation(
   const dependentText = context.dependent.length > 0
     ? `; retained integrals containing dependent ${context.dependent.join(", ")}`
     : "; the relation was explicitly confirmed as an identity";
+  const kind = bounds ? (accumulates ? "accumulation" : "definite") : "indefinite";
+  const spanText = bounds
+    ? accumulates
+      ? `; accumulated from ${context.bounds![0]} to newborn ${String(upperBound)}`
+      : "; evaluated the primitive at the bounds (fundamental theorem)"
+    : "; C records the integration constant";
   return {
     equation: next,
-    label: `${context.bounds ? "definite" : "indefinite"} integral with respect to ${context.withRespectTo}`,
-    note: `Integrated both sides${heldText}${dependentText}${bounds ? "" : "; C records the integration constant"}.`,
+    label: `${kind} integral with respect to ${context.withRespectTo}`,
+    note: `Integrated both sides${heldText}${dependentText}${spanText}.`,
     pill: introducedLn ? "logarithm argument > 0" : undefined,
   };
 }
