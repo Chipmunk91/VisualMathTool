@@ -289,11 +289,16 @@ export function CalculusContextPanel({
               />
               <span className="text-muted-foreground">to</span>
               <input
-                aria-label="Upper integration bound"
-                type="number"
-                step="any"
-                value={integration.bounds[1]}
-                onChange={(event) => onContext({ ...integration, bounds: [integration.bounds![0], Number(event.target.value)] })}
+                aria-label="Upper integration bound (a number, or a new symbol to accumulate to)"
+                type="text"
+                inputMode="decimal"
+                value={String(integration.bounds[1])}
+                onChange={(event) => {
+                  const raw = event.target.value.trim();
+                  // A number is definite; a name accumulates to a newborn symbol.
+                  const upper = raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
+                  onContext({ ...integration, bounds: [integration.bounds![0], upper] });
+                }}
                 className="h-8 w-20 rounded-lg border border-border bg-background px-2"
               />
             </div>

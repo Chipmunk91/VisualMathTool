@@ -540,7 +540,10 @@ console.log("\n== explicit multivariable calculus contexts ==");
     typeof total === "string" ? total : printTreeEq(total.equation)
   );
 
-  const definite = integrateRelation(parsed("x = 1"), {
+  // Definite integration now EVALUATES known primitives (the fundamental
+  // theorem) — the inert bounded ∫ survives only where the whitelist ends,
+  // and that is where the bounds must remain first-class operator data.
+  const definite = integrateRelation(parsed("e^(x^2) = 1"), {
     mode: "ordinary",
     withRespectTo: "x",
     dependent: [],
@@ -549,10 +552,23 @@ console.log("\n== explicit multivariable calculus contexts ==");
     bounds: [0, 1],
   });
   check(
-    "G8 definite integration preserves both bounds as first-class operator data",
+    "G8 an unevaluable definite ∫ preserves both bounds as first-class operator data",
     typeof definite !== "string" && printTreeEq(definite.equation).includes("∫_[0,1]") &&
       !printTreeEq(definite.equation).includes("C"),
     typeof definite === "string" ? definite : printTreeEq(definite.equation)
+  );
+  const evaluated = integrateRelation(parsed("x = 1"), {
+    mode: "ordinary",
+    withRespectTo: "x",
+    dependent: [],
+    heldConstant: [],
+    treatAsIdentity: true,
+    bounds: [0, 1],
+  });
+  check(
+    "G8b a known primitive evaluates at the bounds (fundamental theorem)",
+    typeof evaluated !== "string" && printTreeEq(evaluated.equation) === "1/2 = 1",
+    typeof evaluated === "string" ? evaluated : printTreeEq(evaluated.equation)
   );
 
   const renameSeed = parsed("y = x^2");

@@ -8,9 +8,11 @@ import {
   derivedSymbolName,
   differentiateRelation,
   inferCalculusDefaults,
+  integrateRelation,
   integrationDefaultsFrom,
   validateCalculusContext,
   type DifferentiationContext,
+  type IntegrationContext,
 } from "../src/tools/equation-builder/calculus";
 import { analyzeRelation } from "../src/tools/equation-builder/relation";
 import { parseEquation } from "../src/tools/equation-builder/parser";
@@ -430,6 +432,90 @@ check("subscript repeats: z_x → z_xx", derivedSymbolName("z_x", "x", "subscrip
   const derivative = ensureTreeEqIds({ left: tv("y"), right: tdiff(tpow(tv("x"), tc(2)), "x") });
   check("a derivative keeps its dummy free", names(freeVarsIn(derivative.right)) === "x",
     names(freeVarsIn(derivative.right)));
+}
+
+// --- I1 PR 2: span kinds — FTC, accumulation, round trip --------------------
+{
+  const ictx = (
+    withRespectTo: string,
+    dependent: string[],
+    bounds?: [number, number | string]
+  ): IntegrationContext => ({ mode: "ordinary", withRespectTo, dependent, heldConstant: [], bounds });
+
+  // Definite: y = 2x over [0,2] → known side evaluates, dependent side stays honest
+  const definite = integrateRelation(eq("y = 2*x"), ictx("x", ["y"], [0, 2]));
+  check("FTC: the known side evaluates (∫₀² 2x dx = 4)",
+    typeof definite !== "string" && printNode(definite.equation.right) === "4",
+    typeof definite === "string" ? definite : printNode(definite.equation.right));
+  check("FTC: the dependent side stays a bounded ∫",
+    typeof definite !== "string" && definite.equation.left.kind === "integral" &&
+      definite.equation.left.kind === "integral" && !!definite.equation.left.bounds);
+  check("FTC: x was consumed — it leaves the relation",
+    typeof definite !== "string" && analyzeRelation(definite.equation).symbols.join(",") === "y",
+    typeof definite === "string" ? definite : analyzeRelation(definite.equation).symbols.join(","));
+  check("FTC labels itself definite",
+    typeof definite !== "string" && definite.label.startsWith("definite"));
+
+  // Accumulation: y = sin(t) to newborn x → cos(0) − cos(x) shape
+  const acc = integrateRelation(eq("y = sin(t)"), ictx("t", ["y"], [0, "x"]));
+  check("accumulation folds via the primitive (t → x)",
+    typeof acc !== "string" && freeVarsIn(acc.equation.right).has("x") &&
+      !freeVarsIn(acc.equation.right).has("t"),
+    typeof acc === "string" ? acc : printNode(acc.equation.right));
+  check("accumulation: relation symbols are now x and y",
+    typeof acc !== "string" && analyzeRelation(acc.equation).symbols.join(",") === "x,y",
+    typeof acc === "string" ? acc : analyzeRelation(acc.equation).symbols.join(","));
+  check("accumulation labels itself",
+    typeof acc !== "string" && acc.label.startsWith("accumulation"));
+
+  // Accumulation name rules
+  check("accumulating to the spread symbol is refused",
+    typeof integrateRelation(eq("y = sin(t)"), ictx("t", ["y"], [0, "t"])) === "string");
+  check("accumulating to an existing symbol is refused",
+    typeof integrateRelation(eq("y = sin(t)"), ictx("t", ["y"], [0, "y"])) === "string");
+  check("a non-name upper bound is refused",
+    typeof integrateRelation(eq("y = sin(t)"), ictx("t", ["y"], [0, "2x"])) === "string");
+
+  // Whitelist miss: the bounded ∫ stands (e^(x²) has no elementary primitive)
+  const gauss = ensureTreeEqIds({ left: tv("y"), right: tfn("exp", tpow(tv("x"), tc(2))) });
+  const stuck = integrateRelation(gauss, ictx("x", ["y"], [0, 1]));
+  check("no primitive → the bounded ∫ stands, honestly",
+    typeof stuck !== "string" && stuck.equation.right.kind === "integral" &&
+      stuck.equation.right.kind === "integral" && !!stuck.equation.right.bounds);
+
+  // Round trip: ∫(dy/dx)dx folds back to y; C born on the known side
+  const prime = ensureTreeEqIds({ left: tdiff(tv("y"), "x"), right: tmul(tc(4), tv("x")) });
+  const roundTrip = integrateRelation(prime, ictx("x", ["y"]));
+  check("∫(dy/dx)dx folds back to y",
+    typeof roundTrip !== "string" && printNode(roundTrip.equation.left) === "y",
+    typeof roundTrip === "string" ? roundTrip : printNode(roundTrip.equation.left));
+  check("…and C is born with the primitive 2x²",
+    typeof roundTrip !== "string" && freeVarsIn(roundTrip.equation.right).has("C") &&
+      freeVarsIn(roundTrip.equation.right).has("x"),
+    typeof roundTrip === "string" ? roundTrip : printNode(roundTrip.equation.right));
+
+  // A bare dependent is opaque — never integrated as a constant
+  const opaque = integrateRelation(eq("y = 2*x"), ictx("x", ["y"]));
+  check("a bare dependent side stays an honest unbounded ∫",
+    typeof opaque !== "string" && opaque.equation.left.kind === "integral" &&
+      opaque.equation.left.kind === "integral" && !opaque.equation.left.bounds,
+    typeof opaque === "string" ? opaque : printNode(opaque.equation.left));
+  const rider = integrateRelation(
+    ensureTreeEqIds({ left: tv("z"), right: tmul(tv("y"), tv("x")) }),
+    ictx("x", ["y", "z"])
+  );
+  check("a dependent coefficient blocks the fold (no ∫y·x dx = y·x²/2)",
+    typeof rider !== "string" && printNode(rider.equation.right).includes("∫"),
+    typeof rider === "string" ? rider : printNode(rider.equation.right));
+
+  // FTC keeps the ln pill honest: ∫₁² dx/x = ln(2) − ln(1)
+  const lnCase = integrateRelation(
+    ensureTreeEqIds({ left: tv("y"), right: tpow(tv("x"), tc(-1)) }),
+    ictx("x", ["y"], [1, 2])
+  );
+  check("FTC through ln keeps the positivity pill",
+    typeof lnCase !== "string" && lnCase.pill === "logarithm argument > 0",
+    typeof lnCase === "string" ? lnCase : String(lnCase.pill));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
