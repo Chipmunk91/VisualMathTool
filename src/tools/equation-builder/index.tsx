@@ -106,6 +106,7 @@ import {
   graphContextFor,
   graphDrivers,
   inferCalculusDefaults,
+  integrateRelation,
   integrationDefaultsFrom,
   validateCalculusContext,
   type DifferentiationContext,
@@ -542,17 +543,32 @@ const EquationBuilderTool = () => {
   const [calculusQuestion, setCalculusQuestion] = useState(false);
   /** The graph target being hovered while asking — drives the preview. */
   const [askTarget, setAskTarget] = useState<AskTarget | null>(null);
+  /**
+   * The ∫ entrance: pressing ∫ opens the span pane. The along-symbol comes
+   * from the graph (auto-selected when unique, tapped otherwise) and the
+   * SPAN decides the kind — empty: indefinite (+C), two numbers: definite
+   * (fundamental theorem, the symbol is consumed), a fresh name as the
+   * upper end: accumulation (the integral runs to a newborn symbol).
+   */
+  const [integralAsk, setIntegralAsk] = useState(false);
+  const [intAlong, setIntAlong] = useState<string | null>(null);
+  const [spanFrom, setSpanFrom] = useState("");
+  const [spanTo, setSpanTo] = useState("");
   /** Delete mode: armed by the − button, resolved by tapping a node. */
   const [deleteArm, setDeleteArm] = useState(false);
   useEffect(() => {
     setCalculusQuestion(false);
     setAskTarget(null);
+    setIntegralAsk(false);
+    setIntAlong(null);
     setDeleteArm(false);
   }, [treeEq]);
   useEffect(() => {
     if (!symbolBookOpen) {
       setCalculusQuestion(false);
       setAskTarget(null);
+      setIntegralAsk(false);
+      setIntAlong(null);
     }
   }, [symbolBookOpen]);
 
@@ -658,6 +674,65 @@ const EquationBuilderTool = () => {
     setAskTarget(null);
     setSymbolBookOpen(false);
     applyCalculusWith("differentiate", context, true);
+  };
+
+  /** The span inputs ARE the kind selector — no mode dropdown exists. */
+  const spanReading = useMemo(():
+    | { kind: "indefinite"; bounds?: undefined }
+    | { kind: "definite" | "accumulation"; bounds: [number, number | string] }
+    | { kind: "incomplete"; bounds?: undefined } => {
+    const from = spanFrom.trim();
+    const to = spanTo.trim();
+    if (!from && !to) return { kind: "indefinite" };
+    if (to && Number.isNaN(Number(to))) {
+      const lower = from === "" ? 0 : Number(from);
+      if (Number.isNaN(lower)) return { kind: "incomplete" };
+      return { kind: "accumulation", bounds: [lower, to] };
+    }
+    if (from !== "" && to !== "" && !Number.isNaN(Number(from)) && !Number.isNaN(Number(to))) {
+      return { kind: "definite", bounds: [Number(from), Number(to)] };
+    }
+    return { kind: "incomplete" };
+  }, [spanFrom, spanTo]);
+
+  /** Live would-be equation for the chosen along-symbol + span. */
+  const intPreview = useMemo(() => {
+    if (!integralAsk || !intAlong) return null;
+    const base = contextForAsk({ kind: "node", name: intAlong });
+    if (!base) return null;
+    const context: IntegrationContext = {
+      ...integrationDefaultsFrom(base),
+      ...(spanReading.bounds ? { bounds: spanReading.bounds } : {}),
+    };
+    if (spanReading.kind === "incomplete") {
+      return { context, span: spanReading.kind, text: null, note: "fill both ends of the span, or clear them", ok: false as const };
+    }
+    const validation = validateCalculusContext(treeEq, context);
+    if (!validation.ok) {
+      return { context, span: spanReading.kind, text: null, note: validation.message ?? "", ok: false as const };
+    }
+    const result = integrateRelation(treeEq, context);
+    if (typeof result === "string") {
+      return { context, span: spanReading.kind, text: null, note: result, ok: false as const };
+    }
+    return {
+      context,
+      span: spanReading.kind,
+      text: printTreeEq(result.equation),
+      note: result.pill ?? null,
+      ok: true as const,
+      deps: new Set(context.dependent),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [integralAsk, intAlong, spanReading, treeEq, effectiveDependencies, calculusReadiness]);
+
+  const commitIntegral = () => {
+    if (!intPreview?.ok) return;
+    setIntegrationContext(intPreview.context);
+    setIntegralAsk(false);
+    setIntAlong(null);
+    setSymbolBookOpen(false);
+    applyCalculusWith("integrate", intPreview.context, true);
   };
 
   /**
@@ -2847,7 +2922,33 @@ const EquationBuilderTool = () => {
    */
   const quickCalculus = (operation: "differentiate" | "integrate") => {
     if (!calculusReadiness) return;
-    const current = operation === "differentiate" ? differentiationContext : integrationContext;
+    if (operation === "integrate") {
+      if (calculusReadiness.state === "solution-set") {
+        flashNotice(calculusReadiness.explanation);
+        openCalculusPanel(operation);
+        return;
+      }
+      if (calculusReadiness.state === "no-symbols") {
+        openCalculusPanel(operation);
+        return;
+      }
+      // The ∫ entrance is the span pane: the along-symbol comes from the
+      // graph (auto when unique), and the span decides the kind. The full
+      // panel stays reachable behind ⚙ for exotic contexts.
+      setSpanFrom("");
+      setSpanTo("");
+      setIntAlong(
+        askCandidates.length === 1
+          ? askCandidates[0]
+          : calculusReadiness.state === "deterministic" && askDistinctCount <= 1
+            ? calculusReadiness.context.withRespectTo
+            : null
+      );
+      setIntegralAsk(true);
+      setSymbolBookOpen(true);
+      return;
+    }
+    const current = differentiationContext;
     if (current.dependent.length > 0 && validateCalculusContext(treeEq, current).ok) {
       applyCalculusWith(operation, current, true);
       return;
@@ -2855,18 +2956,14 @@ const EquationBuilderTool = () => {
     // A chained graph offers BOTH the all-paths total and the frozen-slot
     // partial — genuinely different derivatives. When more than one distinct
     // reading exists, even a "deterministic" driver set must ask.
-    if (operation === "differentiate" && askDistinctCount > 1) {
+    if (askDistinctCount > 1) {
       setCalculusQuestion(true);
       setSymbolBookOpen(true);
       return;
     }
     if (calculusReadiness.state === "deterministic") {
-      const context = operation === "differentiate"
-        ? calculusReadiness.context
-        : integrationDefaultsFrom(calculusReadiness.context);
-      if (operation === "differentiate") setDifferentiationContext(context as DifferentiationContext);
-      else setIntegrationContext(context as IntegrationContext);
-      applyCalculusWith(operation, context, true);
+      setDifferentiationContext(calculusReadiness.context);
+      applyCalculusWith(operation, calculusReadiness.context, true);
       return;
     }
     if (calculusReadiness.state === "solution-set") {
@@ -2876,7 +2973,7 @@ const EquationBuilderTool = () => {
     }
     // Ambiguity is a question about the SYMBOLS — the graph answers it. The
     // full panel stays reachable behind ⚙ for bounds and exotic contexts.
-    if (operation === "differentiate" && calculusReadiness.state === "needs-context") {
+    if (calculusReadiness.state === "needs-context") {
       setCalculusQuestion(true);
       setSymbolBookOpen(true);
       return;
@@ -3765,14 +3862,88 @@ const EquationBuilderTool = () => {
                         setHoveredSymbolId(name ? symbolRecords.find((record) => record.name === name)?.id ?? null : null)
                       }
                       parameters={symbolRecords.filter((record) => record.parameter).map((record) => record.name)}
-                      asking={calculusQuestion}
+                      asking={calculusQuestion || integralAsk}
                       candidates={askCandidates}
-                      flow={askPreview ? { wrt: askPreview.context.withRespectTo, deps: askPreview.deps } : null}
-                      onAskHover={setAskTarget}
-                      onAskCommit={commitAsk}
+                      flow={
+                        calculusQuestion && askPreview
+                          ? { wrt: askPreview.context.withRespectTo, deps: askPreview.deps }
+                          : integralAsk && intAlong && intPreview?.ok
+                            ? { wrt: intAlong, deps: intPreview.deps }
+                            : null
+                      }
+                      onAskHover={(target) => {
+                        if (!integralAsk) setAskTarget(target);
+                      }}
+                      onAskCommit={(target) => {
+                        // ∫ asks only for the along-symbol; the span still decides.
+                        if (integralAsk) {
+                          if (target?.kind === "node") setIntAlong(target.name);
+                          return;
+                        }
+                        commitAsk(target);
+                      }}
                       deleteMode={deleteArm}
                       onDeleteNode={deleteSymbolNode}
                     />
+                    )}
+                    {integralAsk && (
+                      <div className="mt-2 rounded-lg border border-border bg-card px-3 py-2">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-serif text-xl leading-none">∫</span>
+                          <input
+                            value={spanFrom}
+                            onChange={(event) => setSpanFrom(event.target.value)}
+                            placeholder="—"
+                            aria-label="Lower end of the span"
+                            className="h-7 w-12 rounded-md border border-border bg-background px-1 text-center font-serif text-xs italic"
+                          />
+                          <span className="text-[10px] text-muted-foreground">→</span>
+                          <input
+                            value={spanTo}
+                            onChange={(event) => setSpanTo(event.target.value)}
+                            placeholder="—"
+                            aria-label="Upper end of the span — a number, or a new symbol to accumulate to"
+                            className="h-7 w-12 rounded-md border border-border bg-background px-1 text-center font-serif text-xs italic"
+                          />
+                          <span className="font-serif text-xs italic text-muted-foreground">
+                            d{intAlong ?? "…"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={commitIntegral}
+                            disabled={!intPreview?.ok}
+                            className="ml-auto h-7 rounded-lg border border-amber-300 bg-amber-50 px-2.5 text-xs font-medium text-amber-800 transition-opacity disabled:opacity-40 dark:bg-amber-950/40 dark:text-amber-300"
+                          >
+                            apply
+                          </button>
+                        </div>
+                        <div className="mt-1.5 min-h-[2.4rem]">
+                          {intAlong == null ? (
+                            <p className="text-[11px] text-muted-foreground">
+                              Tap the symbol to spread along — then the span decides the kind:
+                              empty is indefinite, two numbers definite, a new name accumulates.
+                            </p>
+                          ) : intPreview?.ok ? (
+                            <>
+                              <div className="font-serif text-lg italic">{intPreview.text}</div>
+                              <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
+                                <span className="rounded-full border border-amber-300 px-1.5 py-px text-amber-700 dark:text-amber-400">
+                                  ∫ d<span className="font-serif italic">{intAlong}</span>
+                                  {" · "}
+                                  {intPreview.span === "indefinite"
+                                    ? "indefinite · C is born"
+                                    : intPreview.span === "definite"
+                                      ? `definite · ${intAlong} is consumed`
+                                      : "accumulation · a symbol is born"}
+                                </span>
+                                {intPreview.note && <span>{intPreview.note}</span>}
+                              </div>
+                            </>
+                          ) : (
+                            <p className="text-[11px] text-muted-foreground">{intPreview?.note ?? ""}</p>
+                          )}
+                        </div>
+                      </div>
                     )}
                     {calculusQuestion && (
                       <div className="mt-2 min-h-[3.2rem] rounded-lg border border-border bg-card px-3 py-2">
@@ -3798,7 +3969,7 @@ const EquationBuilderTool = () => {
                         )}
                       </div>
                     )}
-                    {!calculusQuestion && (
+                    {!calculusQuestion && !integralAsk && (
                       <div className="mt-1.5 flex items-center gap-1.5">
                         <button
                           type="button"
