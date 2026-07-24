@@ -108,44 +108,62 @@ export const predicateFromText = (
   source,
 });
 
-const visitVariables = (node: TNode, visit: (node: Extract<TNode, { kind: "var" }>) => void) => {
+/**
+ * Visits FREE variable occurrences only. A bounded integral binds its dummy
+ * (definite integration consumed the symbol — it must leave the book), while
+ * an unbounded inert ∫ and d/dx keep theirs free (the result still varies
+ * with them). Mirrors `freeVarsIn` in tree.ts.
+ */
+const visitVariables = (
+  node: TNode,
+  visit: (node: Extract<TNode, { kind: "var" }>) => void,
+  bound: ReadonlySet<string> = new Set()
+) => {
   switch (node.kind) {
     case "var":
-      visit(node);
+      if (!bound.has(node.name)) visit(node);
       break;
     case "add":
-      node.terms.forEach((term) => visitVariables(term, visit));
+      node.terms.forEach((term) => visitVariables(term, visit, bound));
       break;
     case "mul":
-      node.factors.forEach((factor) => visitVariables(factor, visit));
+      node.factors.forEach((factor) => visitVariables(factor, visit, bound));
       break;
     case "pow":
-      visitVariables(node.base, visit);
-      visitVariables(node.exp, visit);
+      visitVariables(node.base, visit, bound);
+      visitVariables(node.exp, visit, bound);
       break;
     case "fn":
-      visitVariables(node.arg, visit);
+      visitVariables(node.arg, visit, bound);
       break;
     case "derivative":
-      visitVariables(node.expression, visit);
-      visit({
-        id: node.id,
-        kind: "var",
-        name: node.variable.name,
-        symbolId: node.variable.symbolId,
-      });
+      visitVariables(node.expression, visit, bound);
+      if (!bound.has(node.variable.name)) {
+        visit({
+          id: node.id,
+          kind: "var",
+          name: node.variable.name,
+          symbolId: node.variable.symbolId,
+        });
+      }
       break;
     case "integral":
-      visitVariables(node.integrand, visit);
-      visit({
-        id: node.id,
-        kind: "var",
-        name: node.variable.name,
-        symbolId: node.variable.symbolId,
-      });
       if (node.bounds) {
-        visitVariables(node.bounds.lower, visit);
-        visitVariables(node.bounds.upper, visit);
+        const inner = new Set(bound);
+        inner.add(node.variable.name);
+        visitVariables(node.integrand, visit, inner);
+        visitVariables(node.bounds.lower, visit, bound);
+        visitVariables(node.bounds.upper, visit, bound);
+      } else {
+        visitVariables(node.integrand, visit, bound);
+        if (!bound.has(node.variable.name)) {
+          visit({
+            id: node.id,
+            kind: "var",
+            name: node.variable.name,
+            symbolId: node.variable.symbolId,
+          });
+        }
       }
       break;
   }

@@ -1,4 +1,4 @@
-import { varsIn, type TNode, type TreeEq } from "./tree";
+import { freeVarsIn, type TNode, type TreeEq } from "./tree";
 
 /**
  * A relation is always symmetric: left = right. Explicit functions, implicit
@@ -111,13 +111,15 @@ const viewLabel = (spec: ViewSpec): string => {
 
 /** Pure structural analysis: no solving and no preferred x/y convention. */
 export function analyzeRelation(equation: TreeEq): RelationAnalysis {
-  const symbols = sorted([...Array.from(varsIn(equation.left)), ...Array.from(varsIn(equation.right))]);
+  // Free occurrences only: a definite integral's spent dummy is not a symbol
+  // of the relation, while a symbolic bound (∫₀ᵘ) is.
+  const symbols = sorted([...Array.from(freeVarsIn(equation.left)), ...Array.from(freeVarsIn(equation.right))]);
   const hasUnresolvedOperators =
     containsUnresolvedOperator(equation.left) || containsUnresolvedOperator(equation.right);
   const isolations: ExplicitIsolation[] = [];
   const detect = (candidate: TNode, expression: TNode, sourceSide: "left" | "right") => {
     if (candidate.kind !== "var") return;
-    const expressionSymbols = varsIn(expression);
+    const expressionSymbols = freeVarsIn(expression);
     if (expressionSymbols.has(candidate.name)) return;
     isolations.push({
       output: candidate.name,

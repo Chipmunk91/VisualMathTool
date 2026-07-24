@@ -1,6 +1,7 @@
 import {
   antiderivative,
   ensureTreeEqIds,
+  freeVarsIn,
   introducesLnOf,
   simplify,
   symbolIdForName,
@@ -68,10 +69,13 @@ export interface ContextValidation {
   message?: string;
 }
 
+// Free occurrences only — you cannot differentiate or integrate with respect
+// to a symbol a bounded ∫ already consumed, and classification (dependent /
+// held) is about the symbols the relation still varies with.
 const equationSymbols = (equation: TreeEq): string[] =>
   Array.from(new Set([
-    ...Array.from(varsIn(equation.left)),
-    ...Array.from(varsIn(equation.right)),
+    ...Array.from(freeVarsIn(equation.left)),
+    ...Array.from(freeVarsIn(equation.right)),
   ])).sort();
 
 export function validateCalculusContext(
