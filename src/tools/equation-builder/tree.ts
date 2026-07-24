@@ -260,6 +260,59 @@ export function varsIn(n: TNode): Set<Variable> {
   return out;
 }
 
+/**
+ * Free occurrences only. A bounded integral is a binder: ∫₀² f(x) dx has
+ * consumed x — occurrences of the dummy inside the integrand (and the dummy
+ * itself) are bound, while symbols in the bounds stay free (∫₀ᵘ births u).
+ * An UNBOUNDED inert integral is still a function of its dummy (the primitive
+ * varies with it), so the dummy stays free there, as it does under d/dx.
+ * The symbol book, the dependency canvas, and calculus candidates follow
+ * free occurrences; `varsIn` remains the "mentions at all" walk.
+ */
+export function freeVarsIn(n: TNode): Set<Variable> {
+  const out = new Set<Variable>();
+  const walk = (m: TNode, bound: ReadonlySet<Variable>) => {
+    switch (m.kind) {
+      case "named":
+        break;
+      case "var":
+        if (!bound.has(m.name)) out.add(m.name);
+        break;
+      case "add":
+        m.terms.forEach((term) => walk(term, bound));
+        break;
+      case "mul":
+        m.factors.forEach((factor) => walk(factor, bound));
+        break;
+      case "pow":
+        walk(m.base, bound);
+        walk(m.exp, bound);
+        break;
+      case "fn":
+        walk(m.arg, bound);
+        break;
+      case "derivative":
+        walk(m.expression, bound);
+        if (!bound.has(m.variable.name)) out.add(m.variable.name);
+        break;
+      case "integral":
+        if (m.bounds) {
+          const inner = new Set(bound);
+          inner.add(m.variable.name);
+          walk(m.integrand, inner);
+          walk(m.bounds.lower, bound);
+          walk(m.bounds.upper, bound);
+        } else {
+          walk(m.integrand, bound);
+          if (!bound.has(m.variable.name)) out.add(m.variable.name);
+        }
+        break;
+    }
+  };
+  walk(n, new Set());
+  return out;
+}
+
 /** Canonical structural key for matching — semantic ids are deliberately omitted. */
 export function keyOf(n: TNode): string {
   switch (n.kind) {
@@ -1183,7 +1236,9 @@ export function introducesLnOf(n: TNode, v: Variable): boolean {
  */
 export function withoutSymbol(te: TreeEq, name: string): TreeEq | null {
   const strip = (side: TNode): TNode => {
-    const rest = addendsOf(side).filter((addend) => !varsIn(addend).has(name));
+    // Free occurrences only: an addend where the name is a spent integration
+    // dummy (∫₀² x dx) doesn't mention the symbol being removed.
+    const rest = addendsOf(side).filter((addend) => !freeVarsIn(addend).has(name));
     return rest.length === 0 ? tc(0) : rest.length === 1 ? rest[0] : tadd(...rest);
   };
   const left = simplify(strip(te.left));

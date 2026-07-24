@@ -14,7 +14,22 @@ import {
 } from "../src/tools/equation-builder/calculus";
 import { analyzeRelation } from "../src/tools/equation-builder/relation";
 import { parseEquation } from "../src/tools/equation-builder/parser";
-import { printNode, withoutSymbol, type TreeEq } from "../src/tools/equation-builder/tree";
+import {
+  ensureTreeEqIds,
+  freeVarsIn,
+  printNode,
+  tadd,
+  tc,
+  tdiff,
+  tfn,
+  tint,
+  tmul,
+  tpow,
+  tv,
+  withoutSymbol,
+  type TreeEq,
+} from "../src/tools/equation-builder/tree";
+import { reconcileSymbols, symbolsInEquation } from "../src/tools/equation-builder/document";
 
 let passed = 0;
 let failed = 0;
@@ -358,6 +373,63 @@ check("subscript repeats: z_x → z_xx", derivedSymbolName("z_x", "x", "subscrip
     !!zeroOne && printNode(zeroOne.left) === "0" && printNode(zeroOne.right) === "1",
     zeroOne ? `${printNode(zeroOne.left)} = ${printNode(zeroOne.right)}` : "null"
   );
+}
+
+// --- Free vs bound occurrences (I1): a bounded ∫ binds its dummy ------------
+{
+  const names = (set: Set<string>) => Array.from(set).sort().join(",");
+
+  // y = ∫₀² 2x dx — x was consumed by the definite integral
+  const definite = ensureTreeEqIds({
+    left: tv("y"),
+    right: tint(tmul(tc(2), tv("x")), "x", { lower: tc(0), upper: tc(2) }),
+  });
+  check("a bounded ∫ binds its dummy", names(freeVarsIn(definite.right)) === "",
+    names(freeVarsIn(definite.right)));
+  check("relation symbols exclude the spent dummy",
+    analyzeRelation(definite).symbols.join(",") === "y",
+    analyzeRelation(definite).symbols.join(","));
+  check("calculus candidates skip the spent dummy",
+    analyzeRelation(definite).calculusCandidates.every((c) => c.withRespectTo !== "x"));
+
+  // The symbol book follows: x's record leaves, and edges pointing at it prune
+  const prior = symbolsInEquation(eq("y = 2*x"));
+  check("the book prunes the consumed symbol",
+    reconcileSymbols(definite, prior).map((r) => r.name).sort().join(",") === "y",
+    reconcileSymbols(definite, prior).map((r) => r.name).sort().join(","));
+  const declared = prior.map((r) => (r.name === "y" ? { ...r, dependsOn: ["x"] } : r));
+  const yRecord = reconcileSymbols(definite, declared).find((r) => r.name === "y");
+  check("declared edges to a consumed symbol prune with it", !!yRecord && !yRecord.dependsOn);
+
+  // y = x + ∫₀² x dx — the same name both free and bound stays a symbol
+  const mixed = ensureTreeEqIds({
+    left: tv("y"),
+    right: tadd(tv("x"), tint(tv("x"), "x", { lower: tc(0), upper: tc(2) })),
+  });
+  check("mixed free+bound occurrence keeps the symbol", names(freeVarsIn(mixed.right)) === "x",
+    names(freeVarsIn(mixed.right)));
+  const strippedMixed = withoutSymbol(mixed, "x");
+  check("withoutSymbol drops only the free-mention addends",
+    !!strippedMixed && !freeVarsIn(strippedMixed.right).has("x") &&
+      printNode(strippedMixed.right) !== "0",
+    strippedMixed ? printNode(strippedMixed.right) : "null");
+
+  // y = ∫₀ᵘ sin(t) dt — t bound, u born at the bound
+  const accumulation = ensureTreeEqIds({
+    left: tv("y"),
+    right: tint(tfn("sin", tv("t")), "t", { lower: tc(0), upper: tv("u") }),
+  });
+  check("accumulation: dummy bound, bound symbol born",
+    analyzeRelation(accumulation).symbols.join(",") === "u,y",
+    analyzeRelation(accumulation).symbols.join(","));
+
+  // Unbounded forms still vary with their dummy — nothing was consumed yet
+  const inert = ensureTreeEqIds({ left: tv("y"), right: tint(tpow(tv("x"), tc(2)), "x") });
+  check("an unbounded inert ∫ keeps its dummy free", names(freeVarsIn(inert.right)) === "x",
+    names(freeVarsIn(inert.right)));
+  const derivative = ensureTreeEqIds({ left: tv("y"), right: tdiff(tpow(tv("x"), tc(2)), "x") });
+  check("a derivative keeps its dummy free", names(freeVarsIn(derivative.right)) === "x",
+    names(freeVarsIn(derivative.right)));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
