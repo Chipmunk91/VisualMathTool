@@ -376,6 +376,26 @@ const numberNode = (value: number): TNode => {
 const containsDependent = (node: TNode, dependent: ReadonlySet<string>): boolean =>
   Array.from(varsIn(node)).some((name) => dependent.has(name));
 
+/**
+ * The inverse of derivedSymbolName along the operation variable — the
+ * round-trip fold for derivative-BORN symbols: ∫y_x dx = y, ∫y_xt dt = y_x.
+ * Prime notation carries no variable of its own, so y′ is read as the
+ * derivative along the variable being integrated (the same one-tap reading
+ * that birthed it); the subscript form only peels an exact match.
+ */
+const peelDerivativeName = (name: string, withRespectTo: string): string | null => {
+  if (name.endsWith("′")) {
+    const base = name.slice(0, -1);
+    return base.length > 0 ? base : null;
+  }
+  const subscripted = name.match(/^(.+)_([^_]+)$/);
+  if (subscripted && subscripted[2].endsWith(withRespectTo)) {
+    const remaining = subscripted[2].slice(0, -withRespectTo.length);
+    return remaining.length > 0 ? `${subscripted[1]}_${remaining}` : subscripted[1];
+  }
+  return null;
+};
+
 export function integrateRelation(
   equation: TreeEq,
   context: IntegrationContext
@@ -412,8 +432,15 @@ export function integrateRelation(
       ));
     }
     // Indefinite: dependents are opaque (they secretly vary with the
-    // operation variable), but ∫(dy/dx)dx = y folds — the round trip.
-    const primitive = antiderivative(node, context.withRespectTo, operationVariable.symbolId, dependent);
+    // operation variable), but the round trip folds — ∫(dy/dx)dx = y for
+    // Leibniz nodes, ∫y′ dx = y / ∫y_x dx = y for derivative-born symbols.
+    const primitive = antiderivative(
+      node,
+      context.withRespectTo,
+      operationVariable.symbolId,
+      dependent,
+      (name) => peelDerivativeName(name, context.withRespectTo)
+    );
     if (!primitive) return tint(node, operationVariable);
     const simplified = simplify(primitive);
     introducedLn ||= introducesLnOf(simplified, context.withRespectTo);

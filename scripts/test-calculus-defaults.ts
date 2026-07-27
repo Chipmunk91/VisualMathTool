@@ -516,6 +516,59 @@ check("subscript repeats: z_x → z_xx", derivedSymbolName("z_x", "x", "subscrip
   check("FTC through ln keeps the positivity pill",
     typeof lnCase !== "string" && lnCase.pill === "logarithm argument > 0",
     typeof lnCase === "string" ? lnCase : String(lnCase.pill));
+
+  // Round trip for derivative-BORN symbols (the app's default notations)
+  const lagrange = integrateRelation(
+    ensureTreeEqIds({ left: tv("y′"), right: tfn("exp", tv("x")) }),
+    ictx("x", ["y′"])
+  );
+  check("∫y′ dx folds back to y (lagrange round trip)",
+    typeof lagrange !== "string" && printNode(lagrange.equation.left) === "y",
+    typeof lagrange === "string" ? lagrange : printNode(lagrange.equation.left));
+  const subscript = integrateRelation(
+    ensureTreeEqIds({ left: tv("y_x"), right: tmul(tc(2), tv("x")) }),
+    ictx("x", ["y_x"])
+  );
+  check("∫y_x dx folds back to y (subscript round trip)",
+    typeof subscript !== "string" && printNode(subscript.equation.left) === "y" &&
+      freeVarsIn(subscript.equation.right).has("C"),
+    typeof subscript === "string" ? subscript : printNode(subscript.equation.left));
+  const secondOrder = integrateRelation(
+    ensureTreeEqIds({ left: tv("y′′"), right: tmul(tc(6), tv("x")) }),
+    ictx("x", ["y′′"])
+  );
+  check("∫y′′ dx peels one prime (→ y′)",
+    typeof secondOrder !== "string" && printNode(secondOrder.equation.left) === "y′",
+    typeof secondOrder === "string" ? secondOrder : printNode(secondOrder.equation.left));
+  const mixed = integrateRelation(
+    ensureTreeEqIds({ left: tv("z_xt"), right: tc(1) }),
+    ictx("t", ["z_xt"])
+  );
+  check("∫z_xt dt peels the last subscript (→ z_x)",
+    typeof mixed !== "string" && printNode(mixed.equation.left) === "z_x",
+    typeof mixed === "string" ? mixed : printNode(mixed.equation.left));
+  const wrongVariable = integrateRelation(
+    ensureTreeEqIds({ left: tv("y_t"), right: tmul(tc(2), tv("x")) }),
+    ictx("x", ["y_t"])
+  );
+  check("∫y_t dx does NOT fold — the subscript names a different variable",
+    typeof wrongVariable !== "string" && wrongVariable.equation.left.kind === "integral",
+    typeof wrongVariable === "string" ? wrongVariable : printNode(wrongVariable.equation.left));
+  const coefficient = integrateRelation(
+    ensureTreeEqIds({ left: tmul(tc(2), tv("y′")), right: tmul(tc(4), tv("x")) }),
+    ictx("x", ["y′"])
+  );
+  check("∫2y′ dx folds to 2y (peel through a coefficient)",
+    typeof coefficient !== "string" && printNode(coefficient.equation.left) === "2y",
+    typeof coefficient === "string" ? coefficient : printNode(coefficient.equation.left));
+  const definitePrime = integrateRelation(
+    ensureTreeEqIds({ left: tv("y′"), right: tmul(tc(2), tv("x")) }),
+    ictx("x", ["y′"], [0, 2])
+  );
+  check("a bounded ∫y′ dx stays honest (no y(2) − y(0) form exists)",
+    typeof definitePrime !== "string" && definitePrime.equation.left.kind === "integral" &&
+      printNode(definitePrime.equation.right) === "4",
+    typeof definitePrime === "string" ? definitePrime : printNode(definitePrime.equation.left));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
