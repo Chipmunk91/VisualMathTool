@@ -1165,12 +1165,17 @@ function linearIn(n: TNode, v: Variable): { aNum: number; aDen: number } | null 
  * `opaque` names may NOT be treated as constants (they secretly depend on v —
  * the dependent symbols of the relation). A bare opaque occurrence refuses,
  * but d(opaque)/dv folds exactly: ∫(dy/dx)dx = y is the round trip.
+ *
+ * `peel` extends that round trip to derivative-BORN symbols (y′, y_x): given
+ * an opaque name it returns the symbol one derivative down along v (y′ → y),
+ * or null when the name is no such derivative. Convention lives in calculus.ts.
  */
 export function antiderivative(
   n: TNode,
   v: Variable,
   variableSymbolId = symbolIdForName(v),
-  opaque: ReadonlySet<Variable> = new Set()
+  opaque: ReadonlySet<Variable> = new Set(),
+  peel?: (name: Variable) => Variable | null
 ): TNode | null {
   const blocked = (m: TNode): boolean =>
     Array.from(varsIn(m)).some((name) => name !== v && opaque.has(name));
@@ -1180,22 +1185,29 @@ export function antiderivative(
       return tmul(n, tv(v, variableSymbolId));
     case "var":
       if (n.name === v) return tmul(tc(1, 2), tpow(tv(v, variableSymbolId), 2));
-      if (opaque.has(n.name)) return null;
+      if (opaque.has(n.name)) {
+        const base = peel?.(n.name);
+        return base ? tv(base) : null;
+      }
       return tmul(n, tv(v, variableSymbolId));
     case "add": {
-      const parts = n.terms.map((t) => antiderivative(t, v, variableSymbolId, opaque));
+      const parts = n.terms.map((t) => antiderivative(t, v, variableSymbolId, opaque, peel));
       if (parts.some((p) => p === null)) return null;
       return tadd(...(parts as TNode[]));
     }
     case "mul": {
-      // factors free of v ride along as constants; one v-core integrates
+      // factors free of v ride along as constants; one v-core integrates.
+      // A peelable derivative symbol (y′) mentions no v but IS a function
+      // of it — it counts as the living core, never as a coefficient.
       const { num, den, core } = splitCoef(n);
-      const constant = core.filter((f) => !varsIn(f).has(v));
+      const secretlyLiving = (f: TNode): boolean =>
+        f.kind === "var" && opaque.has(f.name) && !!peel?.(f.name);
+      const living = core.filter((f) => varsIn(f).has(v) || secretlyLiving(f));
+      const constant = core.filter((f) => !living.includes(f));
       if (constant.some(blocked)) return null; // a dependent is no constant
-      const living = core.filter((f) => varsIn(f).has(v));
       if (living.length === 0) return tmul(n, tv(v, variableSymbolId));
       if (living.length > 1) return null; // no product rule for integrals
-      const inner = antiderivative(living[0], v, variableSymbolId, opaque);
+      const inner = antiderivative(living[0], v, variableSymbolId, opaque, peel);
       if (inner === null) return null;
       return tmul(tc(num, den), ...constant, inner);
     }
