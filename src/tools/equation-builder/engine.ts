@@ -16,10 +16,22 @@ import { computeTreeOperation, type DragPayload, type DropTarget } from "./opera
 import { applyRewrite, detectRewritesEq } from "./rewrites";
 import { applySpecialActionT, type SpecialActionRef } from "./specialactions";
 import { listSpecialOperations, TOOL_ROWS, TOOL_ROW_ORDER } from "./registry";
-import { addendsOf, cloneTreeEq, ensureTreeEqIds, keyOf, printNode, simplify, type TreeEq } from "./tree";
+import {
+  addendsOf,
+  cloneTreeEq,
+  ensureTreeEqIds,
+  evalClosedNode,
+  keyOf,
+  printNode,
+  simplify,
+  varsIn,
+  type TNode,
+  type TreeEq,
+} from "./tree";
 import { assumeKeysOf, factsFromAssumptions } from "./facts";
 import { finalize, type TreeMoveResult, type TreeOutcome } from "./treemoves";
 import { treeFactorLayout } from "./treeunits";
+import { scalarIsZero, scalarParts } from "./scalar";
 import {
   differentiateRelation,
   integrateRelation,
@@ -29,6 +41,10 @@ import {
 import type { RelationAnalysis, ViewSpec } from "./relation";
 import { treeMoveStory } from "./treeanimation";
 import type { EquationProtocolApi } from "./protocol";
+import {
+  expressionRequiresComplexScalars,
+  type ScalarOperationContext,
+} from "./semantics";
 
 export type EquationCommand =
   | { type: "gesture"; payload: DragPayload; target: DropTarget }
@@ -42,6 +58,11 @@ export interface EquationCommandRequest {
   expectedRevision: string;
   actor: { kind: "human" | "ai"; name?: string };
   command: EquationCommand;
+  /**
+   * Scalar algebra selected for this operation. Omit it for the familiar
+   * real-first default; typed complex syntax can still promote that default.
+   */
+  operationContext?: ScalarOperationContext;
   /**
    * Standing assumption texts (history pills, symbol-book predicates). Facts
    * parsed from them license conditional simplifications on the command's
@@ -73,7 +94,22 @@ export interface ApplicableEquationOperation {
   id: string;
   label: string;
   command: EquationCommand;
+  operationContext: ScalarOperationContext;
 }
+
+/**
+ * Structural factor/addend actions can be proven executable without running a
+ * whole simplify pass for every advertised handle. This keeps action
+ * discovery linear for long sums while matching divideBothT/multiplyBothT's
+ * exact closed-value refusals.
+ */
+const usableMultiplicativeOperand = (node: TNode): boolean => {
+  if (varsIn(node).size > 0) return true;
+  const evaluated = evalClosedNode(node);
+  if (!evaluated.ok || scalarIsZero(evaluated.value)) return false;
+  const { re, im } = scalarParts(evaluated.value);
+  return re !== 1 || im !== 0;
+};
 
 declare global {
   interface Window {
@@ -81,7 +117,10 @@ declare global {
   }
 }
 
-const traceFor = (command: EquationCommand): EquationCommandTrace => {
+const traceFor = (
+  command: EquationCommand,
+  operationContext: ScalarOperationContext
+): EquationCommandTrace => {
   switch (command.type) {
     case "gesture": {
       const payload = command.payload;
@@ -95,7 +134,7 @@ const traceFor = (command: EquationCommand): EquationCommandTrace => {
         type: command.type,
         ruleId: `gesture.${payload.kind}.${command.target.kind}`,
         targets,
-        arguments: { payload, target: command.target },
+        arguments: { payload, target: command.target, operationContext },
       };
     }
     case "special-action":
@@ -103,54 +142,109 @@ const traceFor = (command: EquationCommand): EquationCommandTrace => {
         type: command.type,
         ruleId: `special.${command.action.kind}`,
         targets: [command.action.nodeId],
-        arguments: { side: command.action.side, n: command.action.n },
+        arguments: {
+          side: command.action.side,
+          n: command.action.n,
+          operationContext,
+        },
       };
     case "rewrite":
       return {
         type: command.type,
         ruleId: `rewrite.${command.kind}`,
         targets: [command.targetId],
-        arguments: { side: command.side },
+        arguments: { side: command.side, operationContext },
       };
     case "differentiate":
       return {
         type: command.type,
         ruleId: `calculus.differentiate.${command.context.mode}`,
         targets: [],
-        arguments: { context: command.context },
+        arguments: { context: command.context, operationContext },
       };
     case "integrate":
       return {
         type: command.type,
         ruleId: `calculus.integrate.${command.context.mode}`,
         targets: [],
-        arguments: { context: command.context },
+        arguments: { context: command.context, operationContext },
       };
   }
 };
 
-export function executeEquationCommand(equation: TreeEq, command: EquationCommand): TreeMoveResult {
-  if (command.type === "gesture") return computeTreeOperation(equation, command.payload, command.target);
-  if (command.type === "special-action") return applySpecialActionT(equation, command.action);
+/**
+ * Resolve the actual scalar algebra used by a command. A selected complex
+ * lens opts in explicitly; typed complex syntax remains a one-way promotion
+ * so a caller cannot accidentally force `i` through real-only identities.
+ */
+export function resolveScalarOperationContext(
+  equation: TreeEq,
+  requested?: ScalarOperationContext
+): ScalarOperationContext {
+  const typedComplex =
+    expressionRequiresComplexScalars(equation.left) ||
+    expressionRequiresComplexScalars(equation.right);
+  return {
+    scalarRealm:
+      requested?.scalarRealm === "complex" || typedComplex
+        ? "complex"
+        : "real",
+    ...(requested?.mappingSignatureId
+      ? { mappingSignatureId: requested.mappingSignatureId }
+      : {}),
+  };
+}
+
+/**
+ * Execute with an already-resolved scalar context.
+ *
+ * Keep this boundary private: callers that have not inspected the equation
+ * must use `executeEquationCommand`, while inventory/apply paths can resolve
+ * the equation's scalar semantics once and reuse that exact decision.
+ */
+function executeEquationCommandResolved(
+  equation: TreeEq,
+  command: EquationCommand,
+  operationContext: ScalarOperationContext
+): TreeMoveResult {
+  if (command.type === "gesture") {
+    return computeTreeOperation(
+      equation,
+      command.payload,
+      command.target,
+      operationContext
+    );
+  }
+  if (command.type === "special-action") {
+    return applySpecialActionT(equation, command.action, operationContext);
+  }
   if (command.type === "differentiate") {
+    if (operationContext.scalarRealm === "complex") {
+      return "choose a complex-calculus interpretation first: holomorphic, real-component, or Wirtinger differentiation";
+    }
     const result = differentiateRelation(equation, command.context);
     if (typeof result === "string") return result;
     return finalize(result.equation.left, result.equation.right, result.label, {
       note: result.note,
       pill: result.pill,
       dangerous: !!result.pill,
+      operationContext,
     });
   }
   if (command.type === "integrate") {
+    if (operationContext.scalarRealm === "complex") {
+      return "choose a contour or explicit real-parameter interpretation before integrating in the complex realm";
+    }
     const result = integrateRelation(equation, command.context);
     if (typeof result === "string") return result;
     return finalize(result.equation.left, result.equation.right, result.label, {
       note: result.note,
       pill: result.pill,
       dangerous: !!result.pill,
+      operationContext,
     });
   }
-  const candidate = detectRewritesEq(equation).find(
+  const candidate = detectRewritesEq(equation, operationContext).find(
     ({ side, rewrite }) =>
       side === command.side && rewrite.before.id === command.targetId && rewrite.kind === command.kind
   );
@@ -165,8 +259,21 @@ export function executeEquationCommand(equation: TreeEq, command: EquationComman
           dangerous: true,
           note: `This identity is valid where ${candidate.rewrite.pill}.`,
           pill: candidate.rewrite.pill,
+          operationContext,
         }
-      : undefined
+      : { operationContext }
+  );
+}
+
+export function executeEquationCommand(
+  equation: TreeEq,
+  command: EquationCommand,
+  requestedContext?: ScalarOperationContext
+): TreeMoveResult {
+  return executeEquationCommandResolved(
+    equation,
+    command,
+    resolveScalarOperationContext(equation, requestedContext)
   );
 }
 
@@ -200,7 +307,15 @@ export function applyEquationCommand(
 ): EquationCommandResult {
   const beforeRevision = equationRevision(equation);
   if (request.expectedRevision !== beforeRevision) return { status: "stale", revision: beforeRevision };
-  const result = executeEquationCommand(equation, request.command);
+  const operationContext = resolveScalarOperationContext(
+    equation,
+    request.operationContext
+  );
+  const result = executeEquationCommandResolved(
+    equation,
+    request.command,
+    operationContext
+  );
   if (!result || typeof result === "string") {
     return { status: "rejected", reason: result ?? "the command has no effect here" };
   }
@@ -209,7 +324,7 @@ export function applyEquationCommand(
     ? { ...licensed, story: treeMoveStory(equation, request.command.payload, request.command.target) }
     : licensed;
   const afterRevision = equationRevision(outcome.treeNext);
-  const trace = traceFor(request.command);
+  const trace = traceFor(request.command, operationContext);
   const event: EquationEvent = {
     id: `event_${request.requestId}`,
     requestId: request.requestId,
@@ -220,6 +335,9 @@ export function applyEquationCommand(
     before: cloneTreeEq(equation),
     intermediate: outcome.treeIntermediate ? cloneTreeEq(outcome.treeIntermediate) : undefined,
     after: cloneTreeEq(outcome.treeNext),
+    assumptionsUsed: Array.from(new Set(request.standingAssumptions ?? []))
+      .sort()
+      .map((assumption) => predicateFromText(assumption)),
     assumptionsAdded: outcome.pill ? [predicateFromText(outcome.pill)] : [],
     explanation: outcome.note ?? outcome.label,
     animation: outcome.story,
@@ -248,34 +366,50 @@ export function inspectEquationNodes(equation: TreeEq): { id: string; kind: stri
 }
 
 /** Enumerate the concrete legal actions an AI can take at this revision. */
-export function listApplicableEquationOperations(equation: TreeEq): ApplicableEquationOperation[] {
-  const candidates: ApplicableEquationOperation[] = [];
+export function listApplicableEquationOperations(
+  equation: TreeEq,
+  requestedContext?: ScalarOperationContext
+): ApplicableEquationOperation[] {
+  const operationContext = resolveScalarOperationContext(
+    equation,
+    requestedContext
+  );
+  const candidates: (Omit<
+    ApplicableEquationOperation,
+    "operationContext"
+  > & { requiresDryRun: boolean })[] = [];
   for (const side of ["left", "right"] as const) {
     const destination = opposite(side);
     for (const addend of addendsOf(equation[side])) {
       candidates.push({
         id: `move:${addend.id}:${destination}`,
         label: `Move ${printNode(addend)} to the ${destination}`,
+        requiresDryRun: false,
         command: {
           type: "gesture",
           payload: { kind: "terms", ids: [addend.id], from: side },
           target: { kind: "side", side: destination },
         },
       });
-      candidates.push({
-        id: `divide:${addend.id}`,
-        label: `Divide both sides by ${printNode(addend)}`,
-        command: {
-          type: "gesture",
-          payload: { kind: "terms", ids: [addend.id], from: side },
-          target: { kind: "under", termId: equation[destination].id, side: destination },
-        },
-      });
+      if (usableMultiplicativeOperand(addend)) {
+        candidates.push({
+          id: `divide:${addend.id}`,
+          label: `Divide both sides by ${printNode(addend)}`,
+          requiresDryRun: false,
+          command: {
+            type: "gesture",
+            payload: { kind: "terms", ids: [addend.id], from: side },
+            target: { kind: "under", termId: equation[destination].id, side: destination },
+          },
+        });
+      }
       const layout = treeFactorLayout(addend.id, addend);
       for (const factor of layout.numerator) {
+        if (!usableMultiplicativeOperand(factor.expr)) continue;
         candidates.push({
           id: `divide-factor:${factor.id}`,
           label: `Divide both sides by ${printNode(factor.expr)}`,
+          requiresDryRun: false,
           command: {
             type: "gesture",
             payload: {
@@ -288,9 +422,11 @@ export function listApplicableEquationOperations(equation: TreeEq): ApplicableEq
         });
       }
       for (const factor of layout.denominator) {
+        if (!usableMultiplicativeOperand(factor.expr)) continue;
         candidates.push({
           id: `multiply-factor:${factor.id}`,
           label: `Multiply both sides by ${printNode(factor.expr)}`,
+          requiresDryRun: false,
           command: {
             type: "gesture",
             payload: { kind: "den", termId: factor.id, from: side },
@@ -307,13 +443,22 @@ export function listApplicableEquationOperations(equation: TreeEq): ApplicableEq
   // caller discovers exactly what a hand can tap (minus the dry-run-filtered
   // teaching refusals below).
   for (const { id, label, action } of listSpecialOperations(equation)) {
-    candidates.push({ id, label, command: { type: "special-action", action } });
+    candidates.push({
+      id,
+      label,
+      command: { type: "special-action", action },
+      requiresDryRun: true,
+    });
   }
 
-  for (const { side, rewrite } of detectRewritesEq(equation)) {
+  for (const { side, rewrite } of detectRewritesEq(
+    equation,
+    operationContext
+  )) {
     candidates.push({
       id: `rewrite:${rewrite.kind}:${rewrite.before.id}`,
       label: rewrite.label,
+      requiresDryRun: false,
       command: { type: "rewrite", side, targetId: rewrite.before.id, kind: rewrite.kind },
     });
   }
@@ -322,6 +467,7 @@ export function listApplicableEquationOperations(equation: TreeEq): ApplicableEq
     candidates.push({
       id: `tool:${tool}`,
       label: TOOL_ROWS[tool].protocolLabel,
+      requiresDryRun: true,
       command: {
         type: "gesture",
         payload: { kind: "tool", tool },
@@ -330,8 +476,18 @@ export function listApplicableEquationOperations(equation: TreeEq): ApplicableEq
     });
   }
 
-  return candidates.filter((candidate) => {
-    const result = executeEquationCommand(equation, candidate.command);
-    return !!result && typeof result !== "string";
-  });
+  return candidates
+    .filter((candidate) => {
+      if (!candidate.requiresDryRun) return true;
+      const result = executeEquationCommandResolved(
+        equation,
+        candidate.command,
+        operationContext
+      );
+      return !!result && typeof result !== "string";
+    })
+    .map(({ requiresDryRun: _requiresDryRun, ...candidate }) => ({
+      ...candidate,
+      operationContext,
+    }));
 }

@@ -60,6 +60,8 @@ export interface EquationEvent {
   before: TreeEq;
   intermediate?: TreeEq;
   after: TreeEq;
+  /** Standing facts that licensed this exact simplification/rewrite. */
+  assumptionsUsed?: Predicate[];
   assumptionsAdded: Predicate[];
   explanation: string;
   animation?: MoveStory;
@@ -72,6 +74,12 @@ export interface EquationPresentation {
   probeValue?: number;
   planeProbe?: [number, number];
   viewSpec?: ViewSpec;
+  /**
+   * Selected scalar interpretation for the active explicit mapping. This is
+   * a presentation lens, not a permanent realm attached to a symbol.
+   */
+  mappingSignatureId?: string;
+  complexDisplay?: "cartesian" | "polar" | "exponential";
   lastDifferentiationContext?: DifferentiationContext;
   lastIntegrationContext?: IntegrationContext;
 }

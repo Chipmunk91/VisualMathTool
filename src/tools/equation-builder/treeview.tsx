@@ -257,7 +257,15 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
       return <TSym ctx={ctx} role={role}>{constText(node.num, node.den)}</TSym>;
     }
     case "named":
-      return <TSym ctx={ctx} role={role} className="italic">π</TSym>;
+      return (
+        <TSym
+          ctx={ctx}
+          role={role}
+          className={node.name === "pi" ? "italic" : "not-italic"}
+        >
+          {node.name === "pi" ? "π" : "i"}
+        </TSym>
+      );
     case "var": {
       // Derivative-born symbols like z_x typeset their subscript chunk small
       // and low; the underscore is storage notation, not display notation.
@@ -398,7 +406,16 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
       const expSplit = node.exp.kind !== "const" ? signSplit(node.exp) : null;
       if ((node.exp.kind === "const" && node.exp.num < 0) || expSplit?.neg) {
         const inv = simplify(
-          tpow(node.base, expSplit?.neg ? expSplit.body : tc(-(node.exp as { num: number }).num, (node.exp as { den: number }).den))
+          tpow(
+            node.base,
+            expSplit?.neg
+              ? expSplit.body
+              : tc(
+                  -(node.exp as { num: number }).num,
+                  (node.exp as { den: number }).den
+                ),
+            node.branch
+          )
         );
         const denominatorId = treeFactorLayout(ctx.id, node).denominator[0]?.id;
         return (
@@ -539,8 +556,39 @@ function TNContent({ node, ctx, coefZone = false }: { node: TNode; ctx: Ctx; coe
           </TermRegion>
         );
       }
+      if (node.fn === "abs") {
+        return (
+          <TermRegion ctx={ctx}>
+            <span className="inline-flex items-center">
+              <span className="select-none">|</span>
+              <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
+              <span className="select-none">|</span>
+            </span>
+          </TermRegion>
+        );
+      }
+      if (node.fn === "conj") {
+        return (
+          <TermRegion ctx={ctx}>
+            <span className="inline-flex border-t-2 border-current leading-tight">
+              <TN node={node.arg} ctx={{ ...ctx, inert: true }} coefZone={coefZone} />
+            </span>
+          </TermRegion>
+        );
+      }
       const wholeSpec = anchorAt(node, "whole");
-      const shownName = node.fn === "asin" ? "arcsin" : node.fn === "acos" ? "arccos" : node.fn === "atan" ? "arctan" : node.fn;
+      const shownName =
+        node.fn === "asin"
+          ? "arcsin"
+          : node.fn === "acos"
+            ? "arccos"
+            : node.fn === "atan"
+              ? "arctan"
+              : node.fn === "re"
+                ? "Re"
+                : node.fn === "im"
+                  ? "Im"
+                  : node.fn;
       return (
         <TermRegion ctx={ctx}>
           {wholeSpec ? (

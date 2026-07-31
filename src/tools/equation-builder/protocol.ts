@@ -1,12 +1,22 @@
 import { z } from "zod";
 import type { EquationDocument, EquationEvent, SymbolRecord } from "./document";
 import type { RelationAnalysis, ViewSpec } from "./relation";
+import type {
+  IsolationSemantics,
+  ScalarOperationContext,
+} from "./semantics";
 import type { TreeEq } from "./tree";
 
-export const EQUATION_PROTOCOL_VERSION = "visualmath.equation.v1" as const;
+export const EQUATION_PROTOCOL_VERSION = "visualmath.equation.v2" as const;
 
 const IdentifierSchema = z.string().trim().min(1).max(256);
 const RevisionSchema = z.string().trim().min(1).max(256);
+const MappingSignatureIdSchema = z.string().trim().min(1).max(500);
+
+export const ScalarOperationContextSchema = z.object({
+  scalarRealm: z.enum(["real", "complex"]),
+  mappingSignatureId: MappingSignatureIdSchema.optional(),
+}).strict();
 
 export const EquationActorSchema = z.object({
   kind: z.enum(["human", "ai"]),
@@ -27,6 +37,11 @@ export const PreviewActionRequestSchema = z.object({
   expectedRevision: RevisionSchema,
   actionId: IdentifierSchema,
   arguments: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * Optional explicit execution lens. If omitted, the session uses the
+   * document's selected mapping (or the familiar real-first default).
+   */
+  operationContext: ScalarOperationContextSchema.optional(),
   actor: EquationActorSchema,
 }).strict();
 
@@ -53,6 +68,9 @@ export const SetProtocolViewRequestSchema = z.object({
   documentId: IdentifierSchema,
   expectedRevision: RevisionSchema,
   candidateId: z.string().trim().min(1).max(500).nullable(),
+  /** An advertised semantic mapping ID from `equation_analyze`. */
+  mappingSignatureId: MappingSignatureIdSchema.nullable().optional(),
+  complexDisplay: z.enum(["cartesian", "polar", "exponential"]).optional(),
 }).strict();
 
 export const EmptyActionArgumentsSchema = z.object({}).strict();
@@ -80,6 +98,9 @@ export const IntegrationActionArgumentsSchema = CalculusBaseSchema.extend({
 }).strict();
 
 export type EquationActor = z.infer<typeof EquationActorSchema>;
+export type ProtocolScalarOperationContext = z.infer<
+  typeof ScalarOperationContextSchema
+>;
 export type CreateEquationRequest = z.infer<typeof CreateEquationRequestSchema>;
 export type PreviewActionRequest = z.infer<typeof PreviewActionRequestSchema>;
 export type ApplyPreviewRequest = z.infer<typeof ApplyPreviewRequestSchema>;
@@ -93,11 +114,18 @@ export interface EquationSymbolReference {
   name: string;
   meaning?: string;
   unit?: string;
+  dependsOn?: string[];
+  parameter?: true;
 }
 
 export interface ProtocolRelationAnalysis {
   relation: RelationAnalysis;
   symbols: EquationSymbolReference[];
+  /**
+   * Realm, branch, domain-requirement and range candidates for every explicit
+   * isolation, in the same order as `relation.isolations`.
+   */
+  semantics: IsolationSemantics[];
 }
 
 export type EquationActionKind =
@@ -123,6 +151,8 @@ export interface EquationActionDescriptor {
   targets: string[];
   inputSchema: Record<string, unknown>;
   context?: CalculusContextDescriptor;
+  /** Scalar algebra used when this revision-bound action is previewed. */
+  operationContext: ScalarOperationContext;
   warnings: string[];
 }
 
@@ -137,7 +167,8 @@ export type EquationServiceErrorCode =
   | "preview_not_found"
   | "preview_consumed"
   | "symbol_not_found"
-  | "view_not_found";
+  | "view_not_found"
+  | "mapping_not_found";
 
 export interface EquationServiceError {
   status: "error";
@@ -162,6 +193,8 @@ export interface EquationPreviewedResult {
   before: TreeEq;
   intermediate?: TreeEq;
   after: TreeEq;
+  /** Exact realm/lens used to compute this preview. */
+  operationContext: ScalarOperationContext;
   assumptionsAdded: EquationEvent["assumptionsAdded"];
   warnings: string[];
   explanation: string;

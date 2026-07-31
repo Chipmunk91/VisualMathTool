@@ -1,8 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createRemoteEquationMcpServer, type RemoteEquationGateway } from "../mcp/remote-equation-mcp.js";
-import { makeEquationDocument, type EquationDocument } from "../../src/tools/equation-builder/document.js";
-import { parseEquation } from "../../src/tools/equation-builder/parser.js";
+import type { EquationDocument } from "../../src/tools/equation-builder/document.js";
+import { EquationSessionService } from "../../src/tools/equation-builder/session.js";
 import {
   isSharedSessionKey,
   SharedEquationSession,
@@ -72,9 +72,14 @@ const playgroundUrl = (env: Env, sessionKey: string): string => {
 const parsedDocument = (body: CreateSessionBody): EquationDocument | null => {
   if (body.document) return isEquationDocument(body.document) ? body.document : null;
   if (typeof body.text !== "string") return null;
-  const parsed = parseEquation(body.text);
-  if (!parsed.ok) return null;
-  return makeEquationDocument(parsed.tree, body.documentId ? { documentId: body.documentId } : {});
+  // Use the same creation boundary as local MCP/browser sessions so function
+  // declarations such as f(x)=3 retain their dependency edge and hidden x.
+  const service = new EquationSessionService();
+  const created = service.createEquation({
+    text: body.text,
+    ...(body.documentId ? { documentId: body.documentId } : {}),
+  });
+  return created.status === "created" ? created.document : null;
 };
 
 const sessionStub = (env: Env, sessionKey: string) =>

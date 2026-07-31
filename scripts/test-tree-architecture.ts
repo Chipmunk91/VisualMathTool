@@ -8,7 +8,11 @@ import {
   renameSymbol,
   symbolsInEquation,
 } from "../src/tools/equation-builder/document";
-import { applyEquationCommand, listApplicableEquationOperations } from "../src/tools/equation-builder/engine";
+import {
+  applyEquationCommand,
+  executeEquationCommand,
+  listApplicableEquationOperations,
+} from "../src/tools/equation-builder/engine";
 import {
   differentiateRelation,
   integrateRelation,
@@ -329,6 +333,31 @@ console.log("\n== equation document and AI command contract ==");
   check(
     "E4 AI can discover concrete legal operations without pointer geometry",
     available.some((operation) => operation.command.type === "gesture" && operation.label === "Divide both sides by 3")
+  );
+  const longInventoryEquation: TreeEq = {
+    left: tadd(...Array.from({ length: 80 }, (_, index) => tv(`input${index}`))),
+    right: tv("output"),
+  };
+  const longInventory = listApplicableEquationOperations(longInventoryEquation);
+  check(
+    "E4b every structurally advertised action in a long relation executes",
+    longInventory.every((operation) => {
+      const result = executeEquationCommand(
+        longInventoryEquation,
+        operation.command,
+        operation.operationContext
+      );
+      return !!result && typeof result !== "string";
+    })
+  );
+  check(
+    "E4c action discovery filters closed zero/one divisors without a full dry run",
+    !listApplicableEquationOperations(parsed("1 = y")).some(
+      (operation) => operation.label === "Divide both sides by 1"
+    ) &&
+      !listApplicableEquationOperations(parsed("0 = y")).some(
+        (operation) => operation.label === "Divide both sides by 0"
+      )
   );
   check(
     "E5 AI and pointer operations share one semantic dispatcher",

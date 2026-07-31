@@ -12,6 +12,7 @@ import {
   cloneTreeEq,
   constValue,
   ensureTreeEqIds,
+  evalClosedNode,
   evalNode,
   printNode,
   printTreeEq,
@@ -42,6 +43,7 @@ import {
   applyEquationCommand,
   inspectEquationNodes,
   listApplicableEquationOperations,
+  resolveScalarOperationContext,
   type EquationCommand,
   type EquationToolApi,
 } from "./engine";
@@ -98,6 +100,23 @@ import {
   viewSpecKey,
   type ViewSpec,
 } from "./relation";
+import {
+  analyzeIsolationSemantics,
+  sameScalarOperationContext,
+  scalarOperationContextForMapping,
+  type MappingSignatureCandidate,
+  type ScalarOperationContext,
+} from "./semantics";
+import {
+  ClosedComplexPane,
+  ComplexMappingPane,
+  evaluateRealMappingValue,
+  MappingLensControl,
+  scalarHasComplexCarrier,
+  scalarText,
+  signatureNeedsComplexView,
+  type ComplexDisplayMode,
+} from "./complexview";
 import {
   derivedSymbolName,
   emptyDifferentiationContext,
@@ -168,6 +187,25 @@ const STATUS_PTS: [number, number][] = [
   [-3.246, -1.559],
 ];
 const decideStatus = (L: TNode, R: TNode): "identity" | "contradiction" | null => {
+  if (varsIn(L).size === 0 && varsIn(R).size === 0) {
+    const left = evalClosedNode(L);
+    const right = evalClosedNode(R);
+    if (left.ok && right.ok) {
+      const leftParts =
+        left.value.kind === "real"
+          ? { re: left.value.value, im: 0 }
+          : left.value;
+      const rightParts =
+        right.value.kind === "real"
+          ? { re: right.value.value, im: 0 }
+          : right.value;
+      return (
+        Math.hypot(leftParts.re - rightParts.re, leftParts.im - rightParts.im) < 1e-9
+          ? "identity"
+          : "contradiction"
+      );
+    }
+  }
   const diffs = STATUS_PTS.map(([x, y]) => evalNode(L, { x, y }) - evalNode(R, { x, y })).filter((d) =>
     Number.isFinite(d)
   );
@@ -175,6 +213,28 @@ const decideStatus = (L: TNode, R: TNode): "identity" | "contradiction" | null =
   const d0 = diffs[0];
   if (!diffs.every((d) => Math.abs(d - d0) < 1e-9)) return null; // varies → undecided
   return Math.abs(d0) < 1e-9 ? "identity" : "contradiction";
+};
+
+/** Rational arithmetic and powers of i are exact, not decimal approximations. */
+const isExactScalarForm = (node: TNode): boolean => {
+  switch (node.kind) {
+    case "const":
+      return true;
+    case "named":
+      return node.name === "i";
+    case "add":
+      return node.terms.every(isExactScalarForm);
+    case "mul":
+      return node.factors.every(isExactScalarForm);
+    case "pow":
+      return (
+        node.exp.kind === "const" &&
+        node.exp.den === 1 &&
+        isExactScalarForm(node.base)
+      );
+    default:
+      return false;
+  }
 };
 
 /**
@@ -214,6 +274,7 @@ const predicatesForSteps = (steps: Step[]): Predicate[] => {
   const predicates = new Map<string, Predicate>();
   for (const step of steps) {
     for (const predicate of step.assumptions ?? []) predicates.set(predicate.id, predicate);
+    for (const predicate of step.event?.assumptionsUsed ?? []) predicates.set(predicate.id, predicate);
     for (const predicate of step.event?.assumptionsAdded ?? []) predicates.set(predicate.id, predicate);
     if (step.pill) {
       const predicate = predicateFromText(step.pill);
@@ -366,6 +427,8 @@ const EquationBuilderTool = () => {
     unambiguousView(analyzeRelation(BOOT_TREE))
   );
   const [planeProbe, setPlaneProbe] = useState({ x: 1, y: 1 });
+  const [mappingSignatureId, setMappingSignatureId] = useState<string | null>(null);
+  const [complexDisplay, setComplexDisplay] = useState<ComplexDisplayMode>("cartesian");
   const [calculusOpen, setCalculusOpen] = useState<"differentiate" | "integrate" | null>(null);
   const [differentiationContext, setDifferentiationContext] = useState<DifferentiationContext>(
     emptyDifferentiationContext
@@ -432,8 +495,28 @@ const EquationBuilderTool = () => {
       const pending = pendingSymbolMeaningsRef.current;
       const declaredEdges = pendingDependenciesRef.current;
       pendingDependenciesRef.current = null;
+      // A declaration can name an input which is absent from the expression:
+      // f(x) = 3 is still a function of x. Keep that declared input in the
+      // symbol book as an explicit parameter so graph/calculus/API analysis
+      // sees the same model the author typed.
+      const declaredInputs = declaredEdges
+        ? Array.from(new Set(Object.values(declaredEdges).flat())).sort()
+        : [];
+      const knownNames = new Set(reconciled.map((record) => record.name));
+      const withDeclaredInputs: SymbolRecord[] = [
+        ...reconciled,
+        ...declaredInputs
+          .filter((name) => !knownNames.has(name))
+          .map((name) => ({
+            id: symbolIdForName(name),
+            name,
+            parameter: true as const,
+            assumptions: [],
+            provenance: { createdBy: "parser" as const, confirmedByHuman: true },
+          })),
+      ];
       const withEdges = declaredEdges
-        ? reconciled.map((record) =>
+        ? withDeclaredInputs.map((record) =>
             declaredEdges[record.name]
               ? {
                   ...record,
@@ -442,7 +525,7 @@ const EquationBuilderTool = () => {
                 }
               : record
           )
-        : reconciled;
+        : withDeclaredInputs;
       if (pending.size === 0) return withEdges;
       const enriched = withEdges.map((record) =>
         pending.has(record.name) && !record.meaning
@@ -454,10 +537,6 @@ const EquationBuilderTool = () => {
     });
   }, [treeEq]);
 
-  const relationAnalysis = useMemo(
-    () => analyzeRelation(treeEq),
-    [treeEq]
-  );
   /** Declared dependency edges from the symbol book, keyed by symbol name. */
   const declaredDependencies = useMemo(
     () =>
@@ -468,6 +547,50 @@ const EquationBuilderTool = () => {
       ),
     [symbolRecords]
   );
+  const relationAnalysis = useMemo(
+    () => analyzeRelation(treeEq, declaredDependencies),
+    [treeEq, declaredDependencies]
+  );
+  const isolationSemantics = useMemo(
+    () => relationAnalysis?.isolations.map(analyzeIsolationSemantics) ?? [],
+    [relationAnalysis]
+  );
+  /**
+   * Closed values and explicitly real-valued operations can inform the book.
+   * Conflicting isolation evidence deliberately collapses to unknown.
+   */
+  const inferredSymbolSpaces = useMemo(() => {
+    const spaces = new Map<string, "real" | "complex">();
+    const conflicts = new Set<string>();
+    for (const semantic of isolationSemantics) {
+      for (const membership of semantic.inferredMemberships) {
+        const previous = spaces.get(membership.symbol);
+        if (previous && previous !== membership.space) conflicts.add(membership.symbol);
+        else spaces.set(membership.symbol, membership.space);
+      }
+    }
+    conflicts.forEach((name) => spaces.delete(name));
+    return spaces;
+  }, [isolationSemantics]);
+  const activeIsolationSemantics = useMemo(() => {
+    if (!viewSpec || (viewSpec.kind !== "function-1d" && viewSpec.kind !== "scalar-field-2d")) {
+      return null;
+    }
+    return isolationSemantics.find((semantic) => semantic.output === viewSpec.output) ?? null;
+  }, [isolationSemantics, viewSpec]);
+  const selectedMappingSignature = useMemo<MappingSignatureCandidate | null>(() => {
+    const candidates = activeIsolationSemantics?.mappingCandidates ?? [];
+    return (
+      candidates.find((candidate) => candidate.id === mappingSignatureId) ??
+      candidates.find((candidate) => candidate.recommended) ??
+      candidates[0] ??
+      null
+    );
+  }, [activeIsolationSemantics, mappingSignatureId]);
+  const scalarOperationContext = useMemo<ScalarOperationContext | undefined>(() => {
+    if (!selectedMappingSignature) return undefined;
+    return scalarOperationContextForMapping(selectedMappingSignature);
+  }, [selectedMappingSignature]);
   /**
    * The graph the READINGS use — exactly what the canvas draws: declared
    * edges plus the structural guesses (dashed arrows) for symbols with no
@@ -831,6 +954,7 @@ const EquationBuilderTool = () => {
     setTreeEq(rebuilt);
     setHistory([makeTreeStep("start", rebuilt, false, `rebuilt without ${name}`)]);
     setDocumentId(freshDocumentId());
+    setMappingSignatureId(null);
     setSelection(null);
     setSpecialBubble(null);
     setDismissedFactorizationHints(new Set());
@@ -840,9 +964,11 @@ const EquationBuilderTool = () => {
   const analyzedRevisionRef = useRef<string | null>(null);
   useEffect(() => {
     if (!relationAnalysis) return;
-    const revision = equationRevision(treeEq);
-    if (analyzedRevisionRef.current === revision) return;
-    analyzedRevisionRef.current = revision;
+    // Dependency declarations can change the meaning and available views
+    // without changing a single equation glyph (notably f(x) = 3).
+    const analysisKey = `${equationRevision(treeEq)}:${JSON.stringify(declaredDependencies)}`;
+    if (analyzedRevisionRef.current === analysisKey) return;
+    analyzedRevisionRef.current = analysisKey;
     setViewSpec((current) =>
       current && isViewSpecValid(current, relationAnalysis)
         ? current
@@ -861,7 +987,7 @@ const EquationBuilderTool = () => {
       dependent: current.dependent.filter((name) => known.has(name)),
       heldConstant: current.heldConstant.filter((name) => known.has(name)),
     }));
-  }, [treeEq, relationAnalysis]);
+  }, [treeEq, relationAnalysis, declaredDependencies]);
 
   useEffect(() => {
     if (!symbolBookOpen) return;
@@ -1979,6 +2105,8 @@ const EquationBuilderTool = () => {
         probeValue,
         planeProbe: [planeProbe.x, planeProbe.y],
         viewSpec: viewSpec ?? undefined,
+        mappingSignatureId: selectedMappingSignature?.id,
+        complexDisplay,
         lastDifferentiationContext: differentiationContext,
         lastIntegrationContext: integrationContext,
       },
@@ -2078,6 +2206,8 @@ const EquationBuilderTool = () => {
         setPlaneProbe({ x: presentation.planeProbe[0], y: presentation.planeProbe[1] });
       }
       if (presentation?.viewSpec) setViewSpec(presentation.viewSpec);
+      setMappingSignatureId(presentation?.mappingSignatureId ?? null);
+      setComplexDisplay(presentation?.complexDisplay ?? "cartesian");
       if (presentation?.lastDifferentiationContext) {
         setDifferentiationContext(presentation.lastDifferentiationContext);
       }
@@ -2112,6 +2242,7 @@ const EquationBuilderTool = () => {
     () => Array.from(new Set(history.flatMap((step) => [
       step.pill,
       ...(step.assumptions?.map((predicate) => predicate.expression) ?? []),
+      ...(step.event?.assumptionsUsed?.map((predicate) => predicate.expression) ?? []),
       ...(step.event?.assumptionsAdded.map((predicate) => predicate.expression) ?? []),
     ]).filter((predicate): predicate is string => !!predicate))),
     [history]
@@ -2170,23 +2301,55 @@ const EquationBuilderTool = () => {
   // --- Tree (frontier) mode: solved detection + which pane the equation earns
   const treeSolved = useMemo(() => {
     const detect = (a: TNode, b: TNode) =>
-      a.kind === "var" && varsIn(b).size === 0 ? { v: a.name, value: b } : null;
+      a.kind === "var" &&
+      varsIn(b).size === 0 &&
+      (declaredDependencies[a.name] ?? []).length === 0
+        ? { v: a.name, value: b }
+        : null;
     const hit = detect(treeEq.left, treeEq.right) ?? detect(treeEq.right, treeEq.left);
     if (!hit) return null;
-    const approx = constValue(hit.value);
-    const exact = hit.value.kind === "const";
+    const evaluated = evalClosedNode(hit.value);
+    if (!evaluated.ok) return null;
+    const scalar = evaluated.value;
     return {
       v: hit.v,
       text: printNode(hit.value),
-      approx: !exact && approx !== null ? Math.round(approx * 1000) / 1000 : null,
+      scalar,
+      realm: evaluated.realm,
+      approx: !isExactScalarForm(hit.value) ? scalarText(scalar) : null,
     };
-  }, [treeEq]);
+  }, [treeEq, declaredDependencies]);
+
+  const treeUndefined = useMemo(() => {
+    const closedSide =
+      treeEq.left.kind === "var" &&
+      varsIn(treeEq.right).size === 0 &&
+      (declaredDependencies[treeEq.left.name] ?? []).length === 0
+        ? treeEq.right
+        : treeEq.right.kind === "var" &&
+            varsIn(treeEq.left).size === 0 &&
+            (declaredDependencies[treeEq.right.name] ?? []).length === 0
+          ? treeEq.left
+          : null;
+    if (!closedSide) return null;
+    const evaluated = evalClosedNode(closedSide);
+    return !evaluated.ok && evaluated.code === "undefined"
+      ? evaluated.message
+      : null;
+  }, [treeEq, declaredDependencies]);
 
   /** Tree equations get the same verdicts: identical sides, or two constants */
   const treeStatus = useMemo(() => {
-    if (treeSolved) return null;
+    if (treeSolved || treeUndefined) return null;
     return decideStatus(treeEq.left, treeEq.right);
-  }, [treeEq, treeSolved]);
+  }, [treeEq, treeSolved, treeUndefined]);
+  const complexInteractionMode =
+    (!!treeSolved && scalarHasComplexCarrier(treeSolved.scalar)) ||
+    (
+      !!viewSpec &&
+      !!selectedMappingSignature &&
+      signatureNeedsComplexView(selectedMappingSignature)
+    );
 
   /** Calculus is available for any canonical relation with at least one symbol. */
   const calculusReady = !!relationAnalysis && relationAnalysis.symbols.length > 0;
@@ -2243,6 +2406,7 @@ const EquationBuilderTool = () => {
     setTreeEq(norm.te);
     setHistory([makeTreeStep("start", norm.te, norm.changed, norm.note, norm.pill)]);
     setDocumentId(freshDocumentId());
+    setMappingSignatureId(null);
     setSelection(null);
     setSpecialBubble(null);
     setDismissedFactorizationHints(new Set());
@@ -2350,10 +2514,6 @@ const EquationBuilderTool = () => {
     // Presses inside UI chrome (history menu, presets, input) keep their own
     // click handling — closing the menu here would unmount the button mid-press
     if (targetEl.closest("[data-ui]")) return;
-    // Safari decides whether a finger owns a browser pan at pointer-down time.
-    // The playfield's touch-action CSS is the primary contract; preventing the
-    // default here is a second guard for older iOS versions and embedded views.
-    if (e.pointerType === "touch") e.preventDefault();
     const specialEl = targetEl.closest<HTMLElement>("[data-special-action]");
     const specialAction = specialEl ? specialActionFromElement(specialEl) : null;
     // Proximity grab: the nearest symbol within reach picks up, even if the
@@ -2371,6 +2531,15 @@ const EquationBuilderTool = () => {
       beginDrag(payloadFromSymbol(symbol), e, symbol, tapIntent);
       return;
     }
+    // A complex plane can make the document taller than an iPhone viewport.
+    // Its own hit surface still wins direct manipulation, while a touch on
+    // surrounding paper scrolls to the linked output plane and lens control.
+    // Mouse/pen retain marquee selection, and term touches above still drag.
+    if (complexInteractionMode && e.pointerType === "touch") return;
+    // Safari decides whether a finger owns a browser pan at pointer-down time.
+    // The playfield's touch-action CSS is the primary contract; preventing the
+    // default here is a second guard for older iOS versions and embedded views.
+    if (e.pointerType === "touch") e.preventDefault();
     const x0 = e.clientX;
     const y0 = e.clientY;
     const pointerId = e.pointerId;
@@ -2526,7 +2695,7 @@ const EquationBuilderTool = () => {
   };
 
   const computeTreeDrop = (payload: DragPayload, target: DropTarget): TreeMoveResult =>
-    computeTreeOperation(treeEq, payload, target);
+    computeTreeOperation(treeEq, payload, target, scalarOperationContext);
 
   const withTreeStory = (o: TreeOutcome, payload: DragPayload, target: DropTarget): TreeOutcome =>
     o.story ? o : { ...o, story: treeMoveStory(treeEq, payload, target) };
@@ -2549,6 +2718,7 @@ const EquationBuilderTool = () => {
       expectedRevision: equationRevision(treeEq),
       actor: { kind: "human" },
       command,
+      operationContext: scalarOperationContext,
       standingAssumptions,
     });
   };
@@ -2565,6 +2735,8 @@ const EquationBuilderTool = () => {
         probeValue,
         planeProbe: [planeProbe.x, planeProbe.y],
         viewSpec: viewSpec ?? undefined,
+        mappingSignatureId: selectedMappingSignature?.id,
+        complexDisplay,
         lastDifferentiationContext: differentiationContext,
         lastIntegrationContext: integrationContext,
       },
@@ -2580,12 +2752,19 @@ const EquationBuilderTool = () => {
       planeProbe.x,
       planeProbe.y,
       viewSpec,
+      selectedMappingSignature,
+      complexDisplay,
       differentiationContext,
       integrationContext,
     ]);
 
   useEffect(() => {
     const equationAtRevision = treeEq;
+    const dependenciesAtRevision = Object.fromEntries(
+      documentSnapshot.symbols
+        .filter((record) => (record.dependsOn ?? []).length > 0)
+        .map((record) => [record.name, record.dependsOn!])
+    );
     const protocolService = protocolServiceRef.current!;
     protocolService.loadDocument(documentSnapshot);
     const protocol: EquationProtocolApi = {
@@ -2594,14 +2773,16 @@ const EquationBuilderTool = () => {
       analyze: () => {
         const analysis = protocolService.analyze(documentId);
         if (!("status" in analysis)) return analysis;
+        const relation = analyzeRelation(equationAtRevision, dependenciesAtRevision);
         return {
-          relation: analyzeRelation(equationAtRevision),
+          relation,
           symbols: documentSnapshot.symbols.map(({ id, name, meaning, unit }) => ({
             id,
             name,
             meaning,
             unit,
           })),
+          semantics: relation.isolations.map(analyzeIsolationSemantics),
         };
       },
       listActions: () => {
@@ -2634,7 +2815,10 @@ const EquationBuilderTool = () => {
       setView: (request) => {
         const result = protocolService.setView(request);
         if (result.status === "updated") {
-          setViewSpec(result.document.presentation?.viewSpec ?? null);
+          const presentation = result.document.presentation;
+          setViewSpec(presentation?.viewSpec ?? null);
+          setMappingSignatureId(presentation?.mappingSignatureId ?? null);
+          setComplexDisplay(presentation?.complexDisplay ?? "cartesian");
         }
         return result;
       },
@@ -2642,19 +2826,64 @@ const EquationBuilderTool = () => {
     const api: EquationToolApi = {
       protocol,
       getDocument: () => protocolService.getDocument(documentId) ?? documentSnapshot,
-      analyzeRelation: () => analyzeRelation(equationAtRevision),
+      analyzeRelation: () =>
+        analyzeRelation(equationAtRevision, dependenciesAtRevision),
       setViewSpec: (spec: ViewSpec | null) => {
-        const analysis = analyzeRelation(equationAtRevision);
+        const analysis = analyzeRelation(equationAtRevision, dependenciesAtRevision);
         if (spec && !isViewSpecValid(spec, analysis)) return false;
         setViewSpec(spec);
         return true;
       },
       inspectNodes: () => inspectEquationNodes(equationAtRevision),
-      listApplicableOperations: () => listApplicableEquationOperations(equationAtRevision),
-      previewCommand: (request: Parameters<typeof applyEquationCommand>[1]) =>
-        applyEquationCommand(equationAtRevision, { standingAssumptions, ...request }),
+      listApplicableOperations: () =>
+        listApplicableEquationOperations(equationAtRevision, scalarOperationContext),
+      previewCommand: (request: Parameters<typeof applyEquationCommand>[1]) => {
+        const currentContext = resolveScalarOperationContext(
+          equationAtRevision,
+          scalarOperationContext
+        );
+        const requestedContext = resolveScalarOperationContext(
+          equationAtRevision,
+          request.operationContext
+        );
+        if (
+          request.operationContext &&
+          !sameScalarOperationContext(requestedContext, currentContext)
+        ) {
+          return {
+            status: "rejected",
+            reason: "the selected scalar mapping changed; list operations again before previewing",
+          };
+        }
+        return applyEquationCommand(equationAtRevision, {
+          ...request,
+          standingAssumptions,
+          operationContext: currentContext,
+        });
+      },
       applyCommand: (request: Parameters<typeof applyEquationCommand>[1]) => {
-        const result = applyEquationCommand(equationAtRevision, { standingAssumptions, ...request });
+        const currentContext = resolveScalarOperationContext(
+          equationAtRevision,
+          scalarOperationContext
+        );
+        const requestedContext = resolveScalarOperationContext(
+          equationAtRevision,
+          request.operationContext
+        );
+        if (
+          request.operationContext &&
+          !sameScalarOperationContext(requestedContext, currentContext)
+        ) {
+          return {
+            status: "rejected",
+            reason: "the selected scalar mapping changed; list operations again before applying",
+          };
+        }
+        const result = applyEquationCommand(equationAtRevision, {
+          ...request,
+          standingAssumptions,
+          operationContext: currentContext,
+        });
         if (result.status === "applied") {
           const outcome =
             request.command.type === "gesture"
@@ -2689,6 +2918,7 @@ const EquationBuilderTool = () => {
     planeProbe.x,
     planeProbe.y,
     viewSpec,
+    scalarOperationContext,
     differentiationContext,
     integrationContext,
     standingAssumptions,
@@ -2706,7 +2936,17 @@ const EquationBuilderTool = () => {
     if (presentation?.planeProbe) {
       setPlaneProbe({ x: presentation.planeProbe[0], y: presentation.planeProbe[1] });
     }
-    setViewSpec(presentation?.viewSpec ?? unambiguousView(analyzeRelation(document.equation)));
+    const dependencies = Object.fromEntries(
+      document.symbols
+        .filter((record) => (record.dependsOn ?? []).length > 0)
+        .map((record) => [record.name, record.dependsOn!])
+    );
+    setViewSpec(
+      presentation?.viewSpec ??
+        unambiguousView(analyzeRelation(document.equation, dependencies))
+    );
+    setMappingSignatureId(presentation?.mappingSignatureId ?? null);
+    setComplexDisplay(presentation?.complexDisplay ?? "cartesian");
     setDifferentiationContext(
       presentation?.lastDifferentiationContext ?? emptyDifferentiationContext()
     );
@@ -3579,7 +3819,11 @@ const EquationBuilderTool = () => {
 
   return (
     <div
-      className="relative flex h-full w-full touch-none flex-col items-center justify-center overscroll-none bg-background text-foreground"
+      className={`relative flex h-full w-full flex-col items-center bg-background text-foreground ${
+        complexInteractionMode
+          ? "justify-start overflow-y-auto overscroll-y-contain touch-pan-y pb-24 pt-36 sm:pt-24"
+          : "touch-none justify-center overflow-hidden overscroll-none"
+      }`}
       onPointerDown={onBackgroundPointerDown}
     >
       {/* Typed equation input with live parse preview; the magnifier toggles
@@ -3683,7 +3927,7 @@ const EquationBuilderTool = () => {
       </div>
 
       {/* Symbol toolbox */}
-      <div className="absolute left-4 top-4 z-30 flex items-start gap-2" data-ui data-toolbox>
+      <div className="absolute left-4 top-4 z-30 flex touch-none items-start gap-2" data-ui data-toolbox>
         <div className="relative">
           <button
             type="button"
@@ -4008,7 +4252,12 @@ const EquationBuilderTool = () => {
                     Type an equation with a variable to create its first record.
                   </p>
                 ) : (
-                  (focusedSymbolRecord ? [focusedSymbolRecord] : []).map((record) => (
+                  (focusedSymbolRecord ? [focusedSymbolRecord] : []).map((record) => {
+                    const inferredSpace = inferredSymbolSpaces.get(record.name);
+                    const isDeclaredInput = symbolRecords.some(
+                      (candidate) => (candidate.dependsOn ?? []).includes(record.name)
+                    );
+                    return (
                     <article
                       key={record.id}
                       onPointerEnter={() => setHoveredSymbolId(record.id)}
@@ -4025,12 +4274,24 @@ const EquationBuilderTool = () => {
                           )}
                         </span>
                         <div className="min-w-0">
-                          <div className="text-xs font-medium">
-                            {(record.dependsOn ?? []).length > 0
-                              ? `Function of ${record.dependsOn!.join(", ")}`
-                              : record.parameter
-                                ? "Hidden parameter — not in the equation"
-                                : "Model symbol"}
+                          <div className="flex flex-wrap items-center gap-1.5 text-xs font-medium">
+                            <span>
+                              {(record.dependsOn ?? []).length > 0
+                                ? `Function of ${record.dependsOn!.join(", ")}`
+                                : record.parameter && isDeclaredInput
+                                  ? "Declared input — not present in the expression"
+                                  : record.parameter
+                                  ? "Hidden parameter — not in the equation"
+                                  : "Model symbol"}
+                            </span>
+                            {inferredSpace && (
+                              <span
+                                className="rounded-full border border-sky-300 bg-sky-50 px-1.5 py-px font-serif text-[10px] text-sky-700 dark:bg-sky-950/30 dark:text-sky-300"
+                                title="Inferred from this equation; not a permanent declaration on the symbol"
+                              >
+                                {inferredSpace === "complex" ? "ℂ" : "ℝ"} · inferred
+                              </span>
+                            )}
                           </div>
                           <div className="truncate font-mono text-[10px] text-muted-foreground">{record.id}</div>
                         </div>
@@ -4097,7 +4358,10 @@ const EquationBuilderTool = () => {
                           (x/x cancels once x ≠ 0 stands, no re-asking per move). */}
                       <div className="mt-2 flex items-center gap-1.5 text-[10px]">
                         <span className="text-muted-foreground">known:</span>
-                        {[`${record.name} > 0`, `${record.name} ≠ 0`].map((expression) => {
+                        {[
+                          ...(inferredSpace === "complex" ? [] : [`${record.name} > 0`]),
+                          `${record.name} ≠ 0`,
+                        ].map((expression) => {
                           const active = record.assumptions.some(
                             (assumption) => assumption.source === "human" && assumption.expression === expression
                           );
@@ -4142,7 +4406,8 @@ const EquationBuilderTool = () => {
                         </div>
                       )}
                     </article>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </section>
@@ -4310,8 +4575,8 @@ const EquationBuilderTool = () => {
       {/* The equation */}
       <div
         ref={equationRef}
-        className={`flex items-center leading-none font-serif text-6xl tracking-wide transition-colors duration-300 sm:text-7xl ${
-          treeStatus === "contradiction"
+        className={`flex shrink-0 touch-none items-center leading-none font-serif text-6xl tracking-wide transition-colors duration-300 sm:text-7xl ${
+          treeStatus === "contradiction" || treeUndefined
             ? "text-rose-500"
             : treeSolved || treeStatus === "identity"
               ? "text-emerald-600"
@@ -4385,7 +4650,7 @@ const EquationBuilderTool = () => {
       )}
 
       {/* State line: notice, solved, or a neutral hint — plus the active assumption */}
-      <div className="mt-10 flex h-6 items-center gap-3 text-sm text-muted-foreground">
+      <div className="mt-10 flex h-6 shrink-0 items-center gap-3 text-sm text-muted-foreground">
         {playing ? (
           <span className="font-medium text-amber-600">
             step {playIndex} of {history.length - 1} — {history[playIndex]?.label}
@@ -4405,6 +4670,8 @@ const EquationBuilderTool = () => {
             Solved — {treeSolved.v} = {treeSolved.text}
             {treeSolved.approx !== null && <span className="text-emerald-600/70"> ≈ {treeSolved.approx}</span>}
           </span>
+        ) : treeUndefined ? (
+          <span className="font-medium text-rose-500">Undefined — {treeUndefined}</span>
         ) : treeStatus === "identity" ? (
           <span className="font-medium text-emerald-600">Always true — the two sides are equal for every value</span>
         ) : treeStatus === "contradiction" ? (
@@ -4428,6 +4695,15 @@ const EquationBuilderTool = () => {
         />
       )}
 
+      {treeSolved && scalarHasComplexCarrier(treeSolved.scalar) && (
+        <ClosedComplexPane
+          label={treeSolved.v}
+          value={treeSolved.scalar}
+          display={complexDisplay}
+          onDisplay={setComplexDisplay}
+        />
+      )}
+
       {/* A view is an explicit interpretation of the symmetric relation. */}
       {(() => {
         if (relationAnalysis && viewSpec && isViewSpecValid(viewSpec, relationAnalysis)) {
@@ -4435,10 +4711,41 @@ const EquationBuilderTool = () => {
           if (viewSpec.kind === "function-1d") {
             const isolation = isolationForView(relationAnalysis, viewSpec);
             if (!isolation) return null;
-            const f = (input: number) => evalNode(isolation.expression, {
+            const mappingSignature =
+              activeIsolationSemantics?.output === isolation.output
+                ? selectedMappingSignature
+                : null;
+            const lensControl =
+              mappingSignature && activeIsolationSemantics ? (
+                <MappingLensControl
+                  candidates={activeIsolationSemantics.mappingCandidates}
+                  value={mappingSignature}
+                  onChange={setMappingSignatureId}
+                />
+              ) : null;
+            if (mappingSignature && signatureNeedsComplexView(mappingSignature)) {
+              return (
+                <>
+                  {lensControl}
+                  <ComplexMappingPane
+                    isolation={isolation}
+                    signature={mappingSignature}
+                    input={viewSpec.input}
+                    fixed={viewSpec.fixed}
+                    realProbe={probeValue}
+                    onRealProbe={setProbeValue}
+                    complexProbe={{ re: planeProbe.x, im: planeProbe.y }}
+                    onComplexProbe={(value) => setPlaneProbe({ x: value.re, y: value.im })}
+                    display={complexDisplay}
+                    onDisplay={setComplexDisplay}
+                  />
+                </>
+              );
+            }
+            const f = (input: number) => evaluateRealMappingValue(isolation.expression, {
               ...viewSpec.fixed,
               [viewSpec.input]: input,
-            });
+            }, scalarOperationContext);
             const fn = {
               f,
               depKey: key,
@@ -4473,11 +4780,12 @@ const EquationBuilderTool = () => {
                     </button>
                   ))}
                 </div>
+                {lensControl}
               </>
             );
           }
           if (viewSpec.kind === "relation-1d") {
-            const evaluate = (node: TNode, input: number) => evalNode(node, {
+            const evaluate = (node: TNode, input: number) => evaluateRealMappingValue(node, {
               ...viewSpec.fixed,
               [viewSpec.input]: input,
             });
@@ -4497,7 +4805,10 @@ const EquationBuilderTool = () => {
                 [viewSpec.horizontal]: horizontal,
                 [viewSpec.vertical]: vertical,
               };
-              return evalNode(treeEq.left, env) - evalNode(treeEq.right, env);
+              return (
+                evaluateRealMappingValue(treeEq.left, env) -
+                evaluateRealMappingValue(treeEq.right, env)
+              );
             };
             return (
               <ImplicitRelationPane
@@ -4512,20 +4823,47 @@ const EquationBuilderTool = () => {
           }
           const isolation = isolationForView(relationAnalysis, viewSpec);
           if (!isolation) return null;
+          const mappingSignature =
+            activeIsolationSemantics?.output === isolation.output
+              ? selectedMappingSignature
+              : null;
+          const lensControl =
+            mappingSignature && activeIsolationSemantics ? (
+              <MappingLensControl
+                candidates={activeIsolationSemantics.mappingCandidates}
+                value={mappingSignature}
+                onChange={setMappingSignatureId}
+              />
+            ) : null;
+          if (mappingSignature && signatureNeedsComplexView(mappingSignature)) {
+            return (
+              <section className="mt-4 flex max-w-[min(36rem,90vw)] flex-col items-center gap-2 text-center" data-ui>
+                {lensControl}
+                <div className="rounded-2xl border border-violet-300/70 bg-violet-50 px-4 py-3 text-xs text-violet-800 dark:bg-violet-950/25 dark:text-violet-200">
+                  This complex mapping has two free complex inputs—four real dimensions.
+                  Choose an <span className="font-medium">input → output</span> visualization above;
+                  the other input becomes an explicit slice instead of the app choosing one for you.
+                </div>
+              </section>
+            );
+          }
           return (
-            <ScalarFieldPane
-              f={(horizontal, vertical) => evalNode(isolation.expression, {
-                ...viewSpec.fixed,
-                [viewSpec.horizontal]: horizontal,
-                [viewSpec.vertical]: vertical,
-              })}
-              depKey={key}
-              horizontal={viewSpec.horizontal}
-              vertical={viewSpec.vertical}
-              output={viewSpec.output}
-              probe={planeProbe}
-              onProbe={setPlaneProbe}
-            />
+            <>
+              <ScalarFieldPane
+                f={(horizontal, vertical) => evaluateRealMappingValue(isolation.expression, {
+                  ...viewSpec.fixed,
+                  [viewSpec.horizontal]: horizontal,
+                  [viewSpec.vertical]: vertical,
+                }, scalarOperationContext)}
+                depKey={key}
+                horizontal={viewSpec.horizontal}
+                vertical={viewSpec.vertical}
+                output={viewSpec.output}
+                probe={planeProbe}
+                onProbe={setPlaneProbe}
+              />
+              {lensControl}
+            </>
           );
         }
         return null;

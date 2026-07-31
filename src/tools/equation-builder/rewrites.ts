@@ -35,6 +35,7 @@ import {
   tv,
   varsIn,
 } from "./tree";
+import type { ScalarOperationContext } from "./semantics";
 
 export type RewriteKind = "expand" | "factor" | "identity";
 
@@ -48,6 +49,8 @@ export interface Rewrite {
   after: TNode;
   /** a domain assumption the rewrite needs (log laws), else undefined */
   pill?: string;
+  /** Principal complex Log does not obey the real log laws globally. */
+  scalarPolicy?: "real-only";
 }
 
 const gcd2 = (a: number, b: number): number => (b === 0 ? Math.abs(a) : gcd2(b, a % b));
@@ -208,6 +211,7 @@ function logProduct(n: TNode): Rewrite | null {
     before: n,
     after: simplify(tadd(...terms)),
     pill: pillParts.length ? `${pillParts.join(", ")} > 0` : undefined,
+    scalarPolicy: "real-only",
   };
 }
 
@@ -226,6 +230,7 @@ function logPower(n: TNode): Rewrite | null {
     before: n,
     after: simplify(tmul(exp, tfn("ln", base))),
     pill: cv === null ? `${printNode(base)} > 0` : undefined,
+    scalarPolicy: "real-only",
   };
 }
 
@@ -272,10 +277,19 @@ function walk(n: TNode, visit: (m: TNode) => void): void {
 }
 
 /** Every rewrite available anywhere in the expression, de-duplicated. */
-export function detectRewrites(root: TNode): Rewrite[] {
+export function detectRewrites(
+  root: TNode,
+  operationContext?: ScalarOperationContext
+): Rewrite[] {
   const out: Rewrite[] = [];
   const seen = new Set<string>();
   const add = (r: Rewrite) => {
+    if (
+      operationContext?.scalarRealm === "complex" &&
+      r.scalarPolicy === "real-only"
+    ) {
+      return;
+    }
     const k = `${r.kind}|${r.before.id}|${keyOf(r.after)}`;
     if (seen.has(k) || keyOf(r.before) === keyOf(r.after)) return;
     seen.add(k);
@@ -295,16 +309,25 @@ export function detectRewrites(root: TNode): Rewrite[] {
 }
 
 /** Detect over a whole equation, tagging which side each rewrite lives on. */
-export function detectRewritesEq(te: TreeEq): { side: "left" | "right"; rewrite: Rewrite }[] {
+export function detectRewritesEq(
+  te: TreeEq,
+  operationContext?: ScalarOperationContext
+): { side: "left" | "right"; rewrite: Rewrite }[] {
   return [
-    ...detectRewrites(te.left).map((rewrite) => ({ side: "left" as const, rewrite })),
-    ...detectRewrites(te.right).map((rewrite) => ({ side: "right" as const, rewrite })),
+    ...detectRewrites(te.left, operationContext)
+      .map((rewrite) => ({ side: "left" as const, rewrite })),
+    ...detectRewrites(te.right, operationContext)
+      .map((rewrite) => ({ side: "right" as const, rewrite })),
   ];
 }
 
 /** The focused product surface: detect factorable groups, not every rewrite. */
-export function detectFactorizationsEq(te: TreeEq): { side: "left" | "right"; rewrite: Rewrite }[] {
-  return detectRewritesEq(te).filter(({ rewrite }) => rewrite.kind === "factor");
+export function detectFactorizationsEq(
+  te: TreeEq,
+  operationContext?: ScalarOperationContext
+): { side: "left" | "right"; rewrite: Rewrite }[] {
+  return detectRewritesEq(te, operationContext)
+    .filter(({ rewrite }) => rewrite.kind === "factor");
 }
 
 /** Apply a candidate: replace the exact semantic occurrence that was offered. */
@@ -322,7 +345,13 @@ export function applyRewrite(root: TNode, r: Rewrite): TNode {
       case "mul":
         return { id: n.id, kind: "mul", factors: n.factors.map(rec) };
       case "pow":
-        return { id: n.id, kind: "pow", base: rec(n.base), exp: rec(n.exp) };
+        return {
+          id: n.id,
+          kind: "pow",
+          base: rec(n.base),
+          exp: rec(n.exp),
+          ...(n.branch ? { branch: n.branch } : {}),
+        };
       case "fn":
         return { id: n.id, kind: "fn", fn: n.fn, arg: rec(n.arg) };
       default:

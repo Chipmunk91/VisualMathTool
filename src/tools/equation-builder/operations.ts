@@ -30,6 +30,7 @@ import {
   type TreeMoveResult,
   type TreeToolKind,
 } from "./treemoves";
+import type { ScalarOperationContext } from "./semantics";
 import {
   ownerOfTreeHandleId,
   resolveTreeFactor,
@@ -147,24 +148,29 @@ export function previewTreeOperation(
 export function computeTreeOperation(
   te: TreeEq,
   payload: DragPayload,
-  target: DropTarget
+  target: DropTarget,
+  operationContext?: ScalarOperationContext
 ): TreeMoveResult {
   if (target.kind === "bound") return null;
   if (payload.kind === "tool") {
     if (target.kind === "onterm") {
       return "rebuilding single terms arrives with the full tree grammar — click the symbol to apply it to both sides";
     }
-    return applyToolT(payload.tool, te);
+    return applyToolT(payload.tool, te, operationContext);
   }
   if (payload.kind === "factorGroup") {
     const group = resolveTreeFactorGroup(te, payload.ids);
     if (!group) return "select factors from one product row — numerator and denominator chunks move separately";
     const text = printNode(group.expr);
     if (group.zone === "n") {
-      return target.kind === "under" || target.kind === "side" ? divideBothT(te, group.expr, text) : null;
+      return target.kind === "under" || target.kind === "side"
+        ? divideBothT(te, group.expr, text, operationContext)
+        : null;
     }
     if (target.kind === "under") return "a denominator group multiplies — drop it beside the other side";
-    return target.kind === "side" ? multiplyBothT(te, group.expr, text) : null;
+    return target.kind === "side"
+      ? multiplyBothT(te, group.expr, text, operationContext)
+      : null;
   }
   if (target.kind === "unit" && (payload.kind === "numer" || payload.kind === "den" || payload.kind === "coef")) {
     const mine = resolveTreeFactor(te, payload.termId);
@@ -174,45 +180,67 @@ export function computeTreeOperation(
       return "only an identical pair cancels — these factors don't match";
     }
     if (mine.ownerId !== theirs.ownerId) return "cancel within one term — these factors live in different terms";
-    return cancelFactorT(te, mine.ownerId, mine.expr, printNode(mine.expr));
+    return cancelFactorT(
+      te,
+      mine.ownerId,
+      mine.expr,
+      printNode(mine.expr),
+      operationContext
+    );
   }
   if (payload.kind === "coef") {
     const expr = treeCoefficientExpression(te, payload.termId);
-    return expr ? divideBothT(te, expr, printNode(expr)) : null;
+    return expr
+      ? divideBothT(te, expr, printNode(expr), operationContext)
+      : null;
   }
   if (payload.kind === "xdiv") {
     // Compatibility for pre-tree handles restored from an old shared link.
     const legacy = payload.termId.match(/@(x|y)$/)?.[1] as Variable | undefined;
     if (!legacy) return null;
-    return target.kind === "under" || target.kind === "side" ? divideBothT(te, tv(legacy), legacy) : null;
+    return target.kind === "under" || target.kind === "side"
+      ? divideBothT(te, tv(legacy), legacy, operationContext)
+      : null;
   }
   if (payload.kind === "numer") {
     const factor = resolveTreeFactor(te, payload.termId);
     return factor && (target.kind === "under" || target.kind === "side")
-      ? divideBothT(te, factor.expr, printNode(factor.expr))
+      ? divideBothT(te, factor.expr, printNode(factor.expr), operationContext)
       : null;
   }
   if (payload.kind === "lnbase") {
-    return target.kind === "under" || target.kind === "side" ? applyToolT("ln", te) : null;
+    return target.kind === "under" || target.kind === "side"
+      ? applyToolT("ln", te, operationContext)
+      : null;
   }
   if (payload.kind === "root") {
-    return payload.n >= 2 && (target.kind === "under" || target.kind === "side") ? rootBothT(te, payload.n) : null;
+    return payload.n >= 2 && (target.kind === "under" || target.kind === "side")
+      ? rootBothT(te, payload.n, operationContext)
+      : null;
   }
   if (payload.kind === "raise") {
-    return payload.n >= 2 && (target.kind === "under" || target.kind === "side") ? raiseBothT(te, payload.n) : null;
+    return payload.n >= 2 && (target.kind === "under" || target.kind === "side")
+      ? raiseBothT(te, payload.n, operationContext)
+      : null;
   }
   if (payload.kind === "den") {
     const factor = resolveTreeFactor(te, payload.termId);
     if (!factor) return null;
     if (target.kind === "under") return "a denominator multiplies — drop it beside the other side";
-    return target.kind === "side" ? multiplyBothT(te, factor.expr, printNode(factor.expr)) : null;
+    return target.kind === "side"
+      ? multiplyBothT(te, factor.expr, printNode(factor.expr), operationContext)
+      : null;
   }
   if (payload.kind === "terms") {
     if (target.kind === "under") {
       const addend = treeAddendExpression(te, payload.ids[0]);
-      return addend ? divideBothT(te, addend, printNode(addend)) : null;
+      return addend
+        ? divideBothT(te, addend, printNode(addend), operationContext)
+        : null;
     }
-    return target.kind === "side" ? moveTermsT(te, payload.ids, payload.from, target.side) : null;
+    return target.kind === "side"
+      ? moveTermsT(te, payload.ids, payload.from, target.side, operationContext)
+      : null;
   }
   return null;
 }

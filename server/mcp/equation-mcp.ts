@@ -155,7 +155,7 @@ export function createEquationMcpServer(
 
   server.registerTool("equation_set_view", {
     title: "Select equation visualization",
-    description: "Select one currently advertised view candidate, or null to leave the interpretation unselected.",
+    description: "Select an advertised graph candidate and optional real/complex mapping lens, or clear the graph interpretation.",
     inputSchema: SetProtocolViewRequestSchema,
     outputSchema: ToolOutputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

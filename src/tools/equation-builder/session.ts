@@ -4,13 +4,16 @@ import {
   makeEquationDocument,
   predicateFromText,
   reconcileSymbols,
+  symbolsInEquation,
   type EquationDocument,
   type EquationEvent,
+  type SymbolRecord,
 } from "./document";
 import {
   applyEquationCommand,
   executeEquationCommand,
   listApplicableEquationOperations,
+  resolveScalarOperationContext,
   type ApplicableEquationOperation,
   type EquationCommand,
 } from "./engine";
@@ -42,7 +45,13 @@ import {
   type ProtocolRelationAnalysis,
 } from "./protocol";
 import { analyzeRelation } from "./relation";
-import { cloneTreeEq } from "./tree";
+import {
+  analyzeIsolationSemantics,
+  sameScalarOperationContext,
+  scalarOperationContextForMapping,
+  type ScalarOperationContext,
+} from "./semantics";
+import { cloneTreeEq, symbolIdForName, type TreeEq } from "./tree";
 
 interface InventoryEntry {
   descriptor: EquationActionDescriptor;
@@ -53,6 +62,9 @@ interface StoredPreview {
   documentId: string;
   action: EquationActionDescriptor;
   command: EquationCommand;
+  operationContext: ScalarOperationContext;
+  /** Exact assumption facts that licensed simplification in this preview. */
+  standingAssumptions: string[];
   result: Extract<ReturnType<typeof applyEquationCommand>, { status: "applied" }>;
   consumed: boolean;
 }
@@ -110,8 +122,16 @@ const kindForOperation = (operation: ApplicableEquationOperation): EquationActio
   return "algebra";
 };
 
-const warningsForCommand = (document: EquationDocument, command: EquationCommand): string[] => {
-  const result = executeEquationCommand(document.equation, command);
+const warningsForCommand = (
+  document: EquationDocument,
+  command: EquationCommand,
+  operationContext: ScalarOperationContext
+): string[] => {
+  const result = executeEquationCommand(
+    document.equation,
+    command,
+    operationContext
+  );
   if (!result || typeof result === "string") return [];
   const warnings: string[] = [];
   if (result.pill) warnings.push(`Requires ${result.pill}.`);
@@ -120,7 +140,125 @@ const warningsForCommand = (document: EquationDocument, command: EquationCommand
 };
 
 const symbolsForProtocol = (document: EquationDocument): EquationSymbolReference[] =>
-  document.symbols.map(({ id, name, meaning, unit }) => ({ id, name, meaning, unit }));
+  document.symbols.map(({ id, name, meaning, unit, dependsOn, parameter }) => ({
+    id,
+    name,
+    meaning,
+    unit,
+    ...(dependsOn?.length ? { dependsOn: [...dependsOn] } : {}),
+    ...(parameter ? { parameter: true as const } : {}),
+  }));
+
+const dependenciesForDocument = (
+  document: EquationDocument
+): Record<string, string[]> =>
+  Object.fromEntries(
+    document.symbols
+      .filter((symbol) => symbol.dependsOn?.length)
+      .map<[string, string[]]>((symbol) => [
+        symbol.name,
+        [...symbol.dependsOn!].sort(),
+      ])
+      .sort(([left], [right]) => left.localeCompare(right))
+  );
+
+const standingAssumptionsForDocument = (
+  document: EquationDocument
+): string[] =>
+  Array.from(
+    new Set([
+      ...document.assumptions.map((assumption) => assumption.expression),
+      ...document.symbols.flatMap((symbol) =>
+        symbol.assumptions.map((assumption) => assumption.expression)
+      ),
+    ])
+  ).sort();
+
+const standingPredicatesForDocument = (
+  document: EquationDocument
+): EquationEvent["assumptionsAdded"] => {
+  const predicates = new Map<string, EquationEvent["assumptionsAdded"][number]>();
+  for (const predicate of [
+    ...document.assumptions,
+    ...document.symbols.flatMap((symbol) => symbol.assumptions),
+  ]) {
+    predicates.set(predicate.id, cloneJson(predicate));
+  }
+  return Array.from(predicates.values()).sort((left, right) =>
+    left.expression.localeCompare(right.expression)
+  );
+};
+
+const sameStandingAssumptions = (
+  left: readonly string[],
+  right: readonly string[]
+): boolean =>
+  left.length === right.length &&
+  left.every((assumption, index) => assumption === right[index]);
+
+const operationContextForDocument = (
+  document: EquationDocument
+): ScalarOperationContext => {
+  const selectedMappingId = document.presentation?.mappingSignatureId;
+  if (selectedMappingId) {
+    const relation = analyzeRelation(
+      document.equation,
+      dependenciesForDocument(document)
+    );
+    const selected = relation.isolations
+      .flatMap((isolation) =>
+        analyzeIsolationSemantics(isolation).mappingCandidates
+      )
+      .find((candidate) => candidate.id === selectedMappingId);
+    if (selected) {
+      return resolveScalarOperationContext(
+        document.equation,
+        scalarOperationContextForMapping(selected)
+      );
+    }
+  }
+  return resolveScalarOperationContext(document.equation);
+};
+
+/**
+ * Lowered function declarations lose their argument glyphs from the tree, so
+ * seed both the dependency edge and any otherwise-absent declared input into
+ * the durable symbol book before `makeEquationDocument` reconciles it.
+ */
+const symbolsWithParserDependencies = (
+  equation: TreeEq,
+  dependencies: Readonly<Record<string, readonly string[]>> | undefined
+): SymbolRecord[] => {
+  const records = symbolsInEquation(equation);
+  if (!dependencies) return records;
+  const structuralNames = new Set(records.map((record) => record.name));
+  const byName = new Map(records.map((record) => [record.name, record]));
+  const ensure = (name: string): SymbolRecord => {
+    const existing = byName.get(name);
+    if (existing) return existing;
+    const created: SymbolRecord = {
+      id: symbolIdForName(name),
+      name,
+      parameter: true,
+      assumptions: [],
+      provenance: { createdBy: "parser", confirmedByHuman: false },
+    };
+    byName.set(name, created);
+    records.push(created);
+    return created;
+  };
+
+  for (const [output, rawInputs] of Object.entries(dependencies).sort(([a], [b]) => a.localeCompare(b))) {
+    const inputs = Array.from(new Set(rawInputs))
+      .filter((name) => !!name && name !== output)
+      .sort();
+    const outputRecord = ensure(output);
+    if (!structuralNames.has(output)) delete outputRecord.parameter;
+    outputRecord.dependsOn = inputs;
+    inputs.forEach(ensure);
+  }
+  return records;
+};
 
 const calculusContext = (document: EquationDocument): CalculusContextDescriptor => ({
   scope: {
@@ -239,7 +377,13 @@ export class EquationSessionService {
     if (this.documents.has(documentId)) {
       return errorResult("document_exists", `Document ${documentId} already exists.`);
     }
-    const document = makeEquationDocument(parsedEquation.tree, { documentId });
+    const document = makeEquationDocument(parsedEquation.tree, {
+      documentId,
+      symbols: symbolsWithParserDependencies(
+        parsedEquation.tree,
+        parsedEquation.dependencies
+      ),
+    });
     this.documents.set(documentId, document);
     return {
       status: "created",
@@ -273,14 +417,25 @@ export class EquationSessionService {
   analyze(documentId: string): ProtocolRelationAnalysis | EquationServiceError {
     const document = this.documents.get(documentId);
     if (!document) return errorResult("document_not_found", `Document ${documentId} was not found.`);
-    return {
-      relation: analyzeRelation(document.equation),
+    const relation = analyzeRelation(
+      document.equation,
+      dependenciesForDocument(document)
+    );
+    return cloneJson({
+      relation,
       symbols: symbolsForProtocol(document),
-    };
+      semantics: relation.isolations.map(analyzeIsolationSemantics),
+    });
   }
 
-  private inventory(document: EquationDocument): InventoryEntry[] {
-    const entries = listApplicableEquationOperations(document.equation).map<InventoryEntry>((operation) => ({
+  private inventory(
+    document: EquationDocument,
+    operationContext = operationContextForDocument(document)
+  ): InventoryEntry[] {
+    const entries = listApplicableEquationOperations(
+      document.equation,
+      operationContext
+    ).map<InventoryEntry>((operation) => ({
       descriptor: {
         id: operation.id,
         label: operation.label,
@@ -288,7 +443,12 @@ export class EquationSessionService {
         revision: document.revision,
         targets: targetsForCommand(operation.command),
         inputSchema: jsonSchema(EmptyActionArgumentsSchema),
-        warnings: warningsForCommand(document, operation.command),
+        operationContext,
+        warnings: warningsForCommand(
+          document,
+          operation.command,
+          operationContext
+        ),
       },
       command: operation.command,
     }));
@@ -303,7 +463,10 @@ export class EquationSessionService {
             targets: [document.equation.left.id, document.equation.right.id],
             inputSchema: calculusInputSchema(document, "differentiate"),
             context: calculusContext(document),
-            warnings: [],
+            operationContext,
+            warnings: operationContext.scalarRealm === "complex"
+              ? ["Complex calculus requires an explicit holomorphic, real-component, or Wirtinger interpretation."]
+              : [],
           },
         },
         {
@@ -315,7 +478,10 @@ export class EquationSessionService {
             targets: [document.equation.left.id, document.equation.right.id],
             inputSchema: calculusInputSchema(document, "integrate"),
             context: calculusContext(document),
-            warnings: [],
+            operationContext,
+            warnings: operationContext.scalarRealm === "complex"
+              ? ["Complex calculus requires an explicit contour or real-parameter interpretation."]
+              : [],
           },
         }
       );
@@ -424,12 +590,39 @@ export class EquationSessionService {
         currentRevision: document.revision,
       });
     }
-    const entry = this.inventory(document).find(({ descriptor }) => descriptor.id === request.actionId);
+    const operationContext = operationContextForDocument(document);
+    if (request.operationContext) {
+      const requestedContext = resolveScalarOperationContext(
+        document.equation,
+        request.operationContext
+      );
+      if (!sameScalarOperationContext(requestedContext, operationContext)) {
+        return errorResult(
+          "needs_context",
+          "The selected scalar mapping changed before this preview. List actions again and use its operationContext.",
+          {
+            requestedOperationContext: requestedContext,
+            currentOperationContext: operationContext,
+          }
+        );
+      }
+    }
+    const entry = this.inventory(document, operationContext)
+      .find(({ descriptor }) => descriptor.id === request.actionId);
     if (!entry) {
       return errorResult("action_not_found", `Action ${request.actionId} is not available at this revision.`);
     }
     let command = entry.command;
     if (request.actionId === "calculus:differentiate" || request.actionId === "calculus:integrate") {
+      if (operationContext.scalarRealm === "complex") {
+        return errorResult(
+          "needs_context",
+          request.actionId === "calculus:differentiate"
+            ? "Choose a complex-calculus interpretation first: holomorphic, real-component, or Wirtinger differentiation."
+            : "Choose a contour or explicit real-parameter interpretation before integrating in the complex realm.",
+          { operationContext }
+        );
+      }
       const resolved = this.resolveCalculusCommand(document, request.actionId, request.arguments);
       if ("status" in resolved) return resolved;
       command = resolved;
@@ -441,17 +634,14 @@ export class EquationSessionService {
     }
     if (!command) return errorResult("action_not_found", `Action ${request.actionId} has no executable command.`);
     const previewToken = `preview_${this.idFactory()}`;
+    const standingAssumptions = standingAssumptionsForDocument(document);
     const applied = applyEquationCommand(document.equation, {
       requestId: previewToken,
       expectedRevision: document.revision,
       actor: request.actor,
       command,
-      standingAssumptions: Array.from(
-        new Set([
-          ...document.assumptions.map((assumption) => assumption.expression),
-          ...document.symbols.flatMap((symbol) => symbol.assumptions.map((assumption) => assumption.expression)),
-        ])
-      ),
+      operationContext,
+      standingAssumptions,
     });
     if (applied.status === "stale") {
       return errorResult("stale_revision", "The equation changed before this preview.", {
@@ -471,6 +661,8 @@ export class EquationSessionService {
       documentId: document.documentId,
       action: entry.descriptor,
       command,
+      operationContext: cloneJson(operationContext),
+      standingAssumptions: cloneJson(standingAssumptions),
       result: applied,
       consumed: false,
     });
@@ -484,6 +676,7 @@ export class EquationSessionService {
       before: cloneTreeEq(applied.event.before),
       intermediate: applied.event.intermediate ? cloneTreeEq(applied.event.intermediate) : undefined,
       after: cloneTreeEq(applied.event.after),
+      operationContext: cloneJson(operationContext),
       assumptionsAdded: cloneJson(applied.event.assumptionsAdded),
       warnings: [
         ...entry.descriptor.warnings,
@@ -515,15 +708,53 @@ export class EquationSessionService {
         currentRevision: document.revision,
       });
     }
+    const currentOperationContext = operationContextForDocument(document);
+    if (
+      !preview.operationContext ||
+      !sameScalarOperationContext(
+        preview.operationContext,
+        currentOperationContext
+      )
+    ) {
+      return errorResult(
+        "needs_context",
+        "The selected scalar mapping changed after this preview. Create a new preview before applying it.",
+        {
+          previewOperationContext: preview.operationContext,
+          currentOperationContext,
+        }
+      );
+    }
+    const currentStandingAssumptions = standingAssumptionsForDocument(document);
+    if (
+      !preview.standingAssumptions ||
+      !sameStandingAssumptions(
+        preview.standingAssumptions,
+        currentStandingAssumptions
+      )
+    ) {
+      return errorResult(
+        "needs_context",
+        "The standing assumptions changed after this preview. Create a new preview before applying it.",
+        {
+          previewStandingAssumptions: preview.standingAssumptions,
+          currentStandingAssumptions,
+        }
+      );
+    }
     const event: EquationEvent = {
       ...cloneJson(preview.result.event),
       id: `event_${request.requestId}`,
       requestId: request.requestId,
       actor: request.actor,
+      assumptionsUsed: standingPredicatesForDocument(document),
       createdAt: this.now().toISOString(),
     };
     const assumptions = [...document.assumptions];
-    for (const assumption of event.assumptionsAdded) {
+    for (const assumption of [
+      ...(event.assumptionsUsed ?? []),
+      ...event.assumptionsAdded,
+    ]) {
       if (!assumptions.some((current) => current.id === assumption.id)) assumptions.push(assumption);
     }
     const nextEquation = cloneTreeEq(event.after);
@@ -607,18 +838,47 @@ export class EquationSessionService {
         currentRevision: document.revision,
       });
     }
-    const analysis = analyzeRelation(document.equation);
+    const analysis = analyzeRelation(
+      document.equation,
+      dependenciesForDocument(document)
+    );
     const viewSpec = request.candidateId === null
       ? undefined
       : analysis.viewCandidates.find((candidate) => candidate.id === request.candidateId)?.spec;
     if (request.candidateId !== null && !viewSpec) {
       return errorResult("view_not_found", `View ${request.candidateId} is not valid at this revision.`);
     }
+    const isolation =
+      viewSpec && (viewSpec.kind === "function-1d" || viewSpec.kind === "scalar-field-2d")
+        ? analysis.isolations.find((candidate) => candidate.output === viewSpec.output)
+        : undefined;
+    const mappingCandidates = isolation
+      ? analyzeIsolationSemantics(isolation).mappingCandidates
+      : [];
+    if (
+      request.mappingSignatureId &&
+      !mappingCandidates.some((candidate) => candidate.id === request.mappingSignatureId)
+    ) {
+      return errorResult(
+        "mapping_not_found",
+        `Mapping ${request.mappingSignatureId} is not valid for the selected visualization.`
+      );
+    }
+    const previousMappingId = document.presentation?.mappingSignatureId;
+    const defaultMappingId = mappingCandidates.find((candidate) => candidate.recommended)?.id;
+    const mappingSignatureId =
+      request.mappingSignatureId === null
+        ? undefined
+        : request.mappingSignatureId ??
+          mappingCandidates.find((candidate) => candidate.id === previousMappingId)?.id ??
+          defaultMappingId;
     const nextDocument: EquationDocument = {
       ...document,
       presentation: {
         ...document.presentation,
         viewSpec,
+        mappingSignatureId,
+        complexDisplay: request.complexDisplay ?? document.presentation?.complexDisplay,
       },
     };
     this.documents.set(document.documentId, nextDocument);

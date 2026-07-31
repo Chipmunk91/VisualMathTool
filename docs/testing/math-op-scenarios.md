@@ -92,7 +92,7 @@ browser suite · 📐 = honest refusal by design · ❌ = known gap (candidate w
 | E9 | `2^x = 8` | ln thaws the foreign base | `ln(2)·x = ln(8)` → divide → solved ≈ 3 | 🖱 test-tree |
 | E10 | `x³/x²` | simplifier without assumptions | 📐 stays — cancelling would erase the x=0 domain gap | ✅ B5 |
 | E11 | same, after a move declaring `x ≠ 0` | simplifier with the pill's license | `x` — cancels under the declared assumption | ✅ B6 |
-| E12 | `e^(ln(x) + 5/2) = e^(y/4)` | typed input | `e^(5/2)·x = e^(y/4)` **with pill `x > 0`** — e^(ln u) thaws at load, receipt attached | ✅ J2, 🖱 test-norm |
+| E12 | `e^(ln(x) + 5/2) = e^(y/4)` | typed input | Stays intact until a mapping lens is selected; an explicit real `exp` operation then yields `e^(5/2)·x = e^(y/4)` **with pill `x > 0`** | ✅ J2/J4, 🖱 test-norm |
 | E13 | `ln(x) + 5/2 = y/4` | exp tool (a MOVE) | `e^(5/2)·x = e^(y/4)` **with pill `x > 0`** — the thaw fires on every commit, flat tool or tree move | ✅ J4, 🖱 test-norm |
 | E14 | `e^(ln u)` (bare, anywhere) | any commit | `u` — never survives; the assumption `u > 0` is always reported | ✅ J5 |
 

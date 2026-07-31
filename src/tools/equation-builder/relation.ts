@@ -59,6 +59,11 @@ export interface RelationAnalysis {
   calculusCandidates: CalculusCandidate[];
 }
 
+/** Durable symbol-book edges, keyed by the declared output symbol. */
+export type DeclaredDependencies = Readonly<
+  Record<string, readonly string[] | undefined>
+>;
+
 const sorted = (values: Iterable<string>): string[] => Array.from(new Set(values)).sort();
 const fixedValues = (names: string[]): Record<string, number> =>
   Object.fromEntries(names.map((name) => [name, 1]));
@@ -109,11 +114,40 @@ const viewLabel = (spec: ViewSpec): string => {
   }
 };
 
-/** Pure structural analysis: no solving and no preferred x/y convention. */
-export function analyzeRelation(equation: TreeEq): RelationAnalysis {
+/**
+ * Pure relation analysis: no solving and no preferred x/y convention.
+ *
+ * Function declaration inputs are semantic structure even when the formula
+ * does not mention them (`f(x) = 3`). They arrive as durable dependency
+ * edges because the parser correctly lowers the left side to the bare symbol
+ * `f`; callers that do not have declarations may omit the second argument.
+ */
+export function analyzeRelation(
+  equation: TreeEq,
+  declaredDependencies: DeclaredDependencies = {}
+): RelationAnalysis {
   // Free occurrences only: a definite integral's spent dummy is not a symbol
   // of the relation, while a symbolic bound (∫₀ᵘ) is.
-  const symbols = sorted([...Array.from(freeVarsIn(equation.left)), ...Array.from(freeVarsIn(equation.right))]);
+  const structuralSymbols = sorted([
+    ...Array.from(freeVarsIn(equation.left)),
+    ...Array.from(freeVarsIn(equation.right)),
+  ]);
+  // Follow dependency inputs from symbols anchored in this relation. This
+  // includes hidden declared inputs and their upstream parameters without
+  // admitting unrelated records from the same session.
+  const semanticSymbols = new Set(structuralSymbols);
+  let expanded = true;
+  while (expanded) {
+    expanded = false;
+    for (const output of Array.from(semanticSymbols)) {
+      for (const input of declaredDependencies[output] ?? []) {
+        if (!input || input === output || semanticSymbols.has(input)) continue;
+        semanticSymbols.add(input);
+        expanded = true;
+      }
+    }
+  }
+  const symbols = sorted(semanticSymbols);
   const hasUnresolvedOperators =
     containsUnresolvedOperator(equation.left) || containsUnresolvedOperator(equation.right);
   const isolations: ExplicitIsolation[] = [];
@@ -121,11 +155,13 @@ export function analyzeRelation(equation: TreeEq): RelationAnalysis {
     if (candidate.kind !== "var") return;
     const expressionSymbols = freeVarsIn(expression);
     if (expressionSymbols.has(candidate.name)) return;
+    const declaredInputs = (declaredDependencies[candidate.name] ?? [])
+      .filter((name) => !!name && name !== candidate.name);
     isolations.push({
       output: candidate.name,
       expression,
       sourceSide,
-      inputs: sorted(expressionSymbols),
+      inputs: sorted([...Array.from(expressionSymbols), ...declaredInputs]),
     });
   };
   detect(equation.left, equation.right, "left");

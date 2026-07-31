@@ -81,6 +81,15 @@ const TREE_FN = {
   log: "ln",
   exp: "exp",
   sqrt: "sqrt",
+  re: "re",
+  Re: "re",
+  real: "re",
+  im: "im",
+  Im: "im",
+  imag: "im",
+  conj: "conj",
+  abs: "abs",
+  arg: "arg",
 } as const;
 
 type VariableName = string;
@@ -104,6 +113,11 @@ function mathToTree(node: Node): TNode {
   switch (node.type) {
     case "SymbolNode":
       if (node.name === "pi" || node.name === "π") return tnamed("pi");
+      // `i` is a named mathematical constant only for newly parsed text.
+      // Hydration never rewrites an existing serialized { kind: "var",
+      // name: "i" }, so old documents that intentionally used i as a model
+      // symbol remain byte-for-byte meaningful.
+      if (node.name === "i") return tnamed("i");
       if (node.name === "e") return tfn("exp", tc(1));
       {
         const variables = splitVariableProduct(node.name);
@@ -119,7 +133,7 @@ function mathToTree(node: Node): TNode {
         : undefined;
       if (!fn || node.args.length !== 1) {
         throw new Unsupported(
-          `${node.fn?.name ?? "that function"}( ) isn't playable yet — try sin, cos, tan, arcsin, arccos, arctan, ln, exp, or sqrt`
+          `${node.fn?.name ?? "that function"}( ) isn't playable yet — try sin, cos, tan, arcsin, arccos, arctan, ln, exp, sqrt, re, im, conj, abs, or arg`
         );
       }
       const argument = mathToTree(node.args[0]);
@@ -173,12 +187,12 @@ const declarationOf = (node: MathNode): { output: string; inputs: string[] } | n
   if (ast.type !== "FunctionNode") return null;
   const name = ast.fn?.name;
   if (!name || name in TREE_FN) return null;
-  if (name === "e" || name === "pi" || name === "π") return null;
+  if (name === "e" || name === "i" || name === "pi" || name === "π") return null;
   const inputs: string[] = [];
   for (const argument of ast.args) {
     if (argument.type !== "SymbolNode") return null;
     const input = argument.name;
-    if (input === "e" || input === "pi" || input === "π" || input === name) return null;
+    if (input === "e" || input === "i" || input === "pi" || input === "π" || input === name) return null;
     if (inputs.includes(input)) return null;
     inputs.push(input);
   }

@@ -79,6 +79,19 @@ console.log("\n== detection: identity rewrites (with pills) ==");
   check("  carries the x > 0 pill", r?.pill === "x > 0", r?.pill);
 }
 {
+  const product = tfn("ln", tmul(tv("z"), tv("w")));
+  const power = tfn("ln", tpow(tv("z"), 2));
+  const complexContext = { scalarRealm: "complex" as const };
+  check(
+    "principal-complex context suppresses the real-only log product law",
+    !detectRewrites(product, complexContext).some((rewrite) => rewrite.kind === "identity")
+  );
+  check(
+    "principal-complex context suppresses the real-only log power law",
+    !detectRewrites(power, complexContext).some((rewrite) => rewrite.kind === "identity")
+  );
+}
+{
   const n = tfn("sin", tmul(tc(-1), tv("x"))); // sin(−x)
   const rs = detectRewrites(n);
   const r = rs.find((x) => x.kind === "identity");
