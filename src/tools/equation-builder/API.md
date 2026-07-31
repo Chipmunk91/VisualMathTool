@@ -3,7 +3,7 @@
 ## Versioned protocol
 
 `window.visualMathEquation.protocol` is the public, transport-neutral contract for model-driven
-equation work. Its version is `visualmath.equation.v1`. The browser adapter and MCP server both
+equation work. Its version is `visualmath.equation.v2`. The browser adapter and MCP server both
 delegate to `EquationSessionService`; neither adapter reimplements algebra rules.
 
 The safe mutation sequence is always:
@@ -28,6 +28,9 @@ const preview = protocol.previewAction({
   expectedRevision: document.revision,
   actionId: action.id,
   arguments: {},
+  // Echoing this is optional, but makes a lens change between discovery and
+  // preview an explicit `needs_context` error instead of a semantic surprise.
+  operationContext: action.operationContext,
   actor: { kind: "ai", name: "Claude" },
 });
 
@@ -42,8 +45,9 @@ if (preview.status === "previewed") {
 }
 ```
 
-Action IDs and previews are revision-bound. A fabricated action is rejected, a preview cannot be
-reused, and a preview becomes stale if another operation changes the equation first. A repeated
+Action IDs and previews are revision- and scalar-context-bound. A fabricated action is rejected, a
+preview cannot be reused, and a preview becomes stale if another operation changes the equation
+or if the selected real/complex mapping changes first. A repeated
 apply request with the same document/request ID returns the original result. Applied operations
 append an actor-attributed event containing the semantic rule, targets, before state, optional
 intermediate simplification state, after state, assumptions, explanation, and movement animation.
@@ -68,12 +72,12 @@ It provides these tools:
 | `equation_create` | Parse text into a traceable equation document. |
 | `equation_list_documents` | List documents in this server process. |
 | `equation_get` | Read a complete document snapshot. |
-| `equation_analyze` | Read symmetric relation, symbol, graph, and calculus candidates. |
+| `equation_analyze` | Read relation, symbols, mapping realms, domain/branch evidence, exact ranges, graph, and calculus candidates. |
 | `equation_list_actions` | Discover the legal, revision-bound action inventory. |
 | `equation_preview_action` | Compute an exact non-mutating preview. |
 | `equation_apply_preview` | Atomically apply a preview token. |
 | `equation_update_symbol` | Add meaning, unit, or assumptions to a stable symbol. |
-| `equation_set_view` | Select an advertised visualization candidate. |
+| `equation_set_view` | Select an advertised visualization and optional real/complex mapping signature. |
 
 The same data is readable as MCP resources under `visualmath://equations/{documentId}` with
 `/analysis`, `/symbols`, `/history`, and `/actions` views. See
@@ -117,6 +121,7 @@ const request = {
   expectedRevision: document.revision,
   actor: { kind: "ai", name: "Claude" },
   command: operation.command,
+  operationContext: operation.operationContext,
 };
 
 const preview = api.previewCommand(request);
@@ -134,6 +139,21 @@ The lower-level compatibility command families are `gesture`, `special-action`, 
 drag/drop grammar, contextual inverse-operation bubbles, toolbox operations, and detected
 factorization/identity rewrites. `updateSymbol` edits the symbol book without rewriting equation
 text.
+
+`operationContext` has the transport-neutral shape below. Omitting it preserves the familiar
+real-first behavior; typed complex syntax still promotes an operation to complex rules.
+
+```ts
+interface ScalarOperationContext {
+  scalarRealm: "real" | "complex";
+  mappingSignatureId?: string;
+}
+```
+
+Action descriptors and previews return the exact context they use. Under a complex context, roots,
+logarithms, and inverse functions retain principal-branch structure and warnings. Real-only log
+laws are not advertised. Complex calculus remains blocked until the caller chooses a holomorphic,
+real-component/Wirtinger, contour, or real-parameter interpretation.
 
 ## Multivariable calculus compatibility commands
 
@@ -169,13 +189,21 @@ implicit context with respect to `x` and dependent `y` keeps `dy/dx` as a first-
 Integration uses the same classification contract, supports optional numeric bounds, retains
 dependent integrands under an exact integral node, and records `C` for indefinite integration.
 
-`analyzeRelation()` returns symbols, structurally explicit isolations, graph candidates and
-calculus candidates. Candidates are descriptive only; submitting a calculus command still
-requires the complete context above. `setViewSpec(candidate.spec)` selects a validated graph
-interpretation without coordinates; invalid or stale specs return `false`.
+`protocol.analyze()` returns symbols, structurally explicit isolations, graph candidates, calculus
+candidates, and one semantic record aligned with every isolation. Semantic records keep a familiar
+real mapping as the recommendation and advertise a complex alternative without attaching a
+permanent realm to a variable name. They also carry effective-domain requirements, principal
+branch evidence, inferred memberships for closed values such as `x = sqrt(-1)`, and an exact range
+only when a known rule proves it.
 
-Share format version 3 stores the durable symbol book, structured assumptions, `ViewSpec`, last
-calculus contexts, semantic operation events, and every derivation snapshot. The decoder continues
-to accept version-2 document links, version-1 tree links, and legacy flat links. Legacy symbol
-role/domain/dependency fields are dropped during reconciliation because those roles now belong to
-a view or operation context.
+`equation_set_view` accepts the selected graph `candidateId`, an optional advertised
+`mappingSignatureId`, and an optional `complexDisplay` (`cartesian`, `polar`, or `exponential`).
+The selection is validated and stored in the shareable document. The compatibility
+`setViewSpec(candidate.spec)` call still selects only the structural graph interpretation; invalid
+or stale specs return `false`.
+
+Share format version 3 stores the durable symbol book, structured assumptions, `ViewSpec`, mapping
+signature, complex display, last calculus contexts, semantic operation events, probes, and every
+derivation snapshot. The decoder continues to accept version-2 document links, version-1 tree
+links, and legacy flat links. Legacy symbol role/domain/dependency fields are dropped during
+reconciliation because those roles now belong to a view or operation context.

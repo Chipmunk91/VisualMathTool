@@ -114,7 +114,7 @@ squaring resolves √ with its check-roots pill).
 
 ### AI equation protocol and local MCP (phases 1–3) ✅
 
-- `visualmath.equation.v1` defines runtime-validated requests and structured
+- `visualmath.equation.v2` defines runtime-validated requests and structured
   errors around the canonical `EquationDocument`; the pure parser and session
   have no React, DOM, or pointer-coordinate dependency.
 - Models discover concrete legal actions instead of manufacturing engine
@@ -149,6 +149,26 @@ squaring resolves √ with its check-roots pill).
 - Provider-neutral session, real Worker REST/WebSocket, and remote MCP tests run
   in CI. Cloudflare deployment is automated after one-time account configuration.
 
+### Complex scalar semantics and views ✅ first vertical slice
+
+- `i` is an exact named constant. Closed expressions evaluate real-first and
+  continue through principal complex functions only when needed, using a
+  JSON-only `{ kind, re, im }` scalar contract shared by browser, Worker, and MCP.
+- Mapping realms are lenses on an explicit isolation, never permanent types
+  inferred from names such as `x` or `z`. Analysis advertises a recommended
+  real lens, a complex alternative, effective-domain requirements, principal
+  branches, inferred closed-value memberships, and only proven exact ranges.
+- Constant complex values use an Argand plane; R→C mappings use a real-parameter
+  path; C→C uses linked input/output planes; C→R uses a complex input plane and
+  scalar output. Direct plane manipulation uses pointer capture and an isolated
+  touch surface for iOS.
+- The mapping signature and Cartesian/polar/exponential display selection live
+  in the shareable presentation state and can be selected through the same
+  local or remote MCP view tool.
+- Branch-sensitive simplifications now stay neutral until real evidence exists,
+  while typed complex roots, logarithms, and inverse trig operations retain
+  principal-branch receipts.
+
 ## Still honestly gated
 
 > Architectural context for everything below:
@@ -157,8 +177,6 @@ squaring resolves √ with its check-roots pill).
 > (rules-as-code, hand-wired affordances, the flat legacy), and the phased
 > registry recommendation new work should move toward.
 
-- **Bare `e` outside `e^( )`** — `π` is now an exact named constant, while
-  Euler's constant still enters through exponential notation.
 - **Per-term rebuilding in tree mode** (drag a toolbox symbol onto one tree
   term) — clicks apply to both sides; term-level tree rebuilds arrive with
   path-addressed payloads.
@@ -166,10 +184,11 @@ squaring resolves √ with its check-roots pill).
   sum) — the next move-grammar chapter.
 - **Systems of relations** — a document currently owns one relation; coupled
   equations need a relation-set document and shared symbol table.
-- **Complex evaluation and richer spaces** — assumptions can describe symbols,
-  but evaluators and graphs are still real-valued. Vectors, matrices,
-  functions and complex values need typed mathematical spaces rather than a
-  real/complex dropdown.
+- **Higher-dimensional complex and richer spaces** — a complex slice is
+  explicit, but a two-input complex map is four-dimensional and is not
+  projected arbitrarily. Complex implicit loci, Riemann-surface/branch-cut
+  views, vectors, matrices, tensors, and function spaces remain separate typed
+  visualization chapters.
 - **Solver and advanced calculus** — symbolic solving, higher-order operator
   simplification, Jacobians/Hessians, vector calculus, series, limits and sums
   remain separate engine chapters.

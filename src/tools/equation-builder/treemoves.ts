@@ -16,6 +16,7 @@ import {
   addendsOf,
   constValue,
   ensureTreeEqIds,
+  evalClosedNode,
   freshNodeId,
   keyOf,
   printNode,
@@ -28,6 +29,11 @@ import {
   tpow,
   varsIn,
 } from "./tree";
+import { scalarIsZero } from "./scalar";
+import {
+  expressionRequiresComplexScalars,
+  type ScalarOperationContext,
+} from "./semantics";
 
 export interface TreeOutcome {
   treeNext: TreeEq;
@@ -47,30 +53,63 @@ export interface TreeOutcome {
 
 export type TreeMoveResult = TreeOutcome | string | null;
 
+type ExpLogRequirement = {
+  text: string;
+  kind: "positive" | "nonzero";
+};
+
+const requirementText = ({ text, kind }: ExpLogRequirement): string =>
+  `${text} ${kind === "positive" ? "> 0" : "≠ 0"}`;
+
+const operationRequiresComplexScalars = (
+  context: ScalarOperationContext | undefined,
+  ...nodes: TNode[]
+): boolean =>
+  context?.scalarRealm === "complex" ||
+  nodes.some((node) => expressionRequiresComplexScalars(node));
+
+interface FinalizeOptions {
+  dangerous?: boolean;
+  note?: string;
+  pill?: string;
+  assume?: Set<string>;
+  operationContext?: ScalarOperationContext;
+}
+
 /** Simplify both sides and return one uniquely identified canonical tree. */
 export function finalize(
   left: TNode,
   right: TNode,
   label: string,
-  extra?: { dangerous?: boolean; note?: string; pill?: string; assume?: Set<string> }
+  extra?: FinalizeOptions
 ): TreeOutcome {
   const intermediate = ensureTreeEqIds({ left, right });
   const assume = extra?.assume;
-  let outcomeExtra: Omit<NonNullable<typeof extra>, "assume"> = {
+  let outcomeExtra: Pick<FinalizeOptions, "dangerous" | "note" | "pill"> = {
     dangerous: extra?.dangerous,
     note: extra?.note,
     pill: extra?.pill,
   };
   // every move-produced state thaws e^(ln u) — with the assumption reported
-  const tl = thawExpLn(simplify(intermediate.left, assume));
-  const tr = thawExpLn(simplify(intermediate.right, assume));
-  const thawed = Array.from(new Set([...tl.thawed, ...tr.thawed]));
-  if (thawed.length > 0) {
-    const thawNote = `e^(ln u) = u used — ${thawed.join(", ")} > 0 assumed`;
+  const tl = thawExpLn(simplify(intermediate.left, assume), extra?.operationContext);
+  const tr = thawExpLn(simplify(intermediate.right, assume), extra?.operationContext);
+  const requirements = Array.from(
+    new Map(
+      [...tl.requirements, ...tr.requirements].map((requirement) => [
+        `${requirement.kind}:${requirement.text}`,
+        requirement,
+      ])
+    ).values()
+  );
+  if (requirements.length > 0) {
+    const receipt = requirements.map(requirementText).join(", ");
+    const thawNote = `e^(ln u) = u used — ${receipt} assumed`;
     outcomeExtra = {
       dangerous: true,
       note: outcomeExtra.note ? `${outcomeExtra.note}; ${thawNote}` : thawNote,
-      pill: outcomeExtra.pill ?? `${thawed.join(", ")} > 0`,
+      pill: Array.from(
+        new Set([outcomeExtra.pill, receipt].filter((pill): pill is string => !!pill))
+      ).join(" · "),
     };
   }
   const l = simplify(tl.node, assume);
@@ -87,7 +126,13 @@ const addendAt = (te: TreeEq, id: string): { node: TNode; side: Side; index: num
   treeAddendById(te, id);
 
 /** Move addends across the equals sign — negate and carry. Unconditional. */
-export function moveTermsT(te: TreeEq, ids: string[], from: Side, to: Side): TreeMoveResult {
+export function moveTermsT(
+  te: TreeEq,
+  ids: string[],
+  from: Side,
+  to: Side,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult {
   if (from === to) return null;
   const picks = ids
     .map((id) => addendAt(te, id))
@@ -107,7 +152,7 @@ export function moveTermsT(te: TreeEq, ids: string[], from: Side, to: Side): Tre
   const toList = [...addendsOf(te[to]), ...moved];
   const text = picks.map((p) => printNode(p.node)).join(", ");
   const next: TreeEq = { ...te, [from]: sideFromAddends(fromList), [to]: sideFromAddends(toList) };
-  return finalize(next.left, next.right, `moved ${text} across`);
+  return finalize(next.left, next.right, `moved ${text} across`, { operationContext });
 }
 
 /**
@@ -123,11 +168,19 @@ const nonzeroKeys = (expr: TNode): Set<string> => {
 };
 
 /** Divide both sides by an expression — term by term, with the ≠ 0 pill. */
-export function divideBothT(te: TreeEq, expr: TNode, exprText: string): TreeMoveResult {
-  const value = constValue(expr);
-  if (value === 0) return "can't divide by zero";
-  if (value === 1) return null;
+export function divideBothT(
+  te: TreeEq,
+  expr: TNode,
+  exprText: string,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult {
   const hasVars = varsIn(expr).size > 0;
+  if (!hasVars) {
+    const value = evalClosedNode(expr);
+    if (!value.ok) return "can't divide by an undefined value";
+    if (scalarIsZero(value.value)) return "can't divide by zero";
+    if (value.value.kind === "real" && value.value.value === 1) return null;
+  }
   // the pill below DECLARES expr ≠ 0 — which licenses the simplifier to
   // cancel opposite powers of exactly its factors, and nothing else
   const assume = hasVars ? nonzeroKeys(expr) : undefined;
@@ -139,6 +192,7 @@ export function divideBothT(te: TreeEq, expr: TNode, exprText: string): TreeMove
     note: hasVars ? `only valid where ${exprText} ≠ 0 — a solution could hide there` : undefined,
     pill: hasVars ? `${exprText} ≠ 0` : undefined,
     assume,
+    operationContext,
   });
 }
 
@@ -148,49 +202,108 @@ export function divideBothT(te: TreeEq, expr: TNode, exprText: string): TreeMove
  * this is the flat model's "the denominator multiplies both sides", and
  * like there it is a clean move, not a pilled one.
  */
-export function multiplyBothT(te: TreeEq, expr: TNode, exprText: string): TreeMoveResult {
+export function multiplyBothT(
+  te: TreeEq,
+  expr: TNode,
+  exprText: string,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult {
   if (constValue(expr) === 1) return null;
   const assume = nonzeroKeys(expr);
   const times = (side: TNode): TNode =>
     addendsOf(side).length === 0
       ? tc(0)
       : sideFromAddends(addendsOf(side).map((a) => tmul(a, expr)));
-  return finalize(times(te.left), times(te.right), `multiplied both sides by ${exprText}`, { assume });
+  return finalize(times(te.left), times(te.right), `multiplied both sides by ${exprText}`, {
+    assume,
+    operationContext,
+  });
 }
 
 /**
  * Take the n-th root of both sides — the exponent handle's move (dragging
- * the 3 of x³ or e³ across the equals sign). Odd roots are unconditional;
- * even roots keep only the principal branch, and say so.
+ * the 3 of x³ or e³ across the equals sign). Odd roots are unconditional in
+ * the familiar real lens; typed complex expressions keep the principal-root
+ * structure and say that other branches may be lost.
  */
-export function rootBothT(te: TreeEq, n: number): TreeMoveResult {
+export function rootBothT(
+  te: TreeEq,
+  n: number,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult {
   if (!Number.isInteger(n) || n < 2) return null;
+  const complex = operationRequiresComplexScalars(
+    operationContext,
+    te.left,
+    te.right
+  );
   const root = (side: TNode): TNode => {
     const s = simplify(side);
     // (xⁿ)^(1/n) → x directly — the fractional-exponent fold is deliberately
     // NOT in simplify (x² → |x| territory), so the move does it here, where
     // the even case is pilled as principal-branch
-    if (s.kind === "pow" && s.exp.kind === "const" && s.exp.den === 1 && s.exp.num === n) {
+    if (
+      !complex &&
+      s.kind === "pow" &&
+      s.exp.kind === "const" &&
+      s.exp.den === 1 &&
+      s.exp.num === n
+    ) {
       return simplify(s.base);
     }
-    return simplify(tpow(s, tc(1, n)));
+    return simplify(
+      tpow(
+        s,
+        tc(1, n),
+        complex ? "principal-complex" : undefined
+      )
+    );
   };
   const even = n % 2 === 0;
+  const branchSensitive = even || complex;
   const ord = n === 2 ? "square" : n === 3 ? "cube" : `${n}th`;
   return finalize(root(te.left), root(te.right), `took the ${ord} root of both sides`, {
-    dangerous: even,
-    note: even ? "an even root keeps the principal branch — a negative branch may be lost" : undefined,
-    pill: even ? "principal root" : undefined,
+    dangerous: branchSensitive,
+    note: complex
+      ? "a complex root uses the principal branch — other roots may be lost"
+      : even
+        ? "an even root keeps the principal branch — a negative branch may be lost"
+        : undefined,
+    pill: branchSensitive ? "principal root" : undefined,
+    operationContext,
   });
 }
 
 /**
- * e^(ln u + rest) → u·e^rest — the conditional identity (u > 0). It lives in
- * the MOVE layer (never the simplifier) and reports every argument it thawed
- * so the step can carry the assumption.
+ * e^(Log u + rest) → u·e^rest. Under the familiar real interpretation this
+ * needs u > 0; under principal-complex Log it needs u ≠ 0. Closed nonzero
+ * values prove their own requirement, while zero blocks the rewrite.
  */
-export function thawExpLn(n: TNode): { node: TNode; thawed: string[] } {
+export function thawExpLn(
+  n: TNode,
+  operationContext?: ScalarOperationContext,
+  allowSymbolic = true
+): {
+  node: TNode;
+  thawed: string[];
+  requirements: ExpLogRequirement[];
+} {
   const thawed: string[] = [];
+  const requirements: ExpLogRequirement[] = [];
+  const classify = (argument: TNode): ExpLogRequirement["kind"] | "none" | "blocked" => {
+    if (varsIn(argument).size === 0) {
+      const evaluated = evalClosedNode(argument);
+      if (!evaluated.ok || scalarIsZero(evaluated.value)) return "blocked";
+      return "none";
+    }
+    // Before a mapping lens exists, thawing exp(Log z) would erase whether
+    // the original domain was z>0 (real) or z≠0 (complex). Keep the syntax
+    // intact until an explicit operation supplies that interpretation.
+    if (!allowSymbolic) return "blocked";
+    return operationRequiresComplexScalars(operationContext, argument)
+      ? "nonzero"
+      : "positive";
+  };
   const walk = (m: TNode): TNode => {
     switch (m.kind) {
       case "const":
@@ -202,7 +315,13 @@ export function thawExpLn(n: TNode): { node: TNode; thawed: string[] } {
       case "mul":
         return { id: m.id, kind: "mul", factors: m.factors.map(walk) };
       case "pow":
-        return { id: m.id, kind: "pow", base: walk(m.base), exp: walk(m.exp) };
+        return {
+          id: m.id,
+          kind: "pow",
+          base: walk(m.base),
+          exp: walk(m.exp),
+          ...(m.branch ? { branch: m.branch } : {}),
+        };
       case "fn": {
         const arg = walk(m.arg);
         if (m.fn === "exp") {
@@ -214,7 +333,20 @@ export function thawExpLn(n: TNode): { node: TNode; thawed: string[] } {
             else rest.push(t);
           }
           if (lnArgs.length > 0) {
-            lnArgs.forEach((u) => thawed.push(printNode(u)));
+            const classified = lnArgs.map((argument) => ({
+              argument,
+              requirement: classify(argument),
+            }));
+            if (classified.some((item) => item.requirement === "blocked")) {
+              return { id: m.id, kind: "fn", fn: m.fn, arg };
+            }
+            classified.forEach(({ argument, requirement }) => {
+              const text = printNode(argument);
+              thawed.push(text);
+              if (requirement === "positive" || requirement === "nonzero") {
+                requirements.push({ text, kind: requirement });
+              }
+            });
             const factors: TNode[] = [...lnArgs];
             if (rest.length > 0) {
               factors.push(tfn("exp", rest.length === 1 ? rest[0] : tadd(...rest)));
@@ -236,16 +368,31 @@ export function thawExpLn(n: TNode): { node: TNode; thawed: string[] } {
         };
     }
   };
-  return { node: walk(n), thawed };
+  return {
+    node: walk(n),
+    thawed,
+    requirements: Array.from(
+      new Map(
+        requirements.map((requirement) => [
+          `${requirement.kind}:${requirement.text}`,
+          requirement,
+        ])
+      ).values()
+    ),
+  };
 }
 
 /**
  * sympy-style input normalization — what cancel() would do, but with the
  * assumptions RECORDED instead of assumed generically: identical var-bearing
- * factor pairs across a fraction bar cancel at load, and e^(ln u) thaws,
- * each stamping the step-0 pill.
+ * factor pairs across a fraction bar cancel at load. A variable-bearing
+ * e^(Log u) stays intact until a selected mapping supplies real-positive or
+ * complex-nonzero semantics; closed, defined Log values may still thaw.
  */
-export function normalizeOnLoad(te: TreeEq): { te: TreeEq; pill?: string; note?: string; changed: boolean } {
+export function normalizeOnLoad(
+  te: TreeEq,
+  operationContext?: ScalarOperationContext
+): { te: TreeEq; pill?: string; note?: string; changed: boolean } {
   const pills: string[] = [];
   const cancelSide = (side: TNode): TNode =>
     sideFromAddends(
@@ -267,16 +414,39 @@ export function normalizeOnLoad(te: TreeEq): { te: TreeEq; pill?: string; note?:
         return out;
       })
     );
-  const tl = thawExpLn(simplify(cancelSide(te.left)));
-  const tr = thawExpLn(simplify(cancelSide(te.right)));
-  const thawed = Array.from(new Set([...tl.thawed, ...tr.thawed]));
-  if (thawed.length > 0) pills.push(`${thawed.join(", ")} > 0`);
+  const tl = thawExpLn(
+    simplify(cancelSide(te.left)),
+    operationContext,
+    false
+  );
+  const tr = thawExpLn(
+    simplify(cancelSide(te.right)),
+    operationContext,
+    false
+  );
+  const thawRequirements = Array.from(
+    new Map(
+      [...tl.requirements, ...tr.requirements].map((requirement) => [
+        `${requirement.kind}:${requirement.text}`,
+        requirement,
+      ])
+    ).values()
+  );
+  pills.push(...thawRequirements.map(requirementText));
   const unique = Array.from(new Set(pills));
+  const next = ensureTreeEqIds({ left: simplify(tl.node), right: simplify(tr.node) });
+  const changed =
+    keyOf(next.left) !== keyOf(simplify(te.left)) ||
+    keyOf(next.right) !== keyOf(simplify(te.right));
   return {
-    te: ensureTreeEqIds({ left: simplify(tl.node), right: simplify(tr.node) }),
+    te: next,
     pill: unique.length ? unique.join(", ") : undefined,
-    note: unique.length ? "simplified on load — the assumptions it needs are recorded on this step" : undefined,
-    changed: unique.length > 0,
+    note: changed
+      ? unique.length
+        ? "simplified on load — the assumptions it needs are recorded on this step"
+        : "simplified a defined closed expression on load"
+      : undefined,
+    changed,
   };
 }
 
@@ -286,7 +456,13 @@ export function normalizeOnLoad(te: TreeEq): { te: TreeEq; pill?: string; note?:
  * reverse). This is exactly the conditional identity the simplifier refuses
  * silently: (x+2)/(x+2) is 1 only where x+2 ≠ 0, so the MOVE declares it.
  */
-export function cancelFactorT(te: TreeEq, addendId: string, expr: TNode, exprText: string): TreeMoveResult {
+export function cancelFactorT(
+  te: TreeEq,
+  addendId: string,
+  expr: TNode,
+  exprText: string,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult {
   const at = addendAt(te, addendId);
   if (!at) return null;
   const cancelled = simplify(at.node, nonzeroKeys(expr));
@@ -298,6 +474,7 @@ export function cancelFactorT(te: TreeEq, addendId: string, expr: TNode, exprTex
     dangerous: hasVars,
     note: hasVars ? `only valid where ${exprText} ≠ 0 — a solution could hide there` : undefined,
     pill: hasVars ? `${exprText} ≠ 0` : undefined,
+    operationContext,
   });
 }
 
@@ -306,7 +483,11 @@ export function cancelFactorT(te: TreeEq, addendId: string, expr: TNode, exprTex
  * (dragging the 1/n across the equals sign), the root's inverse. Odd powers
  * are unconditional; even powers can introduce extraneous solutions.
  */
-export function raiseBothT(te: TreeEq, n: number): TreeMoveResult {
+export function raiseBothT(
+  te: TreeEq,
+  n: number,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult {
   if (!Number.isInteger(n) || n < 2) return null;
   const raise = (side: TNode): TNode => {
     const s = simplify(side);
@@ -318,16 +499,45 @@ export function raiseBothT(te: TreeEq, n: number): TreeMoveResult {
     return simplify(tpow(s, tc(n)));
   };
   const even = n % 2 === 0;
+  const complex = operationRequiresComplexScalars(
+    operationContext,
+    te.left,
+    te.right
+  );
+  const needsCheck = even || complex;
   return finalize(raise(te.left), raise(te.right), `raised both sides to the power ${n}`, {
-    dangerous: even,
-    note: even ? "an even power can introduce extraneous solutions — check any answer in the original equation" : undefined,
-    pill: even ? "check roots" : undefined,
+    dangerous: needsCheck,
+    note: complex
+      ? "a complex power is not one-to-one — check every root in the original equation"
+      : even
+        ? "an even power can introduce extraneous solutions — check any answer in the original equation"
+        : undefined,
+    pill: needsCheck ? "check roots" : undefined,
+    operationContext,
   });
 }
 
 /* --- toolbox operations on tree equations -------------------------------- */
 
 type SideResult = { node: TNode; pill?: string; dangerous?: boolean; note?: string } | string;
+
+const principalLnOfNode = (side: TNode): SideResult => {
+  if (varsIn(side).size === 0) {
+    const value = evalClosedNode(side);
+    if (!value.ok || scalarIsZero(value.value)) {
+      return "the principal logarithm is undefined at zero";
+    }
+  }
+  const variable = varsIn(side).size > 0;
+  return {
+    node: tfn("ln", side),
+    dangerous: true,
+    note: variable
+      ? "using the principal complex logarithm; zero values are excluded and arguments wrap at the branch cut"
+      : "using the principal complex logarithm",
+    pill: variable ? "sides ≠ 0" : undefined,
+  };
+};
 
 /**
  * ln of one side: thaws e^u and a^u exactly, and DISTRIBUTES over the whole
@@ -390,9 +600,37 @@ function lnOfNode(side: TNode): SideResult {
   };
 }
 
-/** e^( ) of one side: unwraps ln u to u; wraps anything else */
-function expOfNode(side: TNode): SideResult {
-  if (side.kind === "fn" && side.fn === "ln") return { node: side.arg };
+/**
+ * e^( ) of one side: unwraps Log u only with the domain receipt that makes
+ * the inverse identity honest. In the real lens Log u needs u>0; in the
+ * principal-complex lens it needs u≠0. Closed defined values and exp(v)
+ * prove that condition themselves.
+ */
+function expOfNode(side: TNode, complex: boolean): SideResult {
+  if (side.kind === "fn" && side.fn === "ln") {
+    const argument = side.arg;
+    if (varsIn(argument).size === 0) {
+      const evaluated = evalClosedNode(argument);
+      if (!evaluated.ok || scalarIsZero(evaluated.value)) {
+        return "can't undo a logarithm where its argument is undefined or zero";
+      }
+      return { node: argument };
+    }
+    if (argument.kind === "fn" && argument.fn === "exp") {
+      return { node: argument };
+    }
+    const requirement: ExpLogRequirement = {
+      text: printNode(argument),
+      kind: complex ? "nonzero" : "positive",
+    };
+    const receipt = requirementText(requirement);
+    return {
+      node: argument,
+      dangerous: true,
+      note: `exp(Log u) = u used — ${receipt} assumed`,
+      pill: receipt,
+    };
+  }
   return { node: tfn("exp", side) };
 }
 
@@ -426,11 +664,23 @@ function recipOfNode(side: TNode): SideResult {
     return { node: tc(side.den, side.num) };
   }
   if (side.kind === "pow" && side.exp.kind === "const") {
-    return { node: tpow(side.base, tc(-side.exp.num, side.exp.den)) };
+    return {
+      node: tpow(
+        side.base,
+        tc(-side.exp.num, side.exp.den),
+        side.branch
+      ),
+    };
   }
   if (side.kind === "mul") {
     const inverted = side.factors.map((f) =>
-      f.kind === "pow" && f.exp.kind === "const" ? tpow(f.base, tc(-f.exp.num, f.exp.den)) : tpow(f, -1)
+      f.kind === "pow" && f.exp.kind === "const"
+        ? tpow(
+            f.base,
+            tc(-f.exp.num, f.exp.den),
+            f.branch
+          )
+        : tpow(f, -1)
     );
     return { node: tmul(...inverted) };
   }
@@ -439,24 +689,54 @@ function recipOfNode(side: TNode): SideResult {
 
 export type TreeToolKind = "ln" | "exp" | "sin" | "cos" | "tan" | "sqrt" | "square" | "recip";
 
-export function applyToolT(tool: TreeToolKind, te: TreeEq): TreeMoveResult {
+export function applyToolT(
+  tool: TreeToolKind,
+  te: TreeEq,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult {
   if (tool === "ln" || tool === "exp") {
-    const of = tool === "ln" ? lnOfNode : expOfNode;
+    const complexOperation = operationRequiresComplexScalars(
+      operationContext,
+      te.left,
+      te.right
+    );
+    const complexLog =
+      tool === "ln" &&
+      complexOperation;
+    const of: (side: TNode) => SideResult = tool === "ln"
+      ? complexLog
+        ? principalLnOfNode
+        : lnOfNode
+      : (side) => expOfNode(side, complexOperation);
     const l = of(te.left);
     if (typeof l === "string") return l;
     const r = of(te.right);
     if (typeof r === "string") return r;
     // BOTH sides may carry assumptions (ln(y) on the right needs y > 0 even
     // when the left thawed exactly) — merge them instead of keeping the first
-    const pills = Array.from(new Set([l, r].map((s) => s.pill).filter((p): p is string => !!p)));
-    const notes = Array.from(new Set([l, r].map((s) => s.note).filter((n): n is string => !!n)));
+    const pills = Array.from(new Set([
+      ...[l, r].map((s) => s.pill).filter((p): p is string => !!p),
+      ...(complexLog ? ["principal branch"] : []),
+      ...(tool === "exp" && complexOperation ? ["check periods"] : []),
+    ]));
+    const notes = Array.from(new Set([
+      ...[l, r].map((s) => s.note).filter((n): n is string => !!n),
+      ...(tool === "exp" && complexOperation
+        ? ["complex exp is periodic, so exponentiating can introduce values that differ by 2πi"]
+        : []),
+    ]));
     return finalize(
       l.node,
       r.node,
       tool === "ln" ? "took the natural log of both sides" : "exponentiated both sides (e to each side)",
       pills.length > 0
-        ? { dangerous: true, note: notes.join("; ") || undefined, pill: pills.join(" · ") }
-        : undefined
+        ? {
+            dangerous: true,
+            note: notes.join("; ") || undefined,
+            pill: pills.join(" · "),
+            operationContext,
+          }
+        : { operationContext }
     );
   }
   if (tool === "square") {
@@ -464,14 +744,36 @@ export function applyToolT(tool: TreeToolKind, te: TreeEq): TreeMoveResult {
       dangerous: true,
       note: "squaring can introduce extraneous solutions — check any answer in the original equation",
       pill: "check roots",
+      operationContext,
     });
   }
   if (tool === "sqrt") {
-    return finalize(tpow(te.left, tc(1, 2)), tpow(te.right, tc(1, 2)), "took the square root of both sides", {
-      dangerous: true,
-      note: "principal (+) root only — a negative branch is dropped",
-      pill: "branch +",
-    });
+    const complex = operationRequiresComplexScalars(
+      operationContext,
+      te.left,
+      te.right
+    );
+    return finalize(
+      tpow(
+        te.left,
+        tc(1, 2),
+        complex ? "principal-complex" : undefined
+      ),
+      tpow(
+        te.right,
+        tc(1, 2),
+        complex ? "principal-complex" : undefined
+      ),
+      "took the square root of both sides",
+      {
+        dangerous: true,
+        note: complex
+          ? "a complex square root uses the principal branch — the other root is dropped"
+          : "principal (+) root only — a negative branch is dropped",
+        pill: complex ? "principal root" : "branch +",
+        operationContext,
+      }
+    );
   }
   if (tool === "recip") {
     const l = recipOfNode(te.left);
@@ -483,6 +785,7 @@ export function applyToolT(tool: TreeToolKind, te: TreeEq): TreeMoveResult {
       dangerous: involves,
       note: involves ? "assumes both sides ≠ 0 — nothing can flip zero" : undefined,
       pill: involves ? "sides ≠ 0" : undefined,
+      operationContext,
     });
   }
   // sin / cos / tan wrap both sides
@@ -490,5 +793,6 @@ export function applyToolT(tool: TreeToolKind, te: TreeEq): TreeMoveResult {
     dangerous: true,
     note: `${tool} isn't one-to-one — new false solutions can appear; check answers`,
     pill: "check solutions",
+    operationContext,
   });
 }

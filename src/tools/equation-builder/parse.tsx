@@ -24,6 +24,7 @@ const PreviewNode = ({ node }: { node: Node }): ReactNode => {
       return <span>{String(node.value)}</span>;
     case "SymbolNode":
       if (node.name === "pi" || node.name === "π") return <span className="italic">π</span>;
+      if (node.name === "i") return <span className="not-italic">i</span>;
       {
         const variables = splitVariableProduct(node.name);
         if (variables) {
@@ -61,9 +62,31 @@ const PreviewNode = ({ node }: { node: Node }): ReactNode => {
           </span>
         );
       }
+      if (name === "abs") {
+        return (
+          <span className="inline-flex items-center">
+            |<PreviewNode node={node.args[0]} />|
+          </span>
+        );
+      }
+      if (name === "conj") {
+        return (
+          <span className="inline-flex border-t border-current leading-tight">
+            <PreviewNode node={node.args[0]} />
+          </span>
+        );
+      }
+      const displayName =
+        name === "log"
+          ? "ln"
+          : name === "re" || name === "real"
+            ? "Re"
+            : name === "im" || name === "imag"
+              ? "Im"
+              : name;
       return (
         <span className="inline-flex items-center">
-          <span className="mr-0.5">{name === "log" ? "ln" : name}</span>(
+          <span className="mr-0.5">{displayName}</span>(
           {node.args.map((a: Node, i: number) => (
             <span key={i} className="inline-flex items-center">
               {i > 0 && <span className="mr-1">,</span>}

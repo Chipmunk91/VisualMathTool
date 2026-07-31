@@ -21,12 +21,50 @@ import {
   varOf,
   type Variable,
 } from "./model";
+import {
+  complexScalar,
+  isFiniteScalar,
+  realScalar,
+  scalarAbs,
+  scalarAcos,
+  scalarAdd,
+  scalarArg,
+  scalarAsin,
+  scalarAtan,
+  scalarConjugate,
+  scalarCos,
+  scalarExp,
+  scalarFromInput,
+  scalarImaginaryPart,
+  scalarLog,
+  scalarMultiply,
+  scalarPower,
+  scalarRealPart,
+  scalarSin,
+  scalarIsZero,
+  scalarSqrt,
+  scalarTan,
+  type EvalResult,
+  type ScalarEnvironment,
+  type ScalarValue,
+} from "./scalar";
 
 /** Tree-only functions may exceed the legacy flat model's vocabulary. */
-export type TFnName = FuncName | "sqrt" | "asin" | "acos" | "atan";
-export type TNamedConstant = "pi";
+export type TFnName =
+  | FuncName
+  | "sqrt"
+  | "asin"
+  | "acos"
+  | "atan"
+  | "re"
+  | "im"
+  | "conj"
+  | "abs"
+  | "arg";
+export type TNamedConstant = "pi" | "i";
 export type TNodeId = string;
 export type TCalculusNotation = "ordinary" | "partial";
+export type TPowerBranch = "principal-complex";
 
 export interface TVariableRef {
   name: Variable;
@@ -44,7 +82,7 @@ export type TNode = TNodeMeta & (
   | { kind: "var"; name: Variable; symbolId: string }
   | { kind: "add"; terms: TNode[] }
   | { kind: "mul"; factors: TNode[] }
-  | { kind: "pow"; base: TNode; exp: TNode }
+  | { kind: "pow"; base: TNode; exp: TNode; branch?: TPowerBranch }
   | { kind: "fn"; fn: TFnName; arg: TNode }
   | {
       kind: "derivative";
@@ -87,11 +125,16 @@ export const tv = (name: Variable, symbolId = symbolIdForName(name)): TNode => (
 });
 export const tadd = (...terms: TNode[]): TNode => ({ id: freshNodeId(), kind: "add", terms });
 export const tmul = (...factors: TNode[]): TNode => ({ id: freshNodeId(), kind: "mul", factors });
-export const tpow = (base: TNode, exp: TNode | number): TNode => ({
+export const tpow = (
+  base: TNode,
+  exp: TNode | number,
+  branch?: TPowerBranch
+): TNode => ({
   id: freshNodeId(),
   kind: "pow",
   base,
   exp: typeof exp === "number" ? tc(exp) : exp,
+  ...(branch ? { branch } : {}),
 });
 export const tfn = (fn: TFnName, arg: TNode): TNode => ({ id: freshNodeId(), kind: "fn", fn, arg });
 export const tdiff = (
@@ -150,7 +193,13 @@ export function ensureTreeIds(n: TNode, seen = new Set<TNodeId>()): TNode {
     case "mul":
       return { id, kind: "mul", factors: n.factors.map((factor) => ensureTreeIds(factor, seen)) };
     case "pow":
-      return { id, kind: "pow", base: ensureTreeIds(n.base, seen), exp: ensureTreeIds(n.exp, seen) };
+      return {
+        id,
+        kind: "pow",
+        base: ensureTreeIds(n.base, seen),
+        exp: ensureTreeIds(n.exp, seen),
+        ...(n.branch ? { branch: n.branch } : {}),
+      };
     case "fn":
       return { id, kind: "fn", fn: n.fn, arg: ensureTreeIds(n.arg, seen) };
     case "derivative":
@@ -206,16 +255,105 @@ function normRat(n: { id?: TNodeId; kind: "const"; num: number; den: number }): 
 /** Is this node exactly the integer `num`? (plain boolean — no narrowing) */
 const isNum = (n: TNode, num: number): boolean => n.kind === "const" && n.num === num && n.den === 1;
 
+/** Explicit syntax that requires complex arithmetic before any child folds. */
+const containsExplicitComplexSyntax = (n: TNode): boolean => {
+  switch (n.kind) {
+    case "const":
+    case "var":
+      return false;
+    case "named":
+      return n.name === "i";
+    case "add":
+      return n.terms.some(containsExplicitComplexSyntax);
+    case "mul":
+      return n.factors.some(containsExplicitComplexSyntax);
+    case "pow":
+      return (
+        n.branch === "principal-complex" ||
+        containsExplicitComplexSyntax(n.base) ||
+        containsExplicitComplexSyntax(n.exp)
+      );
+    case "fn":
+      return containsExplicitComplexSyntax(n.arg);
+    case "derivative":
+      return containsExplicitComplexSyntax(n.expression);
+    case "integral":
+      return (
+        containsExplicitComplexSyntax(n.integrand) ||
+        !!n.bounds && (
+          containsExplicitComplexSyntax(n.bounds.lower) ||
+          containsExplicitComplexSyntax(n.bounds.upper)
+        )
+      );
+  }
+};
+
+/**
+ * Facts available from syntax alone, before the document-level semantic
+ * analyzer supplies symbol declarations. Unknown variables are deliberately
+ * not presumed real: that keeps complex-unsafe branch rewrites out of the
+ * canonical simplifier.
+ */
+const provablyRealNode = (n: TNode): boolean => {
+  switch (n.kind) {
+    case "const":
+      return true;
+    case "named":
+      return n.name === "pi";
+    case "var":
+    case "derivative":
+    case "integral":
+      return false;
+    case "add":
+      return n.terms.every(provablyRealNode);
+    case "mul":
+      return n.factors.every(provablyRealNode);
+    case "pow":
+      return (
+        n.branch !== "principal-complex" &&
+        provablyRealNode(n.base) &&
+        n.exp.kind === "const" &&
+        n.exp.den === 1
+      );
+    case "fn":
+      if (n.fn === "re" || n.fn === "im" || n.fn === "abs" || n.fn === "arg") return true;
+      if (n.fn === "conj") return provablyRealNode(n.arg);
+      if (n.fn === "exp" || n.fn === "sin" || n.fn === "cos" || n.fn === "tan") {
+        return provablyRealNode(n.arg);
+      }
+      return false;
+  }
+};
+
+const provablyNonnegativeRealNode = (n: TNode): boolean => {
+  if (n.kind === "const") return n.num >= 0;
+  if (n.kind === "named") return n.name === "pi";
+  if (n.kind === "fn") {
+    if (n.fn === "abs") return true;
+    if (n.fn === "exp") return provablyRealNode(n.arg);
+    if (n.fn === "sqrt") return provablyNonnegativeRealNode(n.arg);
+  }
+  return (
+    n.kind === "pow" &&
+    provablyRealNode(n.base) &&
+    n.exp.kind === "const" &&
+    n.exp.den === 1 &&
+    n.exp.num > 0 &&
+    n.exp.num % 2 === 0
+  );
+};
+
 /**
  * Can this expression provably never be zero? True for nonzero constants,
- * e^(anything) — always positive — and anything a move has declared ≠ 0.
+ * e^(anything) — over both R and C — and anything a move declared ≠ 0.
  */
 const nonzeroNode = (n: TNode, assume?: Set<string>): boolean => {
   if (assume?.has(keyOf(n))) return true;
   if (n.kind === "fn" && n.fn === "exp") return true;
+  if (n.kind === "named" && n.name === "i") return true;
   if (varsIn(n).size > 0) return false;
-  const v = constValue(n);
-  return v !== null && Math.abs(v) > 1e-12;
+  const value = evalClosedNode(n);
+  return value.ok && !scalarIsZero(value.value);
 };
 
 /* --- structure helpers --------------------------------------------------- */
@@ -364,7 +502,9 @@ export function keyOf(n: TNode): string {
     case "mul":
       return `{"kind":"mul","factors":[${n.factors.map(keyOf).join(",")}]}`;
     case "pow":
-      return `{"kind":"pow","base":${keyOf(n.base)},"exp":${keyOf(n.exp)}}`;
+      return `{"kind":"pow","base":${keyOf(n.base)},"exp":${keyOf(n.exp)}${
+        n.branch ? `,"branch":${JSON.stringify(n.branch)}` : ""
+      }}`;
     case "fn":
       return `{"kind":"fn","fn":${JSON.stringify(n.fn)},"arg":${keyOf(n.arg)}}`;
     case "derivative":
@@ -436,7 +576,13 @@ export function displayedProductUnits(
     }
     if (factor.kind === "pow" && factor.exp.kind === "const" && factor.exp.num < 0) {
       denominator.push({
-        expr: simplify(tpow(factor.base, tc(-factor.exp.num, factor.exp.den))),
+        expr: simplify(
+          tpow(
+            factor.base,
+            tc(-factor.exp.num, factor.exp.den),
+            factor.branch
+          )
+        ),
         sourceId: factor.id,
       });
       continue;
@@ -447,7 +593,7 @@ export function displayedProductUnits(
       const split = signSplit(factor.exp);
       if (split.neg) {
         denominator.push({
-          expr: simplify(tpow(factor.base, split.body)),
+          expr: simplify(tpow(factor.base, split.body, factor.branch)),
           sourceId: factor.id,
         });
         continue;
@@ -471,10 +617,13 @@ export function displayedProductFactors(body: TNode): { numerator: TNode[]; deno
 /* --- the whitelist simplifier -------------------------------------------- */
 
 /**
- * Only identities true on ALL of ℝ (or wherever the ORIGINAL expression is
- * defined, without enlarging that domain) may appear here. Same-base powers
- * merge only when both exponents share a sign: x²·x³ → x⁵ is unconditional,
- * but x·x⁻¹ stays x/x — cancelling it is a player move with an x ≠ 0 pill.
+ * Only identities true in every still-live scalar interpretation (or wherever
+ * the ORIGINAL expression is defined, without enlarging that domain) may
+ * appear here. A closed expression may use the documented real-first
+ * continuation, but an unconstrained symbol is never silently presumed real.
+ * Same-base powers merge only when both exponents share a sign: x²·x³ → x⁵
+ * is unconditional, but x·x⁻¹ stays x/x — cancelling it is a player move with
+ * an x ≠ 0 pill.
  *
  * `assume` carries the keys of expressions a MOVE has declared nonzero (its
  * pill is already emitted) — only then may opposite-sign powers of that
@@ -506,11 +655,18 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
     case "fn": {
       const arg = simplifyPass(n.arg, assume);
       if (n.fn === "ln") {
-        if (arg.kind === "fn" && arg.fn === "exp") return arg.arg; // ln(e^u) = u — e^u is always > 0
+        // Principal Log(exp u) equals u only while u is known real. For
+        // complex u it is wrapped into the principal strip modulo 2πi.
+        if (arg.kind === "fn" && arg.fn === "exp" && provablyRealNode(arg.arg)) return arg.arg;
         if (isNum(arg, 1)) return tc(0);
       }
       if (n.fn === "exp" && isNum(arg, 0)) return tc(1);
-      if (n.fn === "sqrt" && arg.kind === "const" && arg.num >= 0) {
+      if (n.fn === "sqrt" && arg.kind === "const") {
+        if (arg.num < 0) {
+          // Principal √(-q) = i√q. This stays exact even when q is not a
+          // perfect rational square; a later pass folds √q when it is.
+          return simplifyPass(tmul(tnamed("i"), tfn("sqrt", tc(-arg.num, arg.den))), assume);
+        }
         const rn = Math.sqrt(arg.num);
         const rd = Math.sqrt(arg.den);
         if (Number.isInteger(rn) && Number.isInteger(rd)) return tc(rn, rd); // √4 = 2 exactly
@@ -518,9 +674,34 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
       return { id: n.id, kind: "fn", fn: n.fn, arg };
     }
     case "pow": {
-      const base = simplifyPass(n.base, assume);
       const exp = simplifyPass(n.exp, assume);
+      const integerExponent = exp.kind === "const" && exp.den === 1;
+      const branch: TPowerBranch | undefined =
+        n.branch === "principal-complex" ||
+        (!integerExponent &&
+          (
+            containsExplicitComplexSyntax(n.base) ||
+            containsExplicitComplexSyntax(n.exp)
+          ))
+          ? "principal-complex"
+          : undefined;
+      const base = simplifyPass(n.base, assume);
       if (isNum(exp, 1)) return base;
+      // Exact powers of i repeat every four integer steps, in both positive
+      // and negative directions. Keeping i as a named constant (rather than a
+      // magic variable) makes these normal algebraic simplifications.
+      if (
+        base.kind === "named" &&
+        base.name === "i" &&
+        exp.kind === "const" &&
+        exp.den === 1
+      ) {
+        const cycle = ((exp.num % 4) + 4) % 4;
+        if (cycle === 0) return tc(1);
+        if (cycle === 1) return base;
+        if (cycle === 2) return tc(-1);
+        return simplifyPass(tmul(tc(-1), base), assume);
+      }
       if (base.kind === "const" && exp.kind === "const" && exp.den === 1) {
         const p = exp.num;
         if (p === 0 && base.num !== 0) return tc(1);
@@ -536,7 +717,16 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
       // negatives are fine ((−8)^(1/3) = −2); even roots need base ≥ 0
       if (base.kind === "const" && exp.kind === "const" && exp.num === 1 && exp.den > 1) {
         const q = exp.den;
-        if (base.num >= 0 || q % 2 === 1) {
+        if (base.num < 0 && q === 2) {
+          // Closed real expressions use real evaluation when possible. A
+          // negative square root has no real value, so it continues into the
+          // principal complex realm instead of becoming an exception.
+          return simplifyPass(
+            tmul(tnamed("i"), tpow(tc(-base.num, base.den), tc(1, 2))),
+            assume
+          );
+        }
+        if (base.num >= 0 || (!branch && q % 2 === 1)) {
           const rn = Math.round(Math.sign(base.num) * Math.abs(base.num) ** (1 / q));
           const rd = Math.round(base.den ** (1 / q));
           if (Math.pow(rn, q) === base.num && Math.pow(rd, q) === base.den) return tc(rn, rd);
@@ -549,6 +739,7 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
       // exponents ((x²)^½ = |x|!) stay a move's business.
       if (
         base.kind === "pow" &&
+        !base.branch &&
         base.exp.kind === "const" &&
         exp.kind === "const" &&
         base.exp.den === 1 &&
@@ -566,6 +757,7 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
       // numerator twin in the factor merge below.
       if (
         base.kind === "pow" &&
+        !base.branch &&
         base.base.kind === "const" &&
         base.base.num > 0 &&
         base.base.den > 0 &&
@@ -588,32 +780,35 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
         exp.num === -1 &&
         exp.den === 1
       ) {
-        return simplifyPass(tpow(base.base, tc(-1, base.exp.den)), assume);
+        return simplifyPass(
+          tpow(base.base, tc(-1, base.exp.den), base.branch),
+          assume
+        );
       }
       // (a·b)^n = a^n·b^n for integer n — equal wherever either side is
       // defined; without this, dividing by a product can never cancel it
       if (base.kind === "mul" && exp.kind === "const" && exp.den === 1) {
         return simplifyPass(tmul(...base.factors.map((f) => tpow(f, exp))), assume);
       }
-      // roots distribute where SIGNS allow: an odd root of a product splits
-      // freely (odd roots preserve sign — (ab)^(1/3) = a^(1/3)·b^(1/3) for
-      // all reals); an even root pulls out only the provably nonnegative
-      // factors (e^u, √, nonnegative constants, even powers) and leaves the
-      // rest wrapped. This is what folds ((e³·x)/sin(x))^(1/3) down to
-      // e · x^(1/3)/sin(x)^(1/3).
+      // Principal complex roots do NOT distribute over arbitrary products.
+      // Only syntactically proven non-negative real factors may come out; an
+      // unknown variable can be complex, regardless of whether the index is
+      // odd. This prevents branch-cut errors such as √((-1)(-1)) = i·i.
       if (base.kind === "mul" && exp.kind === "const" && exp.num === 1 && exp.den > 1) {
-        const oddRoot = exp.den % 2 === 1;
-        const nonneg = (f: TNode): boolean =>
-          (f.kind === "fn" && (f.fn === "exp" || f.fn === "sqrt")) ||
-          (f.kind === "const" && f.num >= 0) ||
-          (f.kind === "named" && f.name === "pi") ||
-          (f.kind === "pow" && f.exp.kind === "const" && f.exp.den === 1 && f.exp.num % 2 === 0);
-        const pulled = base.factors.filter((f) => oddRoot || nonneg(f));
-        const kept = base.factors.filter((f) => !(oddRoot || nonneg(f)));
+        const pulled = base.factors.filter(provablyNonnegativeRealNode);
+        const kept = base.factors.filter((f) => !provablyNonnegativeRealNode(f));
         if (pulled.length > 0) {
           const factors = [
             ...pulled.map((f) => tpow(f, exp)),
-            ...(kept.length > 0 ? [tpow(kept.length === 1 ? kept[0] : tmul(...kept), exp)] : []),
+            ...(kept.length > 0
+              ? [
+                  tpow(
+                    kept.length === 1 ? kept[0] : tmul(...kept),
+                    exp,
+                    branch
+                  ),
+                ]
+              : []),
           ];
           return simplifyPass(tmul(...factors), assume);
         }
@@ -622,13 +817,15 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
       // both operations preserve sign, so domains match: (b⁻¹)^(1/3) = b^(−1/3)
       if (
         base.kind === "pow" &&
+        !base.branch &&
         base.exp.kind === "const" &&
         base.exp.den === 1 &&
         Math.abs(base.exp.num) % 2 === 1 &&
         exp.kind === "const" &&
         exp.num === 1 &&
         exp.den > 1 &&
-        exp.den % 2 === 1
+        exp.den % 2 === 1 &&
+        provablyRealNode(base.base)
       ) {
         return simplifyPass(tpow(base.base, tc(base.exp.num, exp.den)), assume);
       }
@@ -636,20 +833,36 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
       // exponents — (b^(1/3))³ = b. Odd roots preserve sign, domains match.
       if (
         base.kind === "pow" &&
+        !base.branch &&
         base.exp.kind === "const" &&
         base.exp.den > 1 &&
         base.exp.den % 2 === 1 &&
         exp.kind === "const" &&
-        exp.den === 1
+        exp.den === 1 &&
+        provablyRealNode(base.base)
       ) {
         return simplifyPass(tpow(base.base, tc(base.exp.num * exp.num, base.exp.den)), assume);
       }
-      // (e^u)^v = e^(uv) — e^u is positive for every real u, so this holds
-      // unconditionally (no domain fine print like variable bases)
-      if (base.kind === "fn" && base.fn === "exp") {
+      // With principal complex powers, (exp u)^v = exp(uv) only when v is an
+      // integer or u is known real. Otherwise principal Log(exp u) may differ
+      // from u by 2πik.
+      if (
+        base.kind === "fn" &&
+        base.fn === "exp" &&
+        (
+          provablyRealNode(base.arg) ||
+          (exp.kind === "const" && exp.den === 1)
+        )
+      ) {
         return simplifyPass(tfn("exp", tmul(exp, base.arg)), assume);
       }
-      return { id: n.id, kind: "pow", base, exp };
+      return {
+        id: n.id,
+        kind: "pow",
+        base,
+        exp,
+        ...(branch ? { branch } : {}),
+      };
     }
     case "mul": {
       // flatten, fold rational constants
@@ -671,15 +884,22 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
       // Rebuilt power/exponential groups are matched back to these simplified
       // occurrences when their structure did not actually change.
       const originalRest = [...rest];
-      // e^a · e^b · (e^c)^k … = e^(a + b + kc …): exponentials merge by
-      // ADDING arguments. e^u is never zero or negative, so this needs no
-      // sign-class guard — it's how e³/e² becomes plain e.
+      // e^a · e^b = e^(a+b) is valid over C. A powered exponential joins the
+      // group only under the same branch-safe guard as (e^u)^v above.
       {
         const expArgs: TNode[] = [];
         const kept: TNode[] = [];
         for (const f of rest) {
           if (f.kind === "fn" && f.fn === "exp") expArgs.push(f.arg);
-          else if (f.kind === "pow" && f.base.kind === "fn" && f.base.fn === "exp") {
+          else if (
+            f.kind === "pow" &&
+            f.base.kind === "fn" &&
+            f.base.fn === "exp" &&
+            (
+              provablyRealNode(f.base.arg) ||
+              (f.exp.kind === "const" && f.exp.den === 1)
+            )
+          ) {
             expArgs.push(tmul(f.exp, f.base.arg));
           } else kept.push(f);
         }
@@ -697,8 +917,12 @@ function simplifyPass(n: TNode, assume?: Set<string>): TNode {
       const byBase = new Map<string, { base: TNode; pos: { n: number; d: number }; neg: { n: number; d: number }; sym: TNode[]; other: TNode[] }>();
       const order: string[] = [];
       for (const f of rest) {
-        const b = f.kind === "pow" ? f.base : f;
-        const e: TNode = f.kind === "pow" ? f.exp : tc(1);
+        // A marked principal power is an atomic value here. Combining its
+        // base/exponent with neighboring powers would reapply invalid branch
+        // laws such as z^a z^b = z^(a+b) across a cut.
+        const branchSensitive = f.kind === "pow" && !!f.branch;
+        const b = f.kind === "pow" && !branchSensitive ? f.base : f;
+        const e: TNode = f.kind === "pow" && !branchSensitive ? f.exp : tc(1);
         const k = keyOf(b);
         if (!byBase.has(k)) {
           byBase.set(k, { base: b, pos: { n: 0, d: 1 }, neg: { n: 0, d: 1 }, sym: [], other: [] });
@@ -886,6 +1110,16 @@ const FN_EVAL: Record<TFnName, (v: number) => number> = {
   ln: Math.log,
   exp: Math.exp,
   sqrt: Math.sqrt,
+  re: (value) => value,
+  im: (value) => Number.isFinite(value) ? 0 : NaN,
+  conj: (value) => value,
+  abs: Math.abs,
+  arg: (value) =>
+    !Number.isFinite(value) || value === 0
+      ? NaN
+      : value < 0
+        ? Math.PI
+        : 0,
 };
 
 export function evalNode(n: TNode, env: Readonly<Record<string, number | undefined>>): number {
@@ -893,6 +1127,9 @@ export function evalNode(n: TNode, env: Readonly<Record<string, number | undefin
     case "const":
       return n.num / n.den;
     case "named":
+      // Compatibility evaluator stays intentionally real-only. Use
+      // evalScalarNode/evalClosedNode when principal-complex continuation is
+      // wanted.
       return n.name === "pi" ? Math.PI : NaN;
     case "var":
       return env[n.name] ?? NaN;
@@ -902,6 +1139,10 @@ export function evalNode(n: TNode, env: Readonly<Record<string, number | undefin
       return n.factors.reduce((a, f) => a * evalNode(f, env), 1);
     case "pow":
       {
+        // A marked node records that the principal-complex branch was chosen
+        // by syntax or an operation. Never let the compatibility real
+        // evaluator reinterpret an odd root on the real branch.
+        if (n.branch === "principal-complex") return NaN;
         const base = evalNode(n.base, env);
         const exp = evalNode(n.exp, env);
         // JavaScript returns NaN for rational odd-root powers of a negative
@@ -927,6 +1168,164 @@ export function evalNode(n: TNode, env: Readonly<Record<string, number | undefin
   }
 }
 
+type ComplexWalkResult =
+  | { ok: true; value: ScalarValue }
+  | { ok: false; code: "unbound_symbol" | "undefined" | "symbolic_operator"; message: string };
+
+const scalarSuccess = (value: ScalarValue): ComplexWalkResult =>
+  isFiniteScalar(value)
+    ? { ok: true, value }
+    : { ok: false, code: "undefined", message: "the expression has no finite scalar value" };
+
+const evalNodeComplex = (n: TNode, env: ScalarEnvironment): ComplexWalkResult => {
+  const binary = (
+    left: TNode,
+    right: TNode,
+    operation: (a: ScalarValue, b: ScalarValue) => ScalarValue | null
+  ): ComplexWalkResult => {
+    const a = evalNodeComplex(left, env);
+    if (!a.ok) return a;
+    const b = evalNodeComplex(right, env);
+    if (!b.ok) return b;
+    const value = operation(a.value, b.value);
+    return value
+      ? scalarSuccess(value)
+      : { ok: false, code: "undefined", message: "the expression is undefined" };
+  };
+
+  switch (n.kind) {
+    case "const":
+      return scalarSuccess(realScalar(n.num / n.den));
+    case "named":
+      return scalarSuccess(n.name === "pi" ? realScalar(Math.PI) : complexScalar(0, 1));
+    case "var": {
+      const input = env[n.name];
+      if (input === undefined) {
+        return {
+          ok: false,
+          code: "unbound_symbol",
+          message: `the symbol ${n.name} has no value`,
+        };
+      }
+      return scalarSuccess(scalarFromInput(input));
+    }
+    case "add": {
+      let value = realScalar(0);
+      for (const term of n.terms) {
+        const evaluated = evalNodeComplex(term, env);
+        if (!evaluated.ok) return evaluated;
+        value = scalarAdd(value, evaluated.value);
+      }
+      return scalarSuccess(value);
+    }
+    case "mul": {
+      let value = realScalar(1);
+      for (const factor of n.factors) {
+        const evaluated = evalNodeComplex(factor, env);
+        if (!evaluated.ok) return evaluated;
+        value = scalarMultiply(value, evaluated.value);
+      }
+      return scalarSuccess(value);
+    }
+    case "pow":
+      return binary(n.base, n.exp, scalarPower);
+    case "fn": {
+      const evaluated = evalNodeComplex(n.arg, env);
+      if (!evaluated.ok) return evaluated;
+      const value =
+        n.fn === "sin"
+          ? scalarSin(evaluated.value)
+          : n.fn === "cos"
+            ? scalarCos(evaluated.value)
+            : n.fn === "tan"
+              ? scalarTan(evaluated.value)
+              : n.fn === "asin"
+                ? scalarAsin(evaluated.value)
+                : n.fn === "acos"
+                  ? scalarAcos(evaluated.value)
+                  : n.fn === "atan"
+                    ? scalarAtan(evaluated.value)
+                    : n.fn === "ln"
+                      ? scalarLog(evaluated.value)
+                      : n.fn === "exp"
+                        ? scalarExp(evaluated.value)
+                        : n.fn === "sqrt"
+                          ? scalarSqrt(evaluated.value)
+                          : n.fn === "re"
+                            ? scalarRealPart(evaluated.value)
+                            : n.fn === "im"
+                              ? scalarImaginaryPart(evaluated.value)
+                              : n.fn === "conj"
+                                ? scalarConjugate(evaluated.value)
+                                : n.fn === "abs"
+                                  ? scalarAbs(evaluated.value)
+                                  : scalarArg(evaluated.value);
+      return value
+        ? scalarSuccess(value)
+        : { ok: false, code: "undefined", message: `${n.fn}(…) is undefined here` };
+    }
+    case "derivative":
+    case "integral":
+      return {
+        ok: false,
+        code: "symbolic_operator",
+        message: "calculus operators need an explicit symbolic context",
+      };
+  }
+};
+
+/**
+ * Evaluate with the behavior students normally expect:
+ *
+ *   1. Try the familiar real interpretation.
+ *   2. If it has no real value, continue with principal complex functions.
+ *
+ * This makes (-8)^(1/3) remain -2 while sqrt(-1) becomes i. The result is a
+ * plain tagged object suitable for documents, workers, and MCP responses.
+ */
+export function evalScalarNode(n: TNode, env: ScalarEnvironment = {}): EvalResult {
+  const realEnv: Record<string, number | undefined> = {};
+  let environmentIsReal = true;
+  const relevantSymbols = freeVarsIn(n);
+  for (const [name, input] of Object.entries(env)) {
+    // A declared but unused input must not change the meaning of a closed
+    // expression. For example f(z)=(-2)^(1/3) stays the familiar real
+    // constant even when the selected mapping lets z range over C.
+    if (!relevantSymbols.has(name)) continue;
+    if (input === undefined) {
+      realEnv[name] = undefined;
+      continue;
+    }
+    const value = scalarFromInput(input);
+    if (value.kind === "real") realEnv[name] = value.value;
+    else environmentIsReal = false;
+  }
+
+  if (environmentIsReal) {
+    const value = evalNode(n, realEnv);
+    if (Number.isFinite(value)) {
+      return {
+        ok: true,
+        value: realScalar(value),
+        realm: "real",
+        usedComplexFallback: false,
+      };
+    }
+  }
+
+  const complex = evalNodeComplex(n, env);
+  if (!complex.ok) return complex;
+  return {
+    ok: true,
+    value: complex.value,
+    realm: "complex",
+    usedComplexFallback: environmentIsReal,
+  };
+}
+
+/** Evaluate a variable-free expression using real-first continuation. */
+export const evalClosedNode = (n: TNode): EvalResult => evalScalarNode(n, {});
+
 /** Exact-ish numeric value of a variable-free tree, else null */
 export const constValue = (n: TNode): number | null => {
   if (varsIn(n).size > 0) return null;
@@ -947,7 +1346,7 @@ export function printNode(n: TNode): string {
     case "const":
       return n.den === 1 ? String(n.num).replace("-", "−") : `${String(n.num).replace("-", "−")}/${n.den}`;
     case "named":
-      return "π";
+      return n.name === "pi" ? "π" : "i";
     case "var":
       return n.name;
     case "add":
@@ -1020,6 +1419,9 @@ export function printNode(n: TNode): string {
         return `e^${bare ? printNode(n.arg) : `(${printNode(n.arg)})`}`;
       }
       if (n.fn === "sqrt") return `√(${printNode(n.arg)})`;
+      if (n.fn === "re") return `re(${printNode(n.arg)})`;
+      if (n.fn === "im") return `im(${printNode(n.arg)})`;
+      if (n.fn === "abs") return `abs(${printNode(n.arg)})`;
       return `${n.fn === "asin" ? "arcsin" : n.fn === "acos" ? "arccos" : n.fn === "atan" ? "arctan" : n.fn}(${printNode(n.arg)})`;
     case "derivative": {
       const mark = n.notation === "partial" ? "∂" : "d";
@@ -1255,6 +1657,11 @@ export function antiderivative(
         case "asin":
         case "acos":
         case "atan":
+        case "re":
+        case "im":
+        case "conj":
+        case "abs":
+        case "arg":
           return null; // inverse-trig antiderivatives need forms beyond this playground
       }
     }

@@ -268,6 +268,18 @@ async function main() {
     cubeRootHtml
   );
 
+  const principalReciprocalRootHtml = renderSide(
+    tpow(tc(-8), tc(-1, 3), "principal-complex"),
+    "left"
+  );
+  check(
+    "S13b a principal-complex denominator stays an indexed root instead of becoming real −2",
+    principalReciprocalRootHtml.includes(">3</span><span>√</span>") &&
+      principalReciprocalRootHtml.includes("−8") &&
+      !principalReciprocalRootHtml.includes(">−2<"),
+    principalReciprocalRootHtml
+  );
+
   const sinSpecials = specialAnchorsIn(renderSide(tfn("sin", tv("x")), "left"));
   const lnSpecials = specialAnchorsIn(renderSide(tfn("ln", tv("x")), "left"));
   check(

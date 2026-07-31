@@ -4,6 +4,7 @@ import {
   CreateEquationRequestSchema,
   DifferentiationActionArgumentsSchema,
   IntegrationActionArgumentsSchema,
+  ScalarOperationContextSchema,
 } from "../../src/tools/equation-builder/protocol.js";
 import { SHARED_SESSION_KEY_PATTERN } from "../../src/tools/equation-builder/shared-session.js";
 
@@ -24,6 +25,7 @@ const PreviewInputSchema = z.object({
     DifferentiationActionArgumentsSchema,
     IntegrationActionArgumentsSchema,
   ]).default({}),
+  operationContext: ScalarOperationContextSchema.optional(),
   actorName: ActorNameSchema,
 }).strict();
 const ApplyInputSchema = z.object({
@@ -49,6 +51,8 @@ const SetViewInputSchema = z.object({
   expectedSequence: z.number().int().nonnegative(),
   expectedRevision: z.string().trim().min(1).max(256),
   candidateId: z.string().trim().min(1).max(500).nullable(),
+  mappingSignatureId: z.string().trim().min(1).max(500).nullable().optional(),
+  complexDisplay: z.enum(["cartesian", "polar", "exponential"]).optional(),
 }).strict();
 
 export interface RemoteEquationGateway {
@@ -154,7 +158,7 @@ export function createRemoteEquationMcpServer(gateway: RemoteEquationGateway): M
 
   server.registerTool("equation_set_view", {
     title: "Select live visualization",
-    description: "Select one advertised graph interpretation for the shared equation.",
+    description: "Select an advertised graph interpretation and optional real/complex mapping lens for the shared equation.",
     inputSchema: SetViewInputSchema,
     outputSchema: ToolOutputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

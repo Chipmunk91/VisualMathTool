@@ -38,6 +38,11 @@ import {
   rootBothT,
   type TreeMoveResult,
 } from "./treemoves";
+import {
+  analyzeExpressionSemantics,
+  expressionRequiresComplexScalars,
+  type ScalarOperationContext,
+} from "./semantics";
 
 export type SpecialActionKind =
   | "ln"
@@ -224,7 +229,11 @@ const isolationPills = (plan: IsolationPlan): { note?: string; pill?: string } =
 };
 
 /** Tapping a symbolic EXPONENT frees the base: a^u = R → a = R^(1/u). */
-const rootexprAction = (te: TreeEq, action: SpecialActionRef): TreeMoveResult => {
+const rootexprAction = (
+  te: TreeEq,
+  action: SpecialActionRef,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult => {
   const source = te[action.side];
   const other = te[action.side === "left" ? "right" : "left"];
   const target = action.targetId ? findById(source, action.targetId) : null;
@@ -237,7 +246,15 @@ const rootexprAction = (te: TreeEq, action: SpecialActionRef): TreeMoveResult =>
   if (!plan) return "that power is buried inside another operator — unwind the outer one first";
   const base = target.kind === "pow" ? target.base : tfn("exp", tc(1));
   const counter = counterparted(other, plan);
-  const unwound = tpow({ ...counter, id: freshNodeId() }, tpow({ ...u, id: freshNodeId() }, -1));
+  const complex =
+    operationContext?.scalarRealm === "complex" ||
+    expressionRequiresComplexScalars(source) ||
+    expressionRequiresComplexScalars(other);
+  const unwound = tpow(
+    { ...counter, id: freshNodeId() },
+    tpow({ ...u, id: freshNodeId() }, -1),
+    complex ? "principal-complex" : undefined
+  );
   const iso = isolationPills(plan);
   const uText = printNode(u);
   const assume = nonzeroKeys(u);
@@ -258,13 +275,18 @@ const rootexprAction = (te: TreeEq, action: SpecialActionRef): TreeMoveResult =>
         .join("; "),
       pill: [iso.pill, `${uText} ≠ 0`].filter(Boolean).join(" · "),
       assume,
+      operationContext,
     }
   );
   return withIsolationIntermediate(result, action.side, target, counter, plan);
 };
 
 /** Tapping sin/cos/tan solves toward the shell, isolating it first if needed. */
-const inverseTrigAction = (kind: InverseTrigAction) => (te: TreeEq, action: SpecialActionRef): TreeMoveResult => {
+const inverseTrigAction = (kind: InverseTrigAction) => (
+  te: TreeEq,
+  action: SpecialActionRef,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult => {
   const spec = INVERSE_TRIG[kind];
   const source = te[action.side];
   const other = te[action.side === "left" ? "right" : "left"];
@@ -284,7 +306,11 @@ const inverseTrigAction = (kind: InverseTrigAction) => (te: TreeEq, action: Spec
   }
   const counter = simplify(counterparted(other, plan), plan.coFactors.length > 0 ? nonzeroKeys(tmul(...plan.coFactors)) : undefined);
   const value = constValue(counter);
-  if (kind !== "atan" && value !== null && Math.abs(value) > 1) {
+  const complexContext =
+    operationContext?.scalarRealm === "complex" ||
+    analyzeExpressionSemantics(source).valueSpace === "complex" ||
+    analyzeExpressionSemantics(other).valueSpace === "complex";
+  if (!complexContext && kind !== "atan" && value !== null && Math.abs(value) > 1) {
     return `${spec.name} is only real between −1 and 1 — ${spec.direct}(…) would have to equal ${printNode(counter)}`;
   }
   const unwrapped = tfn(spec.inverse, { ...counter, id: freshNodeId() });
@@ -300,6 +326,7 @@ const inverseTrigAction = (kind: InverseTrigAction) => (te: TreeEq, action: Spec
       .filter(Boolean)
       .join("; "),
     pill: [iso.pill, "check branches"].filter(Boolean).join(" · "),
+    operationContext,
   });
   return withIsolationIntermediate(result, action.side, target, counter, plan);
 };
@@ -311,13 +338,22 @@ const inverseTrigAction = (kind: InverseTrigAction) => (te: TreeEq, action: Spec
  */
 export const SPECIAL_EXECUTORS: Record<
   SpecialActionKind,
-  (te: TreeEq, action: SpecialActionRef) => TreeMoveResult
+  (
+    te: TreeEq,
+    action: SpecialActionRef,
+    operationContext?: ScalarOperationContext
+  ) => TreeMoveResult
 > = {
-  ln: (te) => applyToolT("ln", te),
-  exp: (te) => applyToolT("exp", te),
-  root: (te, action) => rootBothT(te, action.n ?? 2),
-  raise: (te, action) => raiseBothT(te, action.n ?? 2),
-  square: (te) => applyToolT("square", te),
+  ln: (te, _action, operationContext) =>
+    applyToolT("ln", te, operationContext),
+  exp: (te, _action, operationContext) =>
+    applyToolT("exp", te, operationContext),
+  root: (te, action, operationContext) =>
+    rootBothT(te, action.n ?? 2, operationContext),
+  raise: (te, action, operationContext) =>
+    raiseBothT(te, action.n ?? 2, operationContext),
+  square: (te, _action, operationContext) =>
+    applyToolT("square", te, operationContext),
   rootexpr: rootexprAction,
   asin: inverseTrigAction("asin"),
   acos: inverseTrigAction("acos"),
@@ -325,8 +361,12 @@ export const SPECIAL_EXECUTORS: Record<
 };
 
 /** Execute the single operation advertised by a special-symbol bubble. */
-export function applySpecialActionT(te: TreeEq, action: SpecialActionRef): TreeMoveResult {
-  return SPECIAL_EXECUTORS[action.kind](te, action);
+export function applySpecialActionT(
+  te: TreeEq,
+  action: SpecialActionRef,
+  operationContext?: ScalarOperationContext
+): TreeMoveResult {
+  return SPECIAL_EXECUTORS[action.kind](te, action, operationContext);
 }
 
 /**

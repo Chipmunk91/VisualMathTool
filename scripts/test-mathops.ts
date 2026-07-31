@@ -112,17 +112,21 @@ simp("C2 e²·e³ = e⁵", tmul(tfn("exp", tc(2)), tfn("exp", tc(3))), "e^5");
 simp("C3 e²/e² = 1", tmul(tfn("exp", tc(2)), tpow(tfn("exp", tc(2)), -1)), "1");
 simp("C4 (e^x)² = e^2x", tpow(tfn("exp", tv("x")), 2), "e^(2x)");
 simp("C5 e^x·e² = e^(x+2)", tmul(tfn("exp", tv("x")), tfn("exp", tc(2))), "e^(x + 2)");
-simp("C6 ln(e^u) = u", tfn("ln", tfn("exp", tv("x"))), "x");
+// Log(exp u) = u needs a selected real lens; it is false across the
+// principal complex logarithm's branch cuts.
+simp("C6 ln(e^u) stays branch-safe while u is realm-neutral", tfn("ln", tfn("exp", tv("x"))), "ln(e^x)");
 simp("C7 e^0 = 1", tfn("exp", tc(0)), "1");
 simp("C8 ln 1 = 0", tfn("ln", tc(1)), "0");
 
 console.log("\n== D. simplifier: root laws (sign-aware) ==");
-simp("D1 odd root distributes over a product", tpow(tmul(tfn("exp", tc(3)), tv("x"), tpow(tfn("sin", tv("x")), -1)), tc(1, 3)), "(e·³√(x))/³√(sin(x))");
-simp("D2 (8x³)^(1/3) = 2x", tpow(tmul(tc(8), tpow(tv("x"), 3)), tc(1, 3)), "2x");
+// Odd-root distribution and power chaining require a real lens. Principal
+// complex roots retain the symbolic factor group and nesting.
+simp("D1 odd root keeps the realm-neutral factor group", tpow(tmul(tfn("exp", tc(3)), tv("x"), tpow(tfn("sin", tv("x")), -1)), tc(1, 3)), "e·³√(x/sin(x))");
+simp("D2 (8x³)^(1/3) extracts only the proven nonnegative 8", tpow(tmul(tc(8), tpow(tv("x"), 3)), tc(1, 3)), "2³√(x³)");
 simp("D3 even root pulls out e^u only", tpow(tmul(tfn("exp", tc(2)), tv("x")), tc(1, 2)), "e·√(x)");
 simp("D4 even root refuses signed factors", tpow(tmul(tv("x"), tv("y")), tc(1, 2)), "√(x·y)");
-simp("D5 (x⁻¹)^(1/3) = x^(−1/3)", tpow(tpow(tv("x"), -1), tc(1, 3)), "x^(−1/3)");
-simp("D6 (x^(1/3))³ = x (odd chain)", tpow(tpow(tv("x"), tc(1, 3)), 3), "x");
+simp("D5 a reciprocal remains inside its realm-neutral cube root", tpow(tpow(tv("x"), -1), tc(1, 3)), "³√(1/x)");
+simp("D6 an odd-root power chain waits for a real lens", tpow(tpow(tv("x"), tc(1, 3)), 3), "(³√(x))³");
 simp("D7 x² does NOT silently become |x| under √", tpow(tpow(tv("x"), 2), tc(1, 2)), "√(x²)");
 
 console.log("\n== E. tree moves: additive ==");
@@ -160,9 +164,11 @@ console.log("\n== G. tree moves: roots and powers ==");
   check("G5 root n must be an integer ≥ 2", rootBothT(cube, 1) === null && raiseBothT(cube, 0) === null);
   const fracEq: TreeEq = { left: tmul(tfn("exp", tc(3)), tv("x"), tpow(tfn("sin", tv("x")), -1)), right: tv("y") };
   const rootedFrac = rootBothT(fracEq, 3);
-  move("G6 cube root simplifies the exponential out", rootedFrac, "(e·³√(x))/³√(sin(x)) = ³√(y)");
+  // The operation records the literal principal-root state. A later selected
+  // real lens may offer the familiar real-only cleanup as an explicit rule.
+  move("G6 cube root keeps its branch-sensitive factor group", rootedFrac, "e·³√(x/sin(x)) = ³√(y)");
   if (rootedFrac && typeof rootedFrac !== "string" && rootedFrac.treeNext) {
-    move("G7 raise round-trips to the original", raiseBothT(rootedFrac.treeNext, 3), "(e^3·x)/sin(x) = y");
+    move("G7 raising preserves the unsimplified branch-safe nesting", raiseBothT(rootedFrac.treeNext, 3), "e^3·(³√(x/sin(x)))³ = y");
   } else {
     check("G7 raise round-trips to the original", false, "no tree state to raise");
   }
@@ -209,8 +215,12 @@ console.log("\n== J. sympy-style normalization: cancel + thaw, receipts attached
     left: tfn("exp", tadd(tfn("ln", tv("x")), tc(5, 2))),
     right: tfn("exp", tmul(tc(1, 4), tv("y"))),
   });
-  check("J2 e^(ln x + 5/2) thaws at load", printTreeEq(n2.te) === "e^(5/2)·x = e^(y/4)", printTreeEq(n2.te));
-  check("J2 — pill", n2.pill === "x > 0", n2.pill);
+  check(
+    "J2 symbolic e^(ln x + 5/2) waits for a mapping lens at load",
+    printTreeEq(n2.te) === "e^(ln(x) + 5/2) = e^(y/4)" && !n2.changed,
+    printTreeEq(n2.te)
+  );
+  check("J2 — no premature realm assumption", n2.pill === undefined, n2.pill);
   const n3 = normalizeOnLoad({ left: tmul(tc(2), tv("x")), right: tc(10) });
   check("J3 a plain equation loads untouched", !n3.changed && printTreeEq(n3.te) === "2x = 10");
   // the MOVE path: any finalize-produced state thaws too, with the note

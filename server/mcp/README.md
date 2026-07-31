@@ -46,14 +46,27 @@ Restart or reload the MCP client after changing its configuration.
 1. Call `equation_create`, or use `equation_list_documents` to find a document in the current
    process.
 2. Call `equation_get` or `equation_analyze` before deciding how to interpret the relation.
-3. Call `equation_list_actions`; never invent action IDs.
-4. Call `equation_preview_action` with the current revision and inspect its exact result.
+   Use an advertised mapping signature rather than inferring a scalar realm from names such as
+   `x` or `z`.
+3. Call `equation_list_actions`; never invent action IDs. Each action includes
+   the real/complex `operationContext` selected for it.
+4. Call `equation_preview_action` with the current revision and action ID.
+   Echo the advertised `operationContext` so a lens change is detected, then
+   inspect the exact result.
 5. Ask for human confirmation when the preview reports assumptions or warnings.
 6. Call `equation_apply_preview` once with a stable request ID. Retrying that request ID is safe.
 
 Differentiation and integration require an operation-variable symbol ID and a role for every other
 symbol. The server applies the operation to the relation as a whole; it does not infer calculus
 semantics from the left/right position of a symbol.
+
+For visualization, `equation_analyze` returns a default-real and, when applicable, a complex
+alternative for each explicit mapping. `equation_set_view` can persist both the structural graph
+candidate and one of those exact `mappingSignatureId` values. Closed expressions use real-first
+evaluation with principal-complex fallback, so `(-8)^(1/3)` remains `-2` while `sqrt(-1)` becomes
+`i`. Principal-branch operations keep their branch structure under a complex
+lens; real-only logarithm rewrites are withheld. Complex calculus is rejected
+until a holomorphic/component/Wirtinger or contour interpretation is selected.
 
 ## Local session boundary
 

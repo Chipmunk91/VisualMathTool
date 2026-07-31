@@ -45,6 +45,12 @@ export const CATALOG: CatalogEntry[] = [
   { name: "two-input model", text: "y = s*t", aliases: ["multivariable", "scalar field", "partial derivative", "surface"] },
   { name: "force model", text: "force = mass*acceleration", aliases: ["newton", "physical model", "arbitrary symbols"] },
   { name: "pi scaling", text: "pi*x = y", aliases: ["pi", "circle constant", "π", "radians"] },
+  { name: "imaginary unit", text: "x = sqrt(-1)", aliases: ["complex number", "i", "square root of minus one"] },
+  { name: "complex point", text: "z = 3 + 4*i", aliases: ["argand", "cartesian complex", "3+4i"] },
+  { name: "Euler identity", text: "e^(i*pi) + 1 = 0", aliases: ["euler", "complex exponential", "exp i pi"] },
+  { name: "complex exponential path", text: "z(t) = e^(i*t)", aliases: ["phasor", "unit circle path", "e to i t"] },
+  { name: "complex square map", text: "f(z) = z^2", aliases: ["complex mapping", "z squared", "argand transform"] },
+  { name: "complex modulus", text: "r(z) = abs(z)", aliases: ["magnitude", "absolute value", "distance from origin"] },
   { name: "isolate y", text: "2*y - 3 = x", aliases: ["solve for y", "two variables"] },
 ];
 

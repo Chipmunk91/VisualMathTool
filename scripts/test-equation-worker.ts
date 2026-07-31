@@ -49,6 +49,31 @@ async function main(): Promise<void> {
   assert.equal(created.sequence, 0);
   assert.ok(created.playgroundUrl.includes(created.sessionKey));
 
+  const constantResponse = await runtime.dispatchFetch("http://localhost/v1/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: "f(x) = 3", documentId: "worker-constant-function" }),
+  });
+  const constantCreated = await json<{ sessionKey: string }>(constantResponse);
+  const constantSnapshot = await json<{
+    document: {
+      symbols: Array<{ name: string; dependsOn?: string[]; parameter?: true }>;
+    };
+  }>(await runtime.dispatchFetch(
+    `http://localhost/v1/sessions/${constantCreated.sessionKey}/snapshot`
+  ));
+  assert.deepEqual(
+    constantSnapshot.document.symbols.map(({ name, dependsOn, parameter }) => ({
+      name,
+      dependsOn,
+      parameter,
+    })),
+    [
+      { name: "f", dependsOn: ["x"], parameter: undefined },
+      { name: "x", dependsOn: undefined, parameter: true },
+    ]
+  );
+
   const snapshotUrl = `http://localhost/v1/sessions/${created.sessionKey}/snapshot`;
   const initial = await json<{
     sequence: number;

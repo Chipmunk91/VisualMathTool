@@ -95,9 +95,18 @@ const staleMetadata = restored.updateSymbol({
 assert.equal(staleMetadata.status, "error");
 if (staleMetadata.status === "error") assert.equal(staleMetadata.code, "stale_sequence");
 
+const sharedMapping = afterMetadata.snapshot.analysis.semantics[0]?.mappingCandidates.find(
+  (candidate) => candidate.recommended
+);
+assert.ok(sharedMapping);
 const browserDocument = {
   ...afterMetadata.document,
-  presentation: { ...afterMetadata.document.presentation, probeValue: 4 },
+  presentation: {
+    ...afterMetadata.document.presentation,
+    probeValue: 4,
+    mappingSignatureId: sharedMapping.id,
+    complexDisplay: "polar" as const,
+  },
 };
 const synchronized = restored.syncDocument({
   expectedSequence: 2,
@@ -108,6 +117,11 @@ const synchronized = restored.syncDocument({
 assert.ok(!("status" in synchronized));
 assert.equal((synchronized as SharedSessionSnapshot).sequence, 3);
 assert.equal((synchronized as SharedSessionSnapshot).document.presentation?.probeValue, 4);
+assert.equal(
+  (synchronized as SharedSessionSnapshot).document.presentation?.mappingSignatureId,
+  sharedMapping.id
+);
+assert.equal((synchronized as SharedSessionSnapshot).document.presentation?.complexDisplay, "polar");
 assert.deepEqual(restored.syncDocument({
   expectedSequence: 2,
   requestId: "browser-sync-1",

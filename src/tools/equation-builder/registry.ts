@@ -32,6 +32,7 @@ import {
   type SpecialActionRef,
 } from "./specialactions";
 import type { Side } from "./model";
+import type { ScalarOperationContext } from "./semantics";
 
 /* --- anchor specs -------------------------------------------------------- */
 
@@ -194,7 +195,11 @@ export interface SpecialActionRow {
    * Drives enumeration dedup.
    */
   scope: "global" | "targeted";
-  execute: (te: TreeEq, action: SpecialActionRef) => TreeMoveResult;
+  execute: (
+    te: TreeEq,
+    action: SpecialActionRef,
+    operationContext?: ScalarOperationContext
+  ) => TreeMoveResult;
   label: (action: SpecialActionRef) => string;
   anchorsFor: (node: TNode) => AnchorSpec[];
 }
@@ -207,7 +212,10 @@ export interface ToolRow {
   protocolLabel: string;
   /** Hover title the toolbox button shows. */
   title: string;
-  execute: (te: TreeEq) => TreeMoveResult;
+  execute: (
+    te: TreeEq,
+    operationContext?: ScalarOperationContext
+  ) => TreeMoveResult;
 }
 
 export type OperationRow = SpecialActionRow | ToolRow;
@@ -249,14 +257,14 @@ export const SPECIAL_ROWS: Record<SpecialActionKind, SpecialActionRow> = {
 
 /** Adding a TreeToolKind without a row is a compile error too. */
 export const TOOL_ROWS: Record<TreeToolKind, ToolRow> = {
-  ln: { id: "tool.ln", family: "tool", tool: "ln", protocolLabel: "Apply ln to both sides", title: "Take ln of both sides", execute: (te) => applyToolT("ln", te) },
-  exp: { id: "tool.exp", family: "tool", tool: "exp", protocolLabel: "Apply exp to both sides", title: "Exponentiate both sides (e to each side)", execute: (te) => applyToolT("exp", te) },
-  sin: { id: "tool.sin", family: "tool", tool: "sin", protocolLabel: "Apply sin to both sides", title: "Take sin of both sides", execute: (te) => applyToolT("sin", te) },
-  cos: { id: "tool.cos", family: "tool", tool: "cos", protocolLabel: "Apply cos to both sides", title: "Take cos of both sides", execute: (te) => applyToolT("cos", te) },
-  tan: { id: "tool.tan", family: "tool", tool: "tan", protocolLabel: "Apply tan to both sides", title: "Take tan of both sides", execute: (te) => applyToolT("tan", te) },
-  sqrt: { id: "tool.sqrt", family: "tool", tool: "sqrt", protocolLabel: "Apply sqrt to both sides", title: "Take the square root of both sides", execute: (te) => applyToolT("sqrt", te) },
-  square: { id: "tool.square", family: "tool", tool: "square", protocolLabel: "Apply square to both sides", title: "Square both sides", execute: (te) => applyToolT("square", te) },
-  recip: { id: "tool.recip", family: "tool", tool: "recip", protocolLabel: "Apply recip to both sides", title: "Take the reciprocal of both sides", execute: (te) => applyToolT("recip", te) },
+  ln: { id: "tool.ln", family: "tool", tool: "ln", protocolLabel: "Apply ln to both sides", title: "Take ln of both sides", execute: (te, context) => applyToolT("ln", te, context) },
+  exp: { id: "tool.exp", family: "tool", tool: "exp", protocolLabel: "Apply exp to both sides", title: "Exponentiate both sides (e to each side)", execute: (te, context) => applyToolT("exp", te, context) },
+  sin: { id: "tool.sin", family: "tool", tool: "sin", protocolLabel: "Apply sin to both sides", title: "Take sin of both sides", execute: (te, context) => applyToolT("sin", te, context) },
+  cos: { id: "tool.cos", family: "tool", tool: "cos", protocolLabel: "Apply cos to both sides", title: "Take cos of both sides", execute: (te, context) => applyToolT("cos", te, context) },
+  tan: { id: "tool.tan", family: "tool", tool: "tan", protocolLabel: "Apply tan to both sides", title: "Take tan of both sides", execute: (te, context) => applyToolT("tan", te, context) },
+  sqrt: { id: "tool.sqrt", family: "tool", tool: "sqrt", protocolLabel: "Apply sqrt to both sides", title: "Take the square root of both sides", execute: (te, context) => applyToolT("sqrt", te, context) },
+  square: { id: "tool.square", family: "tool", tool: "square", protocolLabel: "Apply square to both sides", title: "Square both sides", execute: (te, context) => applyToolT("square", te, context) },
+  recip: { id: "tool.recip", family: "tool", tool: "recip", protocolLabel: "Apply recip to both sides", title: "Take the reciprocal of both sides", execute: (te, context) => applyToolT("recip", te, context) },
 };
 
 /** Enumeration/toolbar order — matches the engine's historical order exactly. */

@@ -282,7 +282,7 @@ function derivativeInContext(node: TNode, state: DerivativeState): TNode {
     case "fn": {
       const du = derivativeInContext(node.arg, state);
       const u = node.arg;
-      const outer: TNode =
+      const outer: TNode | null =
         node.fn === "sin"
           ? tfn("cos", u)
           : node.fn === "cos"
@@ -299,7 +299,13 @@ function derivativeInContext(node: TNode, state: DerivativeState): TNode {
                       ? tpow(tadd(tc(1), tmul(tc(-1), tpow(u, 2))), tc(-1, 2))
                       : node.fn === "acos"
                         ? tmul(tc(-1), tpow(tadd(tc(1), tmul(tc(-1), tpow(u, 2))), tc(-1, 2)))
-                        : tpow(tadd(tc(1), tpow(u, 2)), -1);
+                        : node.fn === "atan"
+                          ? tpow(tadd(tc(1), tpow(u, 2)), -1)
+                          : null;
+      // Re/Im/conjugate/modulus/argument need an explicit real-component,
+      // Wirtinger, or holomorphic interpretation. Preserve the derivative as
+      // an exact symbolic operator instead of silently treating them as atan.
+      if (!outer) return tdiff(node, state.operationVariable, notation);
       return tmul(outer, du);
     }
     case "derivative":
